@@ -101,7 +101,7 @@ async function runLiveMode(): Promise<void> {
     twitchConnected: eventsub.isConnected,
     channel: config.channelLogin,
     startedAt: botStartedAt,
-  }), logger);
+  }), logger, fetch, () => community.conversationSpark.snapshot());
   const featureTicker = setInterval(() => {
     try { community.tick(); }
     catch (error) { logger.error('Quest-/Umfrage-Timer konnte nicht aktualisiert werden.', { error: error instanceof Error ? error.message : 'unbekannt' }); }

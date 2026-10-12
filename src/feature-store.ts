@@ -35,6 +35,12 @@ export type QuestStatus = 'pending' | 'approved' | 'active' | 'completed' | 'fai
 export type QuestSource = 'chat' | 'channel_points' | 'dashboard';
 export type PollStatus = 'active' | 'ended' | 'canceled';
 export type WidgetType = 'quest' | 'poll';
+export type SparkStatus = 'detected' | 'pending_approval' | 'approved' | 'rejected' | 'expired' | 'executed' | 'canceled';
+export interface SparkProposal {
+  id: string; channelId: string; topicId: string; topicLabel: string; score: number; participants: number;
+  messages: number; actionType: 'poll' | 'quest' | 'challenge'; status: SparkStatus; createdAt: number;
+  expiresAt: number; decidedBy: string | null; rejectionReason: string | null;
+}
 
 export interface QuestRecord {
   id: string;
@@ -135,6 +141,7 @@ const RESERVED_COMMANDS = new Set([
   '8ball', 'rps', 'guess', 'startguess', 'duel', 'accept', 'cancelduel', 'startboss', 'attack',
   'boss', 'bosstop', 'endboss', 'addcommand', 'setcommand', 'delcommand', 'help',
   'quest', 'quests', 'myquest', 'questhelp', 'questqueue', 'approvequest', 'rejectquest', 'skipquest', 'poll', 'vote', 'pollresults',
+  'spark','sparks','sparkhelp','sparkapprove','sparkreject','sparkpause','sparkresume','sparktopics',
 ]);
 
 export class FeatureStore {
@@ -331,6 +338,28 @@ export class FeatureStore {
         `);
       })();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 3) {
+      if (currentVersion > 0) this.backupBeforeMigration(3);
+      this.db.transaction(() => {
+        this.db.exec(`
+          CREATE TABLE spark_proposals (
+            id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, topic_id TEXT NOT NULL, topic_label TEXT NOT NULL,
+            score INTEGER NOT NULL, participant_count INTEGER NOT NULL, message_count INTEGER NOT NULL,
+            action_type TEXT NOT NULL CHECK(action_type IN ('poll','quest','challenge')),
+            status TEXT NOT NULL CHECK(status IN ('detected','pending_approval','approved','rejected','expired','executed','canceled')),
+            created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, decided_by TEXT, rejection_reason TEXT
+          );
+          CREATE INDEX spark_proposals_status_time ON spark_proposals(status,created_at DESC);
+          CREATE UNIQUE INDEX spark_one_open_topic ON spark_proposals(channel_id,topic_id) WHERE status IN ('detected','pending_approval','approved');
+          CREATE TABLE spark_cooldowns (channel_id TEXT NOT NULL, topic_id TEXT NOT NULL, until_at INTEGER NOT NULL,
+            PRIMARY KEY(channel_id,topic_id));
+          INSERT OR IGNORE INTO feature_config(key,value) VALUES
+            ('spark_settings','{"enabled":false,"paused":false,"windowMs":600000,"minParticipants":3,"minMessages":5,"minScore":12,"globalCooldownMs":1200000,"topicCooldownMs":3600000,"proposalTtlMs":1800000,"maxPending":5,"chatSuggestionsEnabled":false,"pauseDuringPolls":true,"metadataRetentionMs":604800000}');
+          INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (3, unixepoch()*1000);
+        `);
+      })();
+    }
   }
 
   private backupBeforeMigration(version: number): void {
@@ -352,6 +381,67 @@ export class FeatureStore {
   setConfig(key: string, value: unknown): void {
     this.db.prepare('INSERT INTO feature_config(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
       .run(key, JSON.stringify(value));
+  }
+
+  createSparkProposal(input: Omit<SparkProposal, 'status' | 'decidedBy' | 'rejectionReason'>, maxPending: number,
+    globalCooldownMs: number, topicCooldownMs: number): SparkProposal | undefined {
+    return this.db.transaction(() => {
+      this.expireSparkProposals(input.createdAt);
+      const open = this.db.prepare("SELECT 1 FROM spark_proposals WHERE channel_id=? AND topic_id=? AND status IN ('detected','pending_approval','approved')").get(input.channelId, input.topicId);
+      const pending = this.db.prepare("SELECT COUNT(*) AS count FROM spark_proposals WHERE status='pending_approval'").get() as { count: number };
+      const cooldown = this.db.prepare('SELECT until_at FROM spark_cooldowns WHERE channel_id=? AND topic_id IN (?,\'*\') AND until_at>? ORDER BY until_at DESC LIMIT 1')
+        .get(input.channelId, input.topicId, input.createdAt) as { until_at: number } | undefined;
+      if (open || pending.count >= maxPending || cooldown) return undefined;
+      this.db.prepare(`INSERT INTO spark_proposals(id,channel_id,topic_id,topic_label,score,participant_count,message_count,action_type,status,created_at,expires_at)
+        VALUES(?,?,?,?,?,?,?,?,'pending_approval',?,?)`).run(input.id,input.channelId,input.topicId,input.topicLabel,input.score,
+          input.participants,input.messages,input.actionType,input.createdAt,input.expiresAt);
+      this.db.prepare(`INSERT INTO spark_cooldowns(channel_id,topic_id,until_at) VALUES(?,?,?) ON CONFLICT(channel_id,topic_id)
+        DO UPDATE SET until_at=excluded.until_at`).run(input.channelId, input.topicId, input.createdAt + topicCooldownMs);
+      this.db.prepare(`INSERT INTO spark_cooldowns(channel_id,topic_id,until_at) VALUES(?,'*',?) ON CONFLICT(channel_id,topic_id)
+        DO UPDATE SET until_at=MAX(until_at,excluded.until_at)`).run(input.channelId, input.createdAt + globalCooldownMs);
+      this.recordCommunityEvent('spark.proposal.created',{id:input.id,topicId:input.topicId,actionType:input.actionType},input.createdAt);
+      return { ...input, status:'pending_approval' as const, decidedBy:null, rejectionReason:null };
+    })();
+  }
+
+  sparkProposals(status: SparkStatus | 'all' = 'all', limit = 50): SparkProposal[] {
+    const rows = this.db.prepare(`SELECT * FROM spark_proposals WHERE (?='all' OR status=?) ORDER BY created_at DESC LIMIT ?`)
+      .all(status,status,Math.max(1,Math.min(100,limit))) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({ id:String(r.id),channelId:String(r.channel_id),topicId:String(r.topic_id),topicLabel:String(r.topic_label),
+      score:Number(r.score),participants:Number(r.participant_count),messages:Number(r.message_count),actionType:r.action_type as SparkProposal['actionType'],
+      status:r.status as SparkStatus,createdAt:Number(r.created_at),expiresAt:Number(r.expires_at),decidedBy:r.decided_by ? String(r.decided_by) : null,
+      rejectionReason:r.rejection_reason ? String(r.rejection_reason) : null }));
+  }
+
+  sparkProposal(id: string): SparkProposal | undefined { return this.sparkProposals('all',100).find((proposal) => proposal.id === id); }
+
+  decideSparkProposal(id: string, status: Extract<SparkStatus,'approved'|'rejected'|'expired'|'executed'|'canceled'>,
+    actorId: string | null, now: number, reason: string | null = null): boolean {
+    const proposal = this.sparkProposal(id);
+    if (!proposal || proposal.expiresAt <= now) { if (proposal) this.expireSparkProposals(now); return false; }
+    const allowed: Record<typeof status, SparkStatus[]> = {
+      approved:['pending_approval'], rejected:['pending_approval','approved'], expired:['pending_approval','approved'],
+      executed:['approved'], canceled:['pending_approval','approved'],
+    };
+    if (!allowed[status].includes(proposal.status)) return false;
+    const changed = this.db.prepare('UPDATE spark_proposals SET status=?,decided_by=?,rejection_reason=? WHERE id=? AND status=? AND expires_at>?')
+      .run(status,actorId,reason,id,proposal.status,now).changes > 0;
+    if (changed) this.recordCommunityEvent(`spark.proposal.${status}`,{id,topicId:proposal.topicId},now);
+    return changed;
+  }
+
+  expireSparkProposals(now: number): number {
+    return this.db.prepare("UPDATE spark_proposals SET status='expired' WHERE status IN ('pending_approval','approved') AND expires_at<=?").run(now).changes;
+  }
+
+  pruneSparkMetadata(now: number, retentionMs: number): number {
+    return this.db.prepare("DELETE FROM spark_proposals WHERE status IN ('rejected','expired','executed','canceled') AND created_at<?")
+      .run(now - retentionMs).changes;
+  }
+
+  sparkCooldowns(now: number): Array<{ channelId: string; topicId: string; untilAt: number }> {
+    return (this.db.prepare('SELECT channel_id,topic_id,until_at FROM spark_cooldowns WHERE until_at>?').all(now) as Array<{channel_id:string;topic_id:string;until_at:number}>)
+      .map((r) => ({channelId:r.channel_id,topicId:r.topic_id,untilAt:r.until_at}));
   }
 
   submitQuest(input: QuestSubmission, policy: QuestPolicy, now: number): QuestSubmitResult {

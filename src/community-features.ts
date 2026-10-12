@@ -3,6 +3,7 @@ import type { AppConfig, ChatMessage, CommandReply } from './types.js';
 import { clampChatMessage } from './chat.js';
 import { FeatureStore, type CustomCommand } from './feature-store.js';
 import { QuestPollFeatures } from './quest-poll.js';
+import { ConversationSpark } from './conversation-spark.js';
 
 type UserLookup = (login: string) => Promise<{ id: string; login: string; displayName: string } | undefined>;
 type RandomInclusive = (min: number, max: number) => number;
@@ -19,29 +20,33 @@ const DEFAULT_8BALL = [
 
 export class CommunityFeatures {
   private readonly questPoll: QuestPollFeatures;
+  readonly conversationSpark: ConversationSpark;
 
   constructor(
     private readonly store: FeatureStore,
     private readonly config: AppConfig,
     private readonly lookupUser: UserLookup = async () => undefined,
     private readonly random: RandomInclusive = secureRandomInclusive,
-  ) { this.questPoll = new QuestPollFeatures(store, config); }
+  ) { this.questPoll = new QuestPollFeatures(store, config); this.conversationSpark = new ConversationSpark(store, config.broadcasterUserId); }
 
-  observeActivity(message: ChatMessage, now = Date.now()): void {
-    if (message.senderUserId === this.config.botUserId || message.senderLogin.toLowerCase() === this.config.botLogin.toLowerCase()) return;
+  observeActivity(message: ChatMessage, now = Date.now()): string | undefined {
+    if (message.senderUserId === this.config.botUserId || message.senderLogin.toLowerCase() === this.config.botLogin.toLowerCase()) return undefined;
     const text = message.message.trim().replace(/\s+/gu, ' ');
-    if (text.startsWith('!') || Array.from(text).length < 3) return;
+    if (text.startsWith('!') || Array.from(text).length < 3) return undefined;
+    const created = this.conversationSpark.observe(message, now);
     const settings = this.store.config('xp_settings', { activityXp: 5, activityCooldownMs: 60_000, dailyGameCap: 100, levelBase: 100 });
     const fingerprint = createHash('sha256').update(text.toLocaleLowerCase()).digest('hex');
     this.store.awardActivity(message.senderUserId, message.senderDisplayName, fingerprint, message.eventId, now,
       settings.activityXp, settings.activityCooldownMs);
+    return this.conversationSpark.config().chatSuggestionsEnabled && created[0]
+      ? `🎮 Im Chat dreht sich gerade viel um ${created[0].topicLabel}! Ein Vorschlag wartet auf Freigabe im Dashboard.` : undefined;
   }
 
   syncLegacyHalloween(now = Date.now()): void { this.store.syncLegacyHalloween(now); }
 
   activeEventId(): string | undefined { return this.store.activeEvent()?.id; }
 
-  tick(now = Date.now()): void { this.refreshScheduledEvents(now); this.questPoll.tick(now); }
+  tick(now = Date.now()): void { this.refreshScheduledEvents(now); this.questPoll.tick(now); this.conversationSpark.tick(now); }
 
   async handle(message: ChatMessage, command: string, args: string[], now = Date.now()): Promise<CommandReply[]> {
     const modules = this.store.config<Record<string, boolean>>('modules', {});
@@ -49,6 +54,8 @@ export class CommunityFeatures {
     const say = (value: string): CommandReply[] => [{ message: clampChatMessage(value, this.config.appChatMessageLength),
       ...(message.messageId ? { replyParentMessageId: message.messageId } : {}) }];
 
+    const sparkResponse = await this.conversationSpark.handleCommand(message, command, args, now);
+    if (sparkResponse !== undefined) return say(sparkResponse);
     const questPollResponse = this.questPoll.handle(message, command, args, now);
     if (questPollResponse !== undefined) return questPollResponse ? say(questPollResponse) : [];
 

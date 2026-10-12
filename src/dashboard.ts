@@ -4,6 +4,8 @@ import { URL } from 'node:url';
 import type { AddressInfo } from 'node:net';
 import { FeatureStore, type CustomCommand, type QuestPolicy, type QuestStatus, type SeasonalEvent, type WidgetType } from './feature-store.js';
 import { communityWidgetHtml, QUEST_POLL_CARD, QUEST_POLL_SCRIPT } from './dashboard-community-ui.js';
+import { SPARK_CARD, SPARK_SCRIPT } from './conversation-spark-ui.js';
+import { DEFAULT_SPARK_CONFIG, type SparkActionType, type SparkConfig, type SparkTopic } from './conversation-spark.js';
 import type { Logger } from './logger.js';
 
 interface Session { userId: string; login: string; csrf: string; expiresAt: number; }
@@ -43,6 +45,7 @@ export class DashboardServer {
     private readonly getStatus: () => RuntimeStatus,
     private readonly logger: Logger,
     private readonly fetchImpl: typeof fetch = fetch,
+    private readonly getSparkSnapshot: () => unknown[] = () => [],
   ) { this.adminIds = new Set((process.env.DASHBOARD_ADMIN_IDS || '').split(/[ ,]+/u).filter(Boolean)); }
 
   async start(): Promise<boolean> {
@@ -96,8 +99,8 @@ export class DashboardServer {
       const nonce = randomBytes(18).toString('base64');
       res.setHeader('Content-Security-Policy', `default-src 'self'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`);
       res.statusCode = 200; res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      const page = PAGE.replace('</section></main>', `${SETTINGS_CARD}${QUEST_POLL_CARD}</section></main>`)
-        .replace('</script>', `${SETTINGS_SCRIPT}${QUEST_POLL_SCRIPT}</script>`);
+      const page = PAGE.replace('</section></main>', `${SETTINGS_CARD}${QUEST_POLL_CARD}${SPARK_CARD}</section></main>`)
+        .replace('</script>', `${SETTINGS_SCRIPT}${QUEST_POLL_SCRIPT}${SPARK_SCRIPT}</script>`);
       res.end(page.replaceAll('__CSRF__', session.csrf).replaceAll('__NONCE__', nonce)); return;
     }
     if (url.pathname.startsWith('/widgets/')) { await this.widgetRoute(url, req, res); return; }
@@ -224,10 +227,64 @@ export class DashboardServer {
       const active = this.store.activePoll(); const history = this.store.pollHistory(25);
       this.json(res, 200, { active: active ?? history.find((poll) => poll.status === 'ended') ?? null, history }); return;
     }
+    if (route === 'spark' && req.method === 'GET') {
+      const settings=this.store.config<SparkConfig>('spark_settings',DEFAULT_SPARK_CONFIG);
+      this.store.expireSparkProposals(Date.now());
+      this.json(res,200,{settings,customTopics:this.store.config<SparkTopic[]>('spark_topics',[]),topics:this.getSparkSnapshot(),
+        proposals:this.store.sparkProposals('all',50),pending:this.store.sparkProposals('pending_approval',100).length,
+        cooldowns:this.store.sparkCooldowns(Date.now())}); return;
+    }
     if (route === 'stream' && req.method === 'GET') { this.openEventStream(url, req, res); return; }
     if (req.method !== 'POST') { this.json(res, 405, { error: 'Methode nicht erlaubt.' }); return; }
     const body = await this.readJson(req); if (!body) { this.json(res, 400, { error: 'Ungültiger JSON-Body.' }); return; }
     const now = Date.now();
+    if (route === 'spark/settings') {
+      try {
+        const settings=normalizeSparkConfig(body,this.store.config<SparkConfig>('spark_settings',DEFAULT_SPARK_CONFIG));
+        const topics=normalizeSparkTopics(body.topics);
+        this.store.setConfig('spark_settings',settings); this.store.setConfig('spark_topics',topics);
+        this.audit(session,'spark-settings-update','conversation-spark',{enabled:settings.enabled,topicCount:topics.length},now);
+        this.json(res,200,{ok:true}); return;
+      } catch(error) { this.json(res,400,{error:error instanceof Error?error.message:'Conversation-Spark-Einstellungen ungültig.'}); return; }
+    }
+    if (route === 'spark/action') {
+      const id=String(body.id||''),action=String(body.action||''),proposal=this.store.sparkProposal(id);
+      if (!proposal) { this.json(res,404,{error:'Vorschlag nicht gefunden.'}); return; }
+      if (proposal.expiresAt<=now) { this.store.expireSparkProposals(now); this.json(res,409,{error:'Dieser Vorschlag ist abgelaufen.'}); return; }
+      if (action==='approve'||action==='reject'||action==='cancel') {
+        const status=action==='approve'?'approved':action==='reject'?'rejected':'canceled';
+        if (!this.store.decideSparkProposal(id,status,session.userId,now,action==='reject'?clean(String(body.reason||''),160)||null:null)) {
+          this.json(res,409,{error:'Der Vorschlag kann in seinem aktuellen Status nicht geändert werden.'}); return;
+        }
+        this.audit(session,`spark-${action}`,id,{},now); this.json(res,200,{ok:true}); return;
+      }
+      if (proposal.status!=='approved') { this.json(res,409,{error:'Bitte den Vorschlag zuerst ausdrücklich freigeben.'}); return; }
+      if (action==='create-poll') {
+        if (proposal.actionType!=='poll') { this.json(res,409,{error:'Dieser Vorschlag ist nicht als Umfrage vorgesehen.'}); return; }
+        const modules=this.store.config<Record<string,boolean>>('modules',{}),pollSettings=this.store.config('poll_settings',defaultPollSettings());
+        if (modules.polls===false||!pollSettings.enabled) { this.json(res,409,{error:'Umfragen sind deaktiviert.'}); return; }
+        const question=normalizeCommunityText(String(body.question||''),3,180);
+        const options=Array.isArray(body.options)?body.options.map(value=>normalizeCommunityText(String(value),1,80)):[];
+        const seconds=Number(body.durationSeconds);
+        if (!question||options.length<2||options.length>5||options.some(value=>!value)||new Set(options.map(value=>value!.toLowerCase())).size!==options.length
+          ||!Number.isInteger(seconds)||seconds<10||seconds>3600) { this.json(res,400,{error:'Bitte eine Frage, 2–5 unterschiedliche Optionen und 10–3600 Sekunden angeben.'}); return; }
+        const poll=this.store.createPoll({type:'chat',question,options:options.map(label=>({label:label!})),durationMs:seconds*1000,
+          allowVoteChange:pollSettings.allowVoteChange,createdBy:session.userId,now});
+        if (!poll) { this.json(res,409,{error:'Eine Umfrage läuft bereits oder konnte nicht erstellt werden.'}); return; }
+        this.store.decideSparkProposal(id,'executed',session.userId,now); this.audit(session,'spark-create-poll',id,{pollId:poll.id},now);
+        this.json(res,201,{poll}); return;
+      }
+      if (action==='create-quest') {
+        if (proposal.actionType!=='quest') { this.json(res,409,{error:'Dieser Vorschlag ist nicht als Quest vorgesehen.'}); return; }
+        const policy=this.questPolicy(),title=normalizeCommunityText(String(body.title||`Community-Quest zum Thema ${proposal.topicLabel}`),3,policy.maxLength);
+        if (!title) { this.json(res,400,{error:'Quest-Titel ungültig.'}); return; }
+        const quest=this.store.submitQuest({submitterUserId:session.userId,displayName:clean(session.login,48),title,source:'dashboard'},policy,now);
+        if (!quest.ok) { this.json(res,409,{error:'Quest-Vorschlag konnte nicht angelegt werden: '+quest.reason}); return; }
+        this.store.decideSparkProposal(id,'executed',session.userId,now); this.audit(session,'spark-create-quest',id,{questId:quest.quest.id},now);
+        this.json(res,201,{quest:quest.quest}); return;
+      }
+      this.json(res,400,{error:'Spark-Aktion ungültig.'}); return;
+    }
     if (route === 'polls' || route === 'polls/quest-vote') {
       const modules = this.store.config<Record<string, boolean>>('modules', {});
       const settings = this.store.config('poll_settings', defaultPollSettings());
@@ -528,6 +585,37 @@ function defaultPollSettings(): DashboardPollSettings {
 }
 
 function defaultWidgetSettings(): { theme: 'violet'; fontSize: number } { return { theme: 'violet', fontSize: 34 }; }
+
+function normalizeSparkConfig(input:Record<string,unknown>,current:SparkConfig):SparkConfig {
+  const number=(key:string,min:number,max:number):number=>{
+    const value=Number(input[key]); if(!Number.isInteger(value)||value<min||value>max) throw new Error(`${key} muss zwischen ${min} und ${max} liegen.`); return value;
+  };
+  if (typeof input.enabled!=='boolean'||typeof input.paused!=='boolean'||typeof input.chatSuggestionsEnabled!=='boolean'||typeof input.pauseDuringPolls!=='boolean') {
+    throw new Error('Spark-Schalter müssen boolesch sein.');
+  }
+  const allowedActionTypes=Array.isArray(input.allowedActionTypes)?input.allowedActionTypes.filter((v):v is SparkActionType=>v==='poll'||v==='quest'||v==='challenge'):[];
+  if (!allowedActionTypes.length||allowedActionTypes.length!==new Set(allowedActionTypes).size) throw new Error('Mindestens ein eindeutiger Aktionstyp ist erforderlich.');
+  return { enabled:input.enabled,paused:input.paused,chatSuggestionsEnabled:input.chatSuggestionsEnabled,pauseDuringPolls:input.pauseDuringPolls,
+    windowMs:number('windowMinutes',1,60)*60_000,
+    minParticipants:number('minParticipants',2,50),minMessages:number('minMessages',3,200),
+    minScore:number('minScore',1,1000),globalCooldownMs:number('globalCooldownMinutes',1,1440)*60_000,
+    topicCooldownMs:number('topicCooldownMinutes',1,10080)*60_000,
+    proposalTtlMs:number('proposalTtlMinutes',1,1440)*60_000,
+    maxPending:number('maxPending',1,50),metadataRetentionMs:current.metadataRetentionMs,allowedActionTypes};
+}
+
+function normalizeSparkTopics(input:unknown):SparkTopic[] {
+  if (!Array.isArray(input)||input.length>50) throw new Error('Topic-Regeln müssen eine Liste mit höchstens 50 Einträgen sein.');
+  const seen=new Set<string>();
+  return input.map((value)=>{
+    if(!isRecord(value)) throw new Error('Topic-Regel ungültig.');
+    const id=String(value.id||'').trim().toLowerCase(),label=clean(String(value.label||''),64),actionType=value.actionType;
+    const terms=Array.isArray(value.terms)?[...new Set(value.terms.filter((term):term is string=>typeof term==='string').map((term)=>clean(term,64).toLowerCase()).filter((term)=>term.length>=3))]:[];
+    if(!/^[a-z0-9_-]{2,40}$/u.test(id)||seen.has(id)||!label||!['poll','quest','challenge'].includes(String(actionType))||!terms.length||terms.length>100)
+      throw new Error('Topic-ID, Bezeichnung, Aktion oder Keywords ungültig.');
+    seen.add(id); return {id,label,actionType:actionType as SparkActionType,terms};
+  });
+}
 
 function normalizeQuestSettings(input: unknown, current: DashboardQuestSettings): Record<string, unknown> {
   const allowed = new Set(['enabled','chatEnabled','channelPointsEnabled','maxLength','queueLimit','maxOpenPerUser','cooldownMs',

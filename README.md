@@ -33,6 +33,7 @@ oder Sachpreisverlosungen.
   Lesetokens
 - Persistenter, typisierter Community-Event-Feed mit authentifiziertem SSE-Endpunkt
   als Grundlage für spätere OBS-Overlays
+- Optionaler, regelbasierter Gesprächs-Funken für gemeinsame Gaming-Themen; standardmäßig deaktiviert, mit Moderatorfreigabe und ohne gespeicherte Chatinhalte
 - Versionierte SQLite-Migrationen im WAL-Modus; vorhandene Halloween-Punkte und
   Cooldowns werden übernommen und nicht zurückgesetzt
 - Docker-/Compose-Betrieb für ARM64, Healthcheck, persistente Volumes,
@@ -158,6 +159,38 @@ Umfrage sichtbar ist, blendet sich die Browserquelle aus. Der Browser-Widget-
 Endpunkt muss von OBS über dieselbe erreichbare HTTPS-Adresse aufrufbar sein;
 bei rein lokalem Dashboard funktioniert er nur auf diesem Rechner.
 
+## Gesprächs-Funken (Conversation Spark)
+
+Der optionale Gesprächs-Funken wertet ausschließlich normale Nachrichten im
+konfigurierten Jannik-Kanal aus. Befehle, Nachrichten aus anderen Kanälen und
+der Broadcaster selbst fließen nicht in die Erkennung ein. Ein regelbasierter
+Abgleich nutzt die eingebauten Gaming-Themen (Fortnite, Minecraft, Elden Ring
+und allgemeine Challenges) sowie optionale eigene Keyword-Regeln. Es werden
+keine Nachrichteninhalte oder Teilnehmerlisten für Spark gespeichert; Topic-
+Aktivität bleibt während des begrenzten Zeitfensters im Arbeitsspeicher. Die
+SQLite-Vorschläge enthalten nur Kanal-/Themenkennung, Score, ungefähre Anzahl
+von Teilnehmenden/Nachrichten, Aktionstyp, Status und Ablaufzeit und werden
+nach konfigurierbarer Aufbewahrung bereinigt. Andere Bot-Funktionen, etwa das
+bereits bestehende XP-System, haben ihre eigenen Speicherregeln.
+
+Spark ist nach Installation ausgeschaltet. Jannik aktiviert es im geschützten
+Dashboard unter „Gesprächs-Funken“, passt Zeitfenster, Mindestteilnehmer,
+Nachrichten, Score, Cooldowns, Ablauf und Topics an und entscheidet, ob ein
+Hinweis zusätzlich im Chat erscheinen darf (standardmäßig aus). Der Standard
+ist 10 Minuten, 3 Personen, 5 passende Nachrichten und Score 12. Ein Fund
+startet niemals automatisch eine Aktion: Ein Moderator kann den Vorschlag im
+Chat freigeben, eine Abstimmung oder Quest muss anschließend ausdrücklich im
+Dashboard angelegt werden. Abstimmungen/Quest-Erstellung unterliegen zusätzlich
+den jeweiligen bestehenden Modul- und Freigaberegeln. Für eine spätere
+semantische/Embedding-Erweiterung ist weder ein externer KI-Dienst noch eine
+Übermittlung von Chattext vorgesehen.
+
+Vor Aktivierung muss der Betreiber die Community transparent über die optionale
+regelbasierte Verarbeitung der Gaming-Themen informieren und prüfen, ob die
+konkrete Datenschutzerklärung diese Funktion abdeckt. Bis dahin Spark
+deaktiviert lassen. Streamer kann jederzeit `!sparkpause` und `!sparkresume`
+verwenden; der Dashboard-Schalter aktiviert/deaktiviert die Erkennung.
+
 ## Befehle
 
 | Befehl | Wirkung / Berechtigung |
@@ -178,6 +211,9 @@ bei rein lokalem Dashboard funktioniert er nur auf diesem Rechner.
 | `!quest AUFGABE`, `!quests`, `!myquest`, `!questhelp` | Quest vorschlagen bzw. Status und Regeln ansehen; Vorschläge erscheinen erst nach Freigabe |
 | `!questqueue`, `!approvequest ID`, `!rejectquest ID` | Optional für Jannik und explizit konfigurierte Mods; die Chat-Warteschlange zeigt nur IDs, den Vorschlagstext vorher im Dashboard prüfen |
 | `!skipquest` | Jannik; Mods nur bei ausdrücklich freigeschalteter Moderator-ID und passender Einstellung |
+| `!spark`, `!sparkhelp`, `!sparks`, `!sparktopics` | Status, Hilfe, Anzahl offener Vorschläge und flüchtige Topic-Aggregate |
+| `!sparkapprove ID`, `!sparkreject ID` | Jannik oder Twitch-Moderatoren; Freigabe erstellt noch keine Umfrage/Quest |
+| `!sparkpause`, `!sparkresume` | Nur Jannik; pausiert bzw. setzt die Erkennung fort |
 | `!poll`, `!vote 1–5`, `!pollresults` | Botinterne Umfrage ansehen, abstimmen und Ergebnisse lesen; Erstellen/Beenden im Dashboard |
 
 ## Docker und Oracle Cloud ARM64
@@ -259,7 +295,9 @@ SQLite-Migration samt Sicherung, Quest-Freigabe/Rollen/Cooldown/Übergänge und
 einmalige XP-Belohnung, Abstimmungsänderungen/Deduplizierung/Gleichstände/
 Neustart, Quest-Abstimmungen, Dashboard-OAuth-Allowlist/Sessions/CSRF,
 Widget-Token und OBS-Snapshots sowie die bisherigen Minispiele ab. Twitch- und
-Dashboard-OAuth werden simuliert; keine echten Chatnachrichten werden gesendet.
+Dashboard-OAuth werden simuliert; Spark-Regeln, Schwellen, Deduplizierung,
+Cooldowns, Rollen und Vorschlagsabläufe werden isoliert getestet. Keine echten
+Chatnachrichten werden gesendet.
 
 Ein öffentlicher Oracle-Deploy oder ein echter Twitch-Kanaltest wird nicht
 automatisch ausgelöst. Vor dem Livegang müssen die Twitch-App, Redirect-URLs,

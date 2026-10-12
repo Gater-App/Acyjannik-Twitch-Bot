@@ -153,7 +153,8 @@ test('SQLite-Migration sichert die vorherige Datenbank und erhält Halloween-Pun
       DROP TABLE quest_cooldowns; DROP TABLE quests;
       DELETE FROM feature_config WHERE key IN ('quest_settings','poll_settings','widget_settings');
       UPDATE feature_config SET value='{"xp":true}' WHERE key='modules';
-      DELETE FROM schema_migrations WHERE version=2;`);
+      DROP TABLE spark_proposals; DROP TABLE spark_cooldowns;
+      DELETE FROM schema_migrations WHERE version=3;`);
     raw.close();
     const before = fs.readdirSync(path.join(directory, 'backups')).length;
     store = new FeatureStore(databasePath);
@@ -164,7 +165,7 @@ test('SQLite-Migration sichert die vorherige Datenbank und erhält Halloween-Pun
     const newest = path.join(directory, 'backups', backups.sort().at(-1)!);
     assert.equal(fs.statSync(newest).mode & 0o777, 0o600);
     const backup = new BetterSqlite3(newest, { readonly: true });
-    assert.equal((backup.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='quests'").get() as { n: number }).n, 0);
+    assert.equal((backup.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='spark_proposals'").get() as { n: number }).n, 0);
     backup.close();
   } finally {
     try { store.close(); } catch { /* A prior assertion may already have closed the connection. */ }

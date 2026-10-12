@@ -81,6 +81,25 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.match(page.headers.get('content-security-policy') || '', /nonce-/u);
     assert.doesNotMatch(page.headers.get('content-security-policy') || '', /unsafe-inline/u);
 
+    const sparkResponse = await fetch(`${base}/dashboard/api/spark`, { headers: { Cookie: sessionCookie } });
+    assert.equal(sparkResponse.status, 200);
+    const sparkData = await sparkResponse.json() as { settings: { enabled: boolean }; pending: number };
+    assert.equal(sparkData.settings.enabled, false, 'Conversation Spark must default to disabled');
+    const sparkProposal = store.createSparkProposal({ id: 'dashboard-spark-test', channelId: 'channel-id', topicId: 'fortnite',
+      topicLabel: 'Fortnite', score: 15, participants: 3, messages: 5, actionType: 'poll', createdAt: Date.now(), expiresAt: Date.now() + 60_000 }, 5, 60_000, 120_000);
+    assert.ok(sparkProposal);
+    const sparkApprove = await fetch(`${base}/dashboard/api/spark/action`, {
+      method: 'POST', headers: { Cookie: sessionCookie, Origin: `http://localhost:${port}`, 'X-CSRF-Token': csrf, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: sparkProposal.id, action: 'approve' }),
+    });
+    assert.equal(sparkApprove.status, 200, await sparkApprove.clone().text());
+    const sparkPoll = await fetch(`${base}/dashboard/api/spark/action`, {
+      method: 'POST', headers: { Cookie: sessionCookie, Origin: `http://localhost:${port}`, 'X-CSRF-Token': csrf, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: sparkProposal.id, action: 'create-poll', question: 'Welche Runde?', options: ['Ranked', 'Casual'], durationSeconds: 60 }),
+    });
+    assert.equal(sparkPoll.status, 201, await sparkPoll.clone().text());
+    assert.equal(store.sparkProposal(sparkProposal.id)?.status, 'executed');
+
     const moduleChange = await fetch(`${base}/dashboard/api/modules`, {
       method: 'POST', headers: { Cookie: sessionCookie, Origin: `http://localhost:${port}`, 'X-CSRF-Token': csrf, 'Content-Type': 'application/json' },
       body: JSON.stringify({ key: 'xp', enabled: false }),

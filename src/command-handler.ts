@@ -31,14 +31,16 @@ export class CommandHandler {
     if (message.broadcasterUserId !== this.config.broadcasterUserId) return [];
     if (!this.database.markEventProcessed(message.eventId, now)) return [];
     this.community?.tick(now);
+    const reply = (text: string): CommandReply[] => [{ message: clampChatMessage(text, this.config.appChatMessageLength), ...(message.messageId ? { replyParentMessageId: message.messageId } : {}) }];
     const words = message.message.trim().split(/\s+/u);
     const rawCommand = words.shift();
-    if (!rawCommand?.startsWith('!')) { this.community?.observeActivity(message, now); return []; }
+    if (!rawCommand?.startsWith('!')) {
+      const sparkSuggestion = this.community?.observeActivity(message, now);
+      return sparkSuggestion ? reply(sparkSuggestion) : [];
+    }
     const command = rawCommand.slice(1).toLowerCase();
     const args = words;
     const name = cleanName(message.senderDisplayName);
-    const reply = (text: string): CommandReply[] => [{ message: clampChatMessage(text, this.config.appChatMessageLength), ...(message.messageId ? { replyParentMessageId: message.messageId } : {}) }];
-
     switch (command) {
       case 'trickortreat': return reply(this.trickOrTreat(name, message.senderUserId, now));
       case 'pumpkins': return reply(`🎃 ${name} hat ${this.game.pumpkins(message.senderUserId)} Kürbisse.`);
