@@ -1,0 +1,45 @@
+import type { AppConfig } from './types.js';
+
+export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
+  return {
+    testMode: true,
+    clientId: 'test-client',
+    clientSecret: 'test-secret',
+    channelLogin: 'yannick',
+    botLogin: 'test-bot',
+    broadcasterUserId: 'broadcaster-1',
+    botUserId: 'bot-1',
+    redirectUri: 'http://127.0.0.1:3000/oauth/callback',
+    oauthHost: '127.0.0.1',
+    oauthPort: 3000,
+    oauthStateTtlMs: 600_000,
+    oauthScopes: ['user:read:chat', 'user:write:chat'],
+    tokenFile: 'data/oauth-tokens.json',
+    databasePath: ':memory:',
+    activeOnStart: true,
+    authorizedModeratorIds: ['mod-1'],
+    cooldownMs: 15 * 60 * 1000,
+    eventWeights: { TREAT: 1, TRICK: 0, JACKPOT: 0, GHOST: 0, WITCH: 0, EMPTY_HOUSE: 0, GOLDEN_PUMPKIN: 0 },
+    gameValues: {
+      treat: { min: 5, max: 20 },
+      trick: { min: 1, max: 10 },
+      jackpot: { min: 25, max: 50 },
+      ghost: { min: 1, max: 10 },
+      witch: { min: 10, max: 25 },
+      goldenPumpkin: { min: 50, max: 100 },
+    },
+    texts: {
+      treat: 'TREAT {name} +{points}',
+      trick: 'TRICK {name} -{points}',
+      jackpot: 'JACKPOT {name} +{points}',
+      ghost: 'GHOST {name} -{points}',
+      witch: 'WITCH {name} +{points}',
+      emptyHouse: 'EMPTY {name}',
+      goldenPumpkin: 'GOLDEN {name} +{points}',
+    },
+    maxChatMessageLength: 500,
+    appChatMessageLength: 450,
+    sendQueueIntervalMs: 0,
+    ...overrides,
+  };
+}

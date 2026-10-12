@@ -1,0 +1,30 @@
+{
+  "name": "twitch-halloween-bot-yannick",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Schlanker Twitch-Halloween-Chatbot für Yannick",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "dev": "tsx src/main.ts",
+    "test-mode": "tsx src/main.ts --test",
+    "test": "node --import tsx --test src/*.test.ts",
+    "check": "npm run build && npm test"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.4.1",
+    "dotenv": "^17.2.2",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.7.2",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.3"
+  }
+}
