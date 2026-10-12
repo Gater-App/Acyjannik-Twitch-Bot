@@ -26,14 +26,14 @@ async function runTestMode(): Promise<void> {
   const handler = new CommandHandler(database, game, config, undefined, community);
   let eventNumber = 0;
   const input = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: false });
-  logger.info('Testmodus aktiv. Eingabe: userId|Anzeigename|!befehl (ohne Präfix = Yannick).');
+  logger.info('Testmodus aktiv. Eingabe: userId|Anzeigename|!befehl (ohne Präfix = Jannik).');
   logger.info('Beispiel: !startHalloween oder alice|Alice|!trickortreat');
   try {
     for await (const line of input) {
       const fields = line.split('|');
       const [senderUserId, senderDisplayName, message] = fields.length >= 3
         ? [fields[0] || 'test-user', fields[1] || fields[0] || 'TestUser', fields.slice(2).join('|')]
-        : [config.broadcasterUserId, 'Yannick', line];
+        : [config.broadcasterUserId, 'Jannik', line];
       const chatMessage: ChatMessage = {
         eventId: `test-${++eventNumber}`,
         messageId: `test-message-${eventNumber}`,
@@ -102,6 +102,11 @@ async function runLiveMode(): Promise<void> {
     channel: config.channelLogin,
     startedAt: botStartedAt,
   }), logger);
+  const featureTicker = setInterval(() => {
+    try { community.tick(); }
+    catch (error) { logger.error('Quest-/Umfrage-Timer konnte nicht aktualisiert werden.', { error: error instanceof Error ? error.message : 'unbekannt' }); }
+  }, 1000);
+  featureTicker.unref();
 
   try {
     await oauth.initialize(config.accessToken, config.refreshToken);
@@ -123,6 +128,7 @@ async function runLiveMode(): Promise<void> {
     await dashboard.start();
     eventsub.start();
   } catch (error) {
+    clearInterval(featureTicker);
     await eventsub.stop();
     await dashboard.stop();
     await oauthServer.stop();
@@ -132,6 +138,7 @@ async function runLiveMode(): Promise<void> {
   }
 
   const shutdown = async () => {
+    clearInterval(featureTicker);
     await eventsub.stop();
     await dashboard.stop();
     await oauthServer.stop();

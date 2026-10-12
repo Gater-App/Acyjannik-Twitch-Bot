@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import test from 'node:test';
+import vm from 'node:vm';
 import { DashboardServer } from './dashboard.js';
 import { FeatureStore } from './feature-store.js';
 import { logger } from './logger.js';
@@ -16,9 +17,15 @@ async function freePort(): Promise<number> {
   return port;
 }
 
+function assertInlineScriptsParse(html: string): void {
+  const scripts = [...html.matchAll(/<script nonce="[^"]+">([\s\S]*?)<\/script>/gu)];
+  assert.ok(scripts.length > 0, 'Nonce-geschütztes Dashboard-/Widget-Script muss vorhanden sein');
+  for (const [, source] of scripts) new vm.Script(source || '');
+}
+
 test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-API', async () => {
   const env = { ...process.env };
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'yannick-dashboard-'));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'jannik-dashboard-'));
   const store = new FeatureStore(path.join(directory, 'bot.sqlite'));
   const port = await freePort();
   process.env.TWITCH_CLIENT_ID = 'test-client'; process.env.TWITCH_CLIENT_SECRET = 'test-secret';
@@ -68,6 +75,7 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     const page = await fetch(`${base}/dashboard`, { headers: { Cookie: sessionCookie } });
     assert.equal(page.status, 200);
     const html = await page.text();
+    assertInlineScriptsParse(html);
     const csrf = html.match(/name="csrf" content="([a-f0-9]+)"/u)?.[1] || '';
     assert.ok(csrf);
     assert.match(page.headers.get('content-security-policy') || '', /nonce-/u);
@@ -87,13 +95,75 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
       method: 'POST', headers: { Cookie: sessionCookie, Origin: `http://localhost:${port}`, 'X-CSRF-Token': csrf, 'Content-Type': 'application/json' },
       body: JSON.stringify(settings),
     });
-    assert.equal(updateSettings.status, 200);
+    assert.equal(updateSettings.status, 200, await updateSettings.clone().text());
     assert.equal(store.config<Record<string, number>>('xp_settings', {}).levelBase, 200);
+    assert.equal(store.config<Record<string, unknown>>('quest_settings', {}).maxLength, 180);
+    assert.equal(store.config<Record<string, unknown>>('poll_settings', {}).durationMs, 60_000);
+
+    const policy = { maxLength: 180, queueLimit: 20, maxOpenPerUser: 2, cooldownMs: 60_000, activeDurationMs: 0, completionXp: 25 };
+    const quest = store.submitQuest({ submitterUserId: 'viewer-id', displayName: 'Viewer', title: 'Nächste Runde nur Pistolen', source: 'chat' }, policy, Date.now());
+    assert.equal(quest.ok, true);
+    if (!quest.ok) throw new Error('Widget-Testquest konnte nicht erstellt werden.');
+    store.transitionQuest(quest.quest.id, 'approved', 'admin-id', Date.now(), policy);
+    store.transitionQuest(quest.quest.id, 'active', 'admin-id', Date.now(), policy);
+    const tokenResponse = await fetch(`${base}/dashboard/api/widgets/token`, {
+      method: 'POST', headers: { Cookie: sessionCookie, Origin: `http://localhost:${port}`, 'X-CSRF-Token': csrf, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'quest', action: 'rotate' }),
+    });
+    assert.equal(tokenResponse.status, 201);
+    const tokenData = await tokenResponse.json() as { url: string };
+    const widgetToken = new URL(tokenData.url).searchParams.get('token') || '';
+    assert.ok(widgetToken.length >= 40);
+    const widgetBase = `${base}/widgets`;
+    const widgetPage = await fetch(`${widgetBase}/quest?token=${widgetToken}`);
+    assert.equal(widgetPage.status, 200);
+    assert.match(widgetPage.headers.get('content-security-policy') || '', /connect-src 'self'/u);
+    const widgetHtml = await widgetPage.text();
+    assert.match(widgetHtml, /LIVE-QUEST/u);
+    assertInlineScriptsParse(widgetHtml);
+    const widgetSnapshotResponse = await fetch(`${widgetBase}/api/quest?token=${widgetToken}`);
+    assert.equal(widgetSnapshotResponse.status, 200);
+    const widgetSnapshot = await widgetSnapshotResponse.json() as { visible: boolean; quest: Record<string, unknown> };
+    assert.equal(widgetSnapshot.visible, true);
+    assert.equal(widgetSnapshot.quest.title, 'Nächste Runde nur Pistolen');
+    assert.equal('submitterUserId' in widgetSnapshot.quest, false);
+    assert.equal((await fetch(`${widgetBase}/api/poll?token=${widgetToken}`)).status, 404, 'Quest-Token darf kein Poll-Widget lesen');
+    const streamController = new AbortController();
+    const widgetStream = await fetch(`${widgetBase}/stream/quest?token=${widgetToken}`, { signal: streamController.signal });
+    assert.equal(widgetStream.headers.get('content-type')?.startsWith('text/event-stream'), true);
+    const widgetChunk = await widgetStream.body?.getReader().read();
+    assert.match(new TextDecoder().decode(widgetChunk?.value), /snapshot/u, 'Widget-Neuverbindung bekommt sofort einen Snapshot');
+    await streamController.abort();
+    const tokenRevoke = await fetch(`${base}/dashboard/api/widgets/token`, {
+      method: 'POST', headers: { Cookie: sessionCookie, Origin: `http://localhost:${port}`, 'X-CSRF-Token': csrf, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'quest', action: 'revoke' }),
+    });
+    assert.equal(tokenRevoke.status, 200);
+    assert.equal((await fetch(`${widgetBase}/api/quest?token=${widgetToken}`)).status, 404, 'widerrufene Widget-URL ist sofort ungültig');
+
+    const disablePolls = await fetch(`${base}/dashboard/api/modules`, {
+      method: 'POST', headers: { Cookie: sessionCookie, Origin: `http://localhost:${port}`, 'X-CSRF-Token': csrf, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: 'polls', enabled: false }),
+    });
+    assert.equal(disablePolls.status, 200);
+    const blockedPollStart = await fetch(`${base}/dashboard/api/polls`, {
+      method: 'POST', headers: { Cookie: sessionCookie, Origin: `http://localhost:${port}`, 'X-CSRF-Token': csrf, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: 'Welche Option?', options: ['A', 'B'], durationSeconds: 60 }),
+    });
+    assert.equal(blockedPollStart.status, 409, 'deaktivierte Umfragen können auch im Dashboard nicht gestartet werden');
+
     const invalidSettings = await fetch(`${base}/dashboard/api/settings`, {
       method: 'POST', headers: { Cookie: sessionCookie, Origin: `http://localhost:${port}`, 'X-CSRF-Token': csrf, 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...settings, game_settings: { ...settings.game_settings, guessMax: settings.game_settings.guessMin } }),
     });
     assert.equal(invalidSettings.status, 400);
+    const channelPointsSettings = await fetch(`${base}/dashboard/api/settings`, { headers: { Cookie: sessionCookie } }).then((response) => response.json()) as Record<string, any>;
+    channelPointsSettings.quest_settings.channelPointsEnabled = true;
+    const unsupportedChannelPoints = await fetch(`${base}/dashboard/api/settings`, {
+      method: 'POST', headers: { Cookie: sessionCookie, Origin: `http://localhost:${port}`, 'X-CSRF-Token': csrf, 'Content-Type': 'application/json' },
+      body: JSON.stringify(channelPointsSettings),
+    });
+    assert.equal(unsupportedChannelPoints.status, 400, 'nicht angebundene Kanalpunkte-Redemptions bleiben explizit deaktiviert');
     const badCsrf = await fetch(`${base}/dashboard/api/modules`, {
       method: 'POST', headers: { Cookie: sessionCookie, Origin: `http://localhost:${port}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ key: 'xp', enabled: true }),

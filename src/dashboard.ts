@@ -1,23 +1,27 @@
 import http from 'node:http';
-import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { URL } from 'node:url';
 import type { AddressInfo } from 'node:net';
-import { FeatureStore, type CustomCommand, type SeasonalEvent } from './feature-store.js';
+import { FeatureStore, type CustomCommand, type QuestPolicy, type QuestStatus, type SeasonalEvent, type WidgetType } from './feature-store.js';
+import { communityWidgetHtml, QUEST_POLL_CARD, QUEST_POLL_SCRIPT } from './dashboard-community-ui.js';
 import type { Logger } from './logger.js';
 
 interface Session { userId: string; login: string; csrf: string; expiresAt: number; }
 interface RuntimeStatus { twitchConnected: boolean; channel: string; startedAt: number; lastError?: string; }
 interface TokenValidation { client_id: string; user_id: string; login: string; }
 interface HelixUser { id: string; login: string; display_name: string; }
+type DashboardQuestSettings = QuestPolicy & { enabled: boolean; chatEnabled: boolean; channelPointsEnabled: boolean;
+  modsCanModerate: boolean; modsCanSkip: boolean; moderatorUserIds: string[] };
+type DashboardPollSettings = { enabled: boolean; durationMs: number; allowVoteChange: boolean; ignoredUserIds: string[] };
 
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const PAGE = `<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="csrf" content="__CSRF__"><title>Community Bot · Admin</title><style nonce="__NONCE__">
-:root{color-scheme:dark;font:16px system-ui,sans-serif;background:#11131b;color:#eef0f8}body{margin:0;background:radial-gradient(ellipse at top right,#30234a 0,transparent 35%),#11131b}main{max-width:1100px;margin:auto;padding:28px 20px}h1{margin:0 0 8px}p{color:#aeb2c3}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin:20px 0}.card{background:#1b1e29;border:1px solid #333746;border-radius:14px;padding:18px}.accent{color:#c0a0ff}input,select,textarea,button{font:inherit;color:inherit;background:#10121a;border:1px solid #44495d;border-radius:8px;padding:10px;max-width:100%;box-sizing:border-box}textarea{width:100%;min-height:70px}button{background:#7652bd;border:0;cursor:pointer;margin:4px 2px}button:hover{background:#8d6bd1}label{display:block;margin:9px 0;color:#c7cad6}pre{white-space:pre-wrap;overflow-wrap:anywhere;color:#cbd0e0}form{display:grid;gap:8px}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.muted{color:#979caf;font-size:.9rem}#notice{min-height:1.4rem;color:#ffc987}@media(max-width:520px){main{padding:18px 12px}.card{padding:14px}}
+:root{color-scheme:dark;font:16px system-ui,sans-serif;background:#11131b;color:#eef0f8}body{margin:0;background:radial-gradient(ellipse at top right,#30234a 0,transparent 35%),#11131b}main{max-width:1100px;margin:auto;padding:28px 20px}h1{margin:0 0 8px}p{color:#aeb2c3}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin:20px 0}.card{background:#1b1e29;border:1px solid #333746;border-radius:14px;padding:18px}.accent{color:#c0a0ff}input,select,textarea,button{font:inherit;color:inherit;background:#10121a;border:1px solid #44495d;border-radius:8px;padding:10px;max-width:100%;box-sizing:border-box}textarea{width:100%;min-height:70px}button{background:#7652bd;border:0;cursor:pointer;margin:4px 2px}button:hover{background:#8d6bd1}label{display:block;margin:9px 0;color:#c7cad6}pre{white-space:pre-wrap;overflow-wrap:anywhere;color:#cbd0e0}form{display:grid;gap:8px}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.muted{color:#979caf;font-size:.9rem}#notice{min-height:1.4rem;color:#ffc987}.preview-widget{margin:12px 0;padding:14px;border:1px solid #b69cff;border-left:5px solid #b69cff;border-radius:12px;background:linear-gradient(130deg,rgba(19,22,32,.96),rgba(42,34,57,.9));overflow-wrap:anywhere}.preview-widget p{margin:8px 0;color:#eef0f8}.preview-widget small{color:#b6b8c6}@media(max-width:520px){main{padding:18px 12px}.card{padding:14px}}
 </style></head><body><main><div class="row"><div><h1>Community Bot <span class="accent">Admin</span></h1><p id="who">Geschützte Verwaltung</p></div><button id="logout">Abmelden</button></div><p id="notice" role="status"></p><section class="grid"><article class="card"><h2>Übersicht</h2><pre id="overview">Lade Status …</pre></article><article class="card"><h2>Module</h2><div id="modules"></div></article><article class="card"><h2>Saison-Events</h2><div id="events"></div><form id="event-form"><input name="id" placeholder="ID, z. B. summer" required pattern="[a-z0-9_-]{2,40}"><input name="name" placeholder="Name" required><input name="emoji" placeholder="Emoji" value="✨"><input name="command" placeholder="Befehl, z. B. summerhunt" required><input name="currency" placeholder="Punktewährung" required><input name="cooldownMs" type="number" min="0" value="900000"><button>Event anlegen/aktualisieren</button></form></article><article class="card"><h2>XP-Korrektur</h2><form id="xp-form"><input name="userId" placeholder="Twitch User-ID" required><input name="amount" type="number" placeholder="XP + / -" required><input name="reason" placeholder="Begründung" required maxlength="200"><button>Korrektur protokollieren</button></form><p class="muted">Korrekturen sind begrenzt und werden auditiert.</p></article><article class="card"><h2>Chatbefehle</h2><pre id="commands"></pre><form id="command-form"><input name="name" placeholder="Befehlsname" required><textarea name="response" placeholder="Antwort; Platzhalter: {user}, {channel}, {game}, {uptime}" required></textarea><select name="permission"><option value="everyone">Alle</option><option value="moderator">Moderatoren</option><option value="broadcaster">Broadcaster</option></select><input name="cooldownMs" type="number" min="0" value="10000"><button>Befehl speichern</button></form></article><article class="card"><h2>Nutzer</h2><form id="users-form"><input name="q" placeholder="Name oder ID suchen"><button>Suchen</button></form><pre id="users"></pre></article></section></main><script nonce="__NONCE__">
 const csrf=document.querySelector('meta[name=csrf]').content,notice=document.querySelector('#notice');async function api(path,method='GET',data){const r=await fetch('/dashboard/api/'+path,{method,headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},...(data?{body:JSON.stringify(data)}:{})});const d=await r.json().catch(()=>({error:'Ungültige Serverantwort'}));if(!r.ok)throw Error(d.error||'Anfrage fehlgeschlagen');return d}function show(text){notice.textContent=text;setTimeout(()=>notice.textContent='',5000)}async function refresh(){try{const d=await api('overview');document.querySelector('#who').textContent='Angemeldet als '+d.admin.login;document.querySelector('#overview').textContent=JSON.stringify(d.status,null,2);const mods=document.querySelector('#modules');mods.replaceChildren();for(const [key,on] of Object.entries(d.status.modules||{})){const label=document.createElement('label'),box=document.createElement('input');box.type='checkbox';box.checked=Boolean(on);box.addEventListener('change',async()=>{try{await api('modules','POST',{key,enabled:box.checked});show('Modul gespeichert.')}catch(e){box.checked=!box.checked;show(e.message)}});label.append(box,' '+key);mods.append(label)}const ev=await api('events');const box=document.querySelector('#events');box.replaceChildren();for(const event of ev.events){const line=document.createElement('div'),text=document.createElement('span');text.textContent=event.emoji+' '+event.name+' · '+(event.active?'aktiv':'inaktiv')+' ';line.append(text);const b=document.createElement('button');b.textContent=event.active?'Beenden':'Starten';b.onclick=async()=>{try{await api('events','POST',{id:event.id,active:!event.active});show('Eventstatus gespeichert.');refresh()}catch(e){show(e.message)}};line.append(b);box.append(line)}const c=await api('commands');document.querySelector('#commands').textContent=JSON.stringify(c.commands,null,2)}catch(e){show(e.message)}}document.querySelector('#event-form').onsubmit=async e=>{e.preventDefault();const v=Object.fromEntries(new FormData(e.currentTarget));v.cooldownMs=Number(v.cooldownMs);try{await api('events','POST',v);show('Event gespeichert.');e.currentTarget.reset();refresh()}catch(x){show(x.message)}};document.querySelector('#xp-form').onsubmit=async e=>{e.preventDefault();const v=Object.fromEntries(new FormData(e.currentTarget));v.amount=Number(v.amount);try{await api('xp-adjust','POST',v);show('XP-Korrektur protokolliert.');e.currentTarget.reset()}catch(x){show(x.message)}};document.querySelector('#command-form').onsubmit=async e=>{e.preventDefault();const v=Object.fromEntries(new FormData(e.currentTarget));v.cooldownMs=Number(v.cooldownMs);try{await api('commands','POST',v);show('Chatbefehl gespeichert.');refresh()}catch(x){show(x.message)}};document.querySelector('#users-form').onsubmit=async e=>{e.preventDefault();const v=new FormData(e.currentTarget);try{const u=await api('users?q='+encodeURIComponent(v.get('q')||''));document.querySelector('#users').textContent=JSON.stringify(u.users,null,2)}catch(x){show(x.message)}};document.querySelector('#logout').onclick=async()=>{try{await api('logout','POST',{});location.reload()}catch(e){show(e.message)}};refresh();setInterval(refresh,15000);
 </script></body></html>`;
 
-const SETTINGS_CARD = `<article class="card"><h2>XP, Spiele & Eventregeln</h2><p class="muted">Erweiterte Werte als JSON bearbeiten. Änderungen werden geprüft und protokolliert.</p><form id="settings-form"><textarea id="settings-json" rows="14" spellcheck="false" aria-label="Bot-Einstellungen als JSON"></textarea><button>Einstellungen speichern</button></form></article><article class="card"><h2>Community-Boss</h2><form id="boss-form"><input name="name" placeholder="Bossname" value="Schattenkönig"><input name="hp" type="number" min="1" value="1000"><input name="durationMs" type="number" min="60000" value="900000"><button>Bosskampf starten</button></form><button id="boss-end">Bosskampf beenden</button></article><article class="card"><h2>Eigene Chatbefehle verwalten</h2><div id="command-manager"></div></article>`;
+const SETTINGS_CARD = `<article class="card"><h2>XP, Spiele, Events & Community</h2><p class="muted">Erweiterte Werte als JSON bearbeiten. Änderungen werden geprüft und protokolliert.</p><form id="settings-form"><textarea id="settings-json" rows="14" spellcheck="false" aria-label="Bot-Einstellungen als JSON"></textarea><button>Einstellungen speichern</button></form></article><article class="card"><h2>Community-Boss</h2><form id="boss-form"><input name="name" placeholder="Bossname" value="Schattenkönig"><input name="hp" type="number" min="1" value="1000"><input name="durationMs" type="number" min="60000" value="900000"><button>Bosskampf starten</button></form><button id="boss-end">Bosskampf beenden</button></article><article class="card"><h2>Eigene Chatbefehle verwalten</h2><div id="command-manager"></div></article>`;
 const SETTINGS_SCRIPT = `api('settings').then(s=>document.querySelector('#settings-json').value=JSON.stringify(s,null,2)).catch(e=>show(e.message));document.querySelector('#settings-form').onsubmit=async e=>{e.preventDefault();try{const value=JSON.parse(document.querySelector('#settings-json').value);await api('settings','POST',value);show('Einstellungen gespeichert.')}catch(x){show(x.message)}};document.querySelector('#boss-form').onsubmit=async e=>{e.preventDefault();const v=Object.fromEntries(new FormData(e.currentTarget));v.hp=Number(v.hp);v.durationMs=Number(v.durationMs);try{await api('boss','POST',v);show('Bosskampf gestartet.');refresh()}catch(x){show(x.message)}};document.querySelector('#boss-end').onclick=async()=>{try{await api('boss','POST',{action:'end'});show('Bosskampf beendet.');refresh()}catch(x){show(x.message)}};async function renderCommandAdmin(){try{const c=await api('commands'),root=document.querySelector('#command-manager');root.replaceChildren();for(const command of c.commands){const row=document.createElement('div'),name=document.createElement('span');name.textContent='!'+command.name+(command.alias?' ('+command.alias+')':'')+' · '+(command.enabled?'aktiv':'inaktiv')+' ';row.append(name);const edit=document.createElement('button');edit.textContent='Bearbeiten';edit.onclick=()=>{const f=document.querySelector('#command-form');f.elements.namedItem('name').value=command.name;f.elements.namedItem('response').value=command.response;f.elements.namedItem('permission').value=command.permission;f.elements.namedItem('cooldownMs').value=command.cooldownMs;f.scrollIntoView({behavior:'smooth',block:'center'})};row.append(edit);const toggle=document.createElement('button');toggle.textContent=command.enabled?'Deaktivieren':'Aktivieren';toggle.onclick=async()=>{try{await api('commands','POST',{...command,enabled:!command.enabled});show('Chatbefehl geändert.');renderCommandAdmin()}catch(x){show(x.message)}};row.append(toggle);const del=document.createElement('button');del.textContent='Löschen';del.onclick=async()=>{try{await api('commands/delete','POST',{name:command.name});show('Chatbefehl gelöscht.');renderCommandAdmin()}catch(x){show(x.message)}};row.append(del);root.append(row)}}catch(x){show(x.message)}}renderCommandAdmin();setInterval(renderCommandAdmin,15000);`;
 
 export class DashboardServer {
@@ -26,6 +30,7 @@ export class DashboardServer {
   private readonly states = new Map<string, number>();
   private readonly rates = new Map<string, { count: number; resets: number }>();
   private readonly eventStreams = new Map<http.ServerResponse, NodeJS.Timeout>();
+  private readonly widgetStreams = new Map<http.ServerResponse, NodeJS.Timeout>();
   private readonly adminIds: Set<string>;
   private readonly clientId = process.env.TWITCH_CLIENT_ID?.trim() || '';
   private readonly clientSecret = process.env.TWITCH_CLIENT_SECRET?.trim() || '';
@@ -65,6 +70,8 @@ export class DashboardServer {
     if (!this.server) return;
     for (const [response, timer] of this.eventStreams) { clearInterval(timer); response.end(); }
     this.eventStreams.clear();
+    for (const [response, timer] of this.widgetStreams) { clearInterval(timer); response.end(); }
+    this.widgetStreams.clear();
     await new Promise<void>((resolve) => this.server!.close(() => resolve()));
     this.server = undefined;
     this.sessions.clear();
@@ -89,9 +96,11 @@ export class DashboardServer {
       const nonce = randomBytes(18).toString('base64');
       res.setHeader('Content-Security-Policy', `default-src 'self'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`);
       res.statusCode = 200; res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      const page = PAGE.replace('</section></main>', `${SETTINGS_CARD}</section></main>`).replace('</script>', `${SETTINGS_SCRIPT}</script>`);
+      const page = PAGE.replace('</section></main>', `${SETTINGS_CARD}${QUEST_POLL_CARD}</section></main>`)
+        .replace('</script>', `${SETTINGS_SCRIPT}${QUEST_POLL_SCRIPT}</script>`);
       res.end(page.replaceAll('__CSRF__', session.csrf).replaceAll('__NONCE__', nonce)); return;
     }
+    if (url.pathname.startsWith('/widgets/')) { await this.widgetRoute(url, req, res); return; }
     if (url.pathname.startsWith('/dashboard/api/')) {
       const session = this.authenticate(req, res, true); if (!session) return;
       if (req.method !== 'GET' && !this.checkCsrf(req, session)) { this.json(res, 403, { error: 'CSRF-Prüfung fehlgeschlagen.' }); return; }
@@ -99,6 +108,50 @@ export class DashboardServer {
     }
     if (url.pathname === '/healthz' && req.method === 'GET') { this.json(res, 200, { ok: true }); return; }
     this.json(res, 404, { error: 'Nicht gefunden.' });
+  }
+
+  private async widgetRoute(url: URL, req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    if (req.method !== 'GET') { this.json(res, 405, { error: 'Widgets sind nur lesend.' }); return; }
+    const page = /^\/widgets\/(quest|poll)$/u.exec(url.pathname);
+    const api = /^\/widgets\/api\/(quest|poll)$/u.exec(url.pathname);
+    const stream = /^\/widgets\/stream\/(quest|poll)$/u.exec(url.pathname);
+    if (!page && !api && !stream) { this.json(res, 404, { error: 'Nicht gefunden.' }); return; }
+    const type = (page?.[1] || api?.[1] || stream?.[1]) as WidgetType;
+    const token = url.searchParams.get('token') || '';
+    if (!/^[A-Za-z0-9_-]{40,100}$/u.test(token)) { this.json(res, 404, { error: 'Widget nicht verfügbar.' }); return; }
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+    if (!this.store.widgetTokenValid(type, tokenHash, Date.now())) { this.json(res, 404, { error: 'Widget nicht verfügbar.' }); return; }
+    if (page) {
+      const nonce = randomBytes(18).toString('base64');
+      const settings = this.store.config('widget_settings', defaultWidgetSettings());
+      res.setHeader('Content-Security-Policy', `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; img-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`);
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.end(communityWidgetHtml(type, nonce, settings.fontSize, settings.theme));
+      return;
+    }
+    if (api) { this.json(res, 200, this.store.widgetSnapshot(type, Date.now())); return; }
+    this.openWidgetEventStream(type, res);
+  }
+
+  private openWidgetEventStream(type: WidgetType, res: http.ServerResponse): void {
+    if (this.widgetStreams.size >= 10) { this.json(res, 429, { error: 'Zu viele OBS-Verbindungen.' }); return; }
+    res.statusCode = 200; res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform'); res.setHeader('Connection', 'keep-alive'); res.flushHeaders();
+    let previous = '';
+    const send = () => {
+      try {
+        const snapshot = this.store.widgetSnapshot(type, Date.now());
+        const fingerprint = JSON.stringify({ ...snapshot, capturedAt: undefined });
+        if (fingerprint !== previous) {
+          res.write(`event: snapshot\ndata: ${JSON.stringify(snapshot)}\n\n`);
+          previous = fingerprint;
+        } else res.write(': keepalive\n\n');
+      } catch { res.end(); }
+    };
+    send();
+    const timer = setInterval(send, 1000);
+    this.widgetStreams.set(res, timer);
+    res.on('close', () => { clearInterval(timer); this.widgetStreams.delete(res); });
   }
 
   private login(res: http.ServerResponse): void {
@@ -153,24 +206,43 @@ export class DashboardServer {
     if (route === 'events' && req.method === 'GET') { this.json(res, 200, { events: this.store.events() }); return; }
     if (route === 'settings' && req.method === 'GET') {
       this.json(res, 200, { xp_settings: this.store.config('xp_settings', {}), game_settings: this.store.config('game_settings', {}),
-        '8ball_answers': this.store.config('8ball_answers', []), level_titles: this.store.config('level_titles', {}), events: this.store.events() }); return;
+        '8ball_answers': this.store.config('8ball_answers', []), level_titles: this.store.config('level_titles', {}), events: this.store.events(),
+        quest_settings: this.store.config('quest_settings', defaultQuestSettings()),
+        poll_settings: this.store.config('poll_settings', defaultPollSettings()),
+        widget_settings: this.store.config('widget_settings', defaultWidgetSettings()) }); return;
     }
     if (route === 'commands' && req.method === 'GET') { this.json(res, 200, { commands: this.store.customCommands() }); return; }
     if (route === 'users' && req.method === 'GET') { this.json(res, 200, { users: this.store.users((url.searchParams.get('q') || '').slice(0, 80), 50) }); return; }
+    if (route === 'quests' && req.method === 'GET') {
+      const status = url.searchParams.get('status') || 'all';
+      const allowed = new Set(['all','pending','approved','active','completed','failed','rejected','canceled']);
+      if (!allowed.has(status)) { this.json(res, 400, { error: 'Quest-Filter ungültig.' }); return; }
+      this.json(res, 200, { quests: this.store.listQuests(status as QuestStatus | 'all', (url.searchParams.get('q') || '').slice(0, 80)),
+        summary: this.store.questSummary(), active: this.store.activeQuest() ?? null }); return;
+    }
+    if (route === 'polls' && req.method === 'GET') {
+      const active = this.store.activePoll(); const history = this.store.pollHistory(25);
+      this.json(res, 200, { active: active ?? history.find((poll) => poll.status === 'ended') ?? null, history }); return;
+    }
     if (route === 'stream' && req.method === 'GET') { this.openEventStream(url, req, res); return; }
     if (req.method !== 'POST') { this.json(res, 405, { error: 'Methode nicht erlaubt.' }); return; }
     const body = await this.readJson(req); if (!body) { this.json(res, 400, { error: 'Ungültiger JSON-Body.' }); return; }
     const now = Date.now();
+    if (route === 'polls' || route === 'polls/quest-vote') {
+      const modules = this.store.config<Record<string, boolean>>('modules', {});
+      const settings = this.store.config('poll_settings', defaultPollSettings());
+      if (modules.polls === false || !settings.enabled) { this.json(res, 409, { error: 'Umfragen sind deaktiviert.' }); return; }
+    }
     if (route === 'modules') {
       const key = String(body.key || ''); const enabled = body.enabled;
-      const allowed = new Set(['xp','events','eightBall','rps','guess','duels','boss','customCommands']);
+      const allowed = new Set(['xp','events','eightBall','rps','guess','duels','boss','customCommands','quests','polls']);
       if (!allowed.has(key) || typeof enabled !== 'boolean') { this.json(res, 400, { error: 'Modul-Eingabe ungültig.' }); return; }
       const modules = this.store.config<Record<string, boolean>>('modules', {}); modules[key] = enabled; this.store.setConfig('modules', modules);
       this.audit(session, 'module-toggle', key, { enabled }, now); this.json(res, 200, { ok: true }); return;
     }
     if (route === 'settings') {
       try {
-        const expected = new Set(['xp_settings','game_settings','8ball_answers','level_titles','events']);
+        const expected = new Set(['xp_settings','game_settings','8ball_answers','level_titles','events','quest_settings','poll_settings','widget_settings']);
         if (Object.keys(body).some((key) => !expected.has(key))) throw new Error('Unbekannter Einstellungsbereich.');
         const xp = normalizeNumbers(body.xp_settings, this.store.config('xp_settings', {}), {
           activityXp: [0,100], activityCooldownMs: [10_000,3_600_000], dailyGameCap: [0,10_000],
@@ -188,11 +260,120 @@ export class DashboardServer {
         if (!isRecord(body.level_titles) || Object.keys(body.level_titles).length > 100
           || Object.entries(body.level_titles).some(([level, title]) => !/^[1-9][0-9]{0,3}$/u.test(level) || typeof title !== 'string' || !title.trim() || title.length > 48)) throw new Error('Leveltitel sind ungültig.');
         const events = normalizeEvents(body.events, this.store.events());
+        const questSettings = normalizeQuestSettings(body.quest_settings, this.store.config('quest_settings', defaultQuestSettings()));
+        const pollSettings = normalizePollSettings(body.poll_settings, this.store.config('poll_settings', defaultPollSettings()));
+        const widgetSettings = normalizeWidgetSettings(body.widget_settings, this.store.config('widget_settings', defaultWidgetSettings()));
         this.store.saveEvents(events);
         this.store.setConfig('xp_settings', xp); this.store.setConfig('game_settings', game);
         this.store.setConfig('8ball_answers', body['8ball_answers']); this.store.setConfig('level_titles', body.level_titles);
+        this.store.setConfig('quest_settings', questSettings); this.store.setConfig('poll_settings', pollSettings);
+        this.store.setConfig('widget_settings', widgetSettings);
         this.audit(session, 'settings-update', 'bot', { eventCount: events.length }, now); this.json(res, 200, { ok: true }); return;
       } catch (error) { this.json(res, 400, { error: error instanceof Error ? error.message : 'Einstellungen ungültig.' }); return; }
+    }
+    if (route === 'quests') {
+      const settings = this.questPolicy();
+      const title = normalizeCommunityText(String(body.title || ''), 3, settings.maxLength);
+      const game = body.game === undefined || body.game === '' ? null : normalizeCommunityText(String(body.game), 1, 80);
+      if (!title || (body.game && !game)) { this.json(res, 400, { error: 'Questtext oder Spielname ist ungültig.' }); return; }
+      const submitted = this.store.submitQuest({ submitterUserId: session.userId, displayName: clean(session.login, 48), title,
+        source: 'dashboard', game: game ?? null }, settings, now);
+      if (!submitted.ok) { this.json(res, 409, { error: submitted.reason === 'cooldown' ? 'Bitte warte vor deinem nächsten Vorschlag.' : 'Vorschlag konnte nicht angelegt werden: ' + submitted.reason }); return; }
+      this.audit(session, 'quest-dashboard-submit', submitted.quest.id, {}, now);
+      this.json(res, 201, { quest: submitted.quest }); return;
+    }
+    if (route === 'quests/edit') {
+      const id = String(body.id || ''), settings = this.questPolicy();
+      const title = normalizeCommunityText(String(body.title || ''), 3, settings.maxLength);
+      const game = body.game === undefined || body.game === '' ? null : normalizeCommunityText(String(body.game), 1, 80);
+      if (!id || !title || (body.game && !game)) { this.json(res, 400, { error: 'Questtext oder Spielname ist ungültig.' }); return; }
+      if (!this.store.editQuest(id, title, game ?? null, session.userId, now)) { this.json(res, 409, { error: 'Quest fehlt oder kann in diesem Status nicht bearbeitet werden.' }); return; }
+      this.json(res, 200, { ok: true }); return;
+    }
+    if (route === 'quests/action') {
+      const id = String(body.id || ''), action = String(body.action || ''), policy = this.questPolicy();
+      if (!id) { this.json(res, 400, { error: 'Quest-ID fehlt.' }); return; }
+      if (action === 'select') {
+        if (!this.store.selectNextQuest(id, session.userId, now)) { this.json(res, 409, { error: 'Nur freigegebene Quests können ausgewählt werden.' }); return; }
+        this.audit(session, 'quest-select-next', id, {}, now); this.json(res, 200, { ok: true }); return;
+      }
+      const target: Record<string, QuestStatus> = { approve: 'approved', reject: 'rejected', start: 'active', complete: 'completed', fail: 'failed', skip: 'canceled' };
+      const status = target[action];
+      if (!status) { this.json(res, 400, { error: 'Quest-Aktion ist ungültig.' }); return; }
+      const result = this.store.transitionQuest(id, status, session.userId, now, policy);
+      if (!result.ok) { this.json(res, 409, { error: questTransitionError(result.reason) }); return; }
+      this.json(res, 200, { ok: true, quest: result.quest, rewardedXp: result.rewardedXp }); return;
+    }
+    if (route === 'polls') {
+      const question = normalizeCommunityText(String(body.question || ''), 3, 180);
+      const options = Array.isArray(body.options) ? body.options.map((value) => normalizeCommunityText(String(value), 1, 100)) : [];
+      const durationSeconds = Number(body.durationSeconds);
+      if (!question || options.length < 2 || options.length > 5 || options.some((option) => !option)
+        || new Set(options.map((option) => option!.toLocaleLowerCase())).size !== options.length
+        || !Number.isInteger(durationSeconds) || durationSeconds < 10 || durationSeconds > 3600) {
+        this.json(res, 400, { error: 'Umfrage benötigt eine kurze Frage, 2–5 eindeutige Optionen und 10–3600 Sekunden Laufzeit.' }); return;
+      }
+      const settings = this.store.config('poll_settings', defaultPollSettings());
+      const poll = this.store.createPoll({ type: 'chat', question, options: options.map((label) => ({ label: label! })),
+        durationMs: durationSeconds * 1000, allowVoteChange: settings.allowVoteChange, createdBy: session.userId, now });
+      if (!poll) { this.json(res, 409, { error: 'Eine Umfrage läuft bereits oder die Optionen sind ungültig.' }); return; }
+      this.audit(session, 'poll-start', poll.id, { optionCount: options.length }, now); this.json(res, 201, { poll }); return;
+    }
+    if (route === 'polls/quest-vote') {
+      const ids = Array.isArray(body.questIds) ? body.questIds.filter((value): value is string => typeof value === 'string') : [];
+      const durationSeconds = Number(body.durationSeconds);
+      if (ids.length < 2 || ids.length > 5 || new Set(ids).size !== ids.length
+        || !Number.isInteger(durationSeconds) || durationSeconds < 10 || durationSeconds > 3600) {
+        this.json(res, 400, { error: 'Bitte 2–5 verschiedene freigegebene Quests und 10–3600 Sekunden auswählen.' }); return;
+      }
+      const quests = ids.map((id) => this.store.quest(id));
+      if (quests.some((quest) => !quest || quest.status !== 'approved')) { this.json(res, 409, { error: 'Nur freigegebene Quests dürfen zur Wahl stehen.' }); return; }
+      const settings = this.store.config('poll_settings', defaultPollSettings());
+      const poll = this.store.createPoll({ type: 'quest', question: 'Welche Quest soll als Nächstes gespielt werden?',
+        options: quests.map((quest) => ({ label: quest!.title, questId: quest!.id })), durationMs: durationSeconds * 1000,
+        allowVoteChange: settings.allowVoteChange, createdBy: session.userId, now });
+      if (!poll) { this.json(res, 409, { error: 'Es läuft bereits eine Umfrage oder eine Quest ist nicht mehr freigegeben.' }); return; }
+      this.audit(session, 'quest-poll-start', poll.id, { questIds: ids }, now); this.json(res, 201, { poll }); return;
+    }
+    if (route === 'polls/action') {
+      const id = String(body.id || ''), action = String(body.action || '');
+      if (!id) { this.json(res, 400, { error: 'Umfrage-ID fehlt.' }); return; }
+      if (action === 'end' || action === 'cancel') {
+        const poll = this.store.endPoll(id, now, action === 'cancel');
+        if (!poll) { this.json(res, 404, { error: 'Umfrage nicht gefunden.' }); return; }
+        this.audit(session, action === 'end' ? 'poll-end' : 'poll-cancel', id, {}, now); this.json(res, 200, { poll }); return;
+      }
+      if (action === 'winner') {
+        const option = Number(body.option);
+        if (!this.store.choosePollWinner(id, option, session.userId, now)) { this.json(res, 409, { error: 'Gewinner kann in diesem Status nicht festgelegt werden.' }); return; }
+        this.json(res, 200, { ok: true }); return;
+      }
+      if (action === 'start-quest') {
+        const poll = this.store.poll(id);
+        if (!poll || poll.type !== 'quest' || poll.status !== 'ended' || poll.tied || poll.winnerOption === null) {
+          this.json(res, 409, { error: 'Nur ein eindeutiger Quest-Umfragegewinner kann ausdrücklich gestartet werden.' }); return;
+        }
+        const questId = poll.options[poll.winnerOption]?.questId;
+        if (!questId) { this.json(res, 409, { error: 'Die Gewinneroption ist nicht mit einer Quest verknüpft.' }); return; }
+        const result = this.store.transitionQuest(questId, 'active', session.userId, now, this.questPolicy());
+        if (!result.ok) { this.json(res, 409, { error: questTransitionError(result.reason) }); return; }
+        this.audit(session, 'quest-start-from-poll', questId, { pollId: id }, now); this.json(res, 200, { quest: result.quest }); return;
+      }
+      this.json(res, 400, { error: 'Umfrage-Aktion ist ungültig.' }); return;
+    }
+    if (route === 'widgets/token') {
+      const type = body.type;
+      if (type !== 'quest' && type !== 'poll') { this.json(res, 400, { error: 'Widget-Typ ist ungültig.' }); return; }
+      if (body.action === 'revoke') {
+        this.store.revokeWidgetToken(type, now, session.userId); this.audit(session, 'widget-token-revoke', type, {}, now);
+        this.json(res, 200, { ok: true }); return;
+      }
+      if (body.action !== 'rotate') { this.json(res, 400, { error: 'Widget-Token-Aktion ist ungültig.' }); return; }
+      const token = randomBytes(32).toString('base64url'), hash = createHash('sha256').update(token).digest('hex');
+      this.store.rotateWidgetToken(type, hash, now, session.userId);
+      const widgetUrl = new URL(`/widgets/${type}`, new URL(this.redirectUri).origin); widgetUrl.searchParams.set('token', token);
+      this.audit(session, 'widget-token-rotate', type, {}, now);
+      this.json(res, 201, { url: widgetUrl.toString() }); return;
     }
     if (route === 'events') {
       const id = String(body.id || '').toLowerCase();
@@ -292,6 +473,12 @@ export class DashboardServer {
     this.store.adminAudit(session.userId, action, target, details, now);
   }
 
+  private questPolicy(): QuestPolicy {
+    const settings = this.store.config<QuestPolicy>('quest_settings', defaultQuestSettings());
+    return { maxLength: settings.maxLength, queueLimit: settings.queueLimit, maxOpenPerUser: settings.maxOpenPerUser,
+      cooldownMs: settings.cooldownMs, activeDurationMs: settings.activeDurationMs, completionXp: settings.completionXp };
+  }
+
   private openEventStream(url: URL, req: http.IncomingMessage, res: http.ServerResponse): void {
     if (this.eventStreams.size >= 3) { this.json(res, 429, { error: 'Es sind bereits genügend Event-Streams geöffnet.' }); return; }
     let lastId = Number(req.headers['last-event-id'] || url.searchParams.get('after') || 0);
@@ -329,6 +516,85 @@ function clean(value: string, max: number): string { return Array.from(value.rep
 function boundedInt(value: unknown, fallback: number, min: number, max: number): number { const parsed = Number(value); return Number.isInteger(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback; }
 function numberOrNull(value: unknown, fallback: number | null): number | null { if (value === undefined || value === null || value === '') return fallback; const parsed = Number(value); return Number.isFinite(parsed) ? parsed : fallback; }
 function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === 'object' && !Array.isArray(value); }
+
+function defaultQuestSettings(): DashboardQuestSettings {
+  return { enabled: true, chatEnabled: true, channelPointsEnabled: false, maxLength: 180, queueLimit: 100,
+    maxOpenPerUser: 2, cooldownMs: 300_000, activeDurationMs: 0, completionXp: 25,
+    modsCanModerate: false, modsCanSkip: false, moderatorUserIds: [] };
+}
+
+function defaultPollSettings(): DashboardPollSettings {
+  return { enabled: true, durationMs: 60_000, allowVoteChange: true, ignoredUserIds: [] };
+}
+
+function defaultWidgetSettings(): { theme: 'violet'; fontSize: number } { return { theme: 'violet', fontSize: 34 }; }
+
+function normalizeQuestSettings(input: unknown, current: DashboardQuestSettings): Record<string, unknown> {
+  const allowed = new Set(['enabled','chatEnabled','channelPointsEnabled','maxLength','queueLimit','maxOpenPerUser','cooldownMs',
+    'activeDurationMs','completionXp','modsCanModerate','modsCanSkip','moderatorUserIds']);
+  if (!isRecord(input) || Object.keys(input).some((key) => !allowed.has(key))) throw new Error('Quest-Einstellungen enthalten unbekannte Felder.');
+  const numericKeys = ['maxLength','queueLimit','maxOpenPerUser','cooldownMs','activeDurationMs','completionXp'];
+  const numbers = normalizeNumbers(Object.fromEntries(Object.entries(input).filter(([key]) => numericKeys.includes(key))), current as unknown as Record<string, number>, {
+    maxLength: [20,240], queueLimit: [1,500], maxOpenPerUser: [1,10], cooldownMs: [10_000,86_400_000],
+    activeDurationMs: [0,86_400_000], completionXp: [0,1000],
+  });
+  const enabled = boolValue(input.enabled, current.enabled, 'Quest aktiv');
+  const chatEnabled = boolValue(input.chatEnabled, current.chatEnabled, 'Chat-Quests');
+  const channelPointsEnabled = boolValue(input.channelPointsEnabled, current.channelPointsEnabled, 'Kanalpunkte');
+  if (channelPointsEnabled) throw new Error('Kanalpunkte-Redemptions sind in dieser Version noch nicht angebunden; die Option muss deaktiviert bleiben.');
+  const modsCanModerate = boolValue(input.modsCanModerate, current.modsCanModerate, 'Moderatoren-Freigabe');
+  const modsCanSkip = boolValue(input.modsCanSkip, current.modsCanSkip, 'Moderator-Überspringen');
+  return { ...numbers, enabled, chatEnabled, channelPointsEnabled, modsCanModerate, modsCanSkip,
+    moderatorUserIds: userIdList(input.moderatorUserIds, current.moderatorUserIds, 'Quest-Moderatoren') };
+}
+
+function normalizePollSettings(input: unknown, current: DashboardPollSettings): Record<string, unknown> {
+  const allowed = new Set(['enabled','durationMs','allowVoteChange','ignoredUserIds']);
+  if (!isRecord(input) || Object.keys(input).some((key) => !allowed.has(key))) throw new Error('Umfrage-Einstellungen enthalten unbekannte Felder.');
+  const numbers = normalizeNumbers(Object.fromEntries(Object.entries(input).filter(([key]) => key === 'durationMs')),
+    current as unknown as Record<string, number>, { durationMs: [10_000,3_600_000] });
+  return { ...numbers, enabled: boolValue(input.enabled, current.enabled, 'Umfragen'),
+    allowVoteChange: boolValue(input.allowVoteChange, current.allowVoteChange, 'Stimmenänderungen'),
+    ignoredUserIds: userIdList(input.ignoredUserIds, current.ignoredUserIds, 'Ausgeschlossene Abstimmende') };
+}
+
+function normalizeWidgetSettings(input: unknown, current: { theme: string; fontSize: number }): { theme: string; fontSize: number } {
+  if (!isRecord(input) || Object.keys(input).some((key) => !['theme','fontSize'].includes(key))) throw new Error('Widget-Einstellungen sind ungültig.');
+  const theme = input.theme === undefined ? current.theme : input.theme;
+  if (theme !== 'violet' && theme !== 'halloween') throw new Error('Widget-Design muss violet oder halloween sein.');
+  const fontSize = input.fontSize === undefined ? current.fontSize : input.fontSize;
+  if (!Number.isSafeInteger(fontSize) || (fontSize as number) < 22 || (fontSize as number) > 54) throw new Error('Widget-Schriftgröße muss zwischen 22 und 54 liegen.');
+  return { theme, fontSize: fontSize as number };
+}
+
+function boolValue(value: unknown, fallback: unknown, label: string): boolean {
+  const result = value === undefined ? fallback : value;
+  if (typeof result !== 'boolean') throw new Error(`${label}: boolescher Wert erwartet.`);
+  return result;
+}
+
+function userIdList(value: unknown, fallback: unknown, label: string): string[] {
+  const result = value === undefined ? fallback : value;
+  if (!Array.isArray(result) || result.length > 100 || result.some((id) => typeof id !== 'string' || !/^[0-9]{1,32}$/u.test(id))) {
+    throw new Error(`${label}: höchstens 100 numerische Twitch-User-IDs erwartet.`);
+  }
+  return [...new Set(result as string[])];
+}
+
+function normalizeCommunityText(value: string, min: number, max: number): string | undefined {
+  const normalized = value.normalize('NFC').trim();
+  const length = Array.from(normalized).length;
+  if (length < min || length > max || /[\u0000-\u001F\u007F<>\u202A-\u202E\u2066-\u2069]/u.test(normalized)) return undefined;
+  if (!normalized.replace(/[\p{P}\p{S}\s]/gu, '')) return undefined;
+  return normalized;
+}
+
+function questTransitionError(reason: 'missing' | 'invalid-transition' | 'active-exists' | 'not-approved'): string {
+  if (reason === 'missing') return 'Quest nicht gefunden.';
+  if (reason === 'active-exists') return 'Es läuft bereits eine Quest.';
+  if (reason === 'not-approved') return 'Nur freigegebene Quests können gestartet werden.';
+  return 'Dieser Quest-Statuswechsel ist nicht zulässig.';
+}
 
 function normalizeNumbers(
   input: unknown,

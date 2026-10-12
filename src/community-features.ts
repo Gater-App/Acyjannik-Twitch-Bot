@@ -2,6 +2,7 @@ import { createHash, randomInt, randomUUID } from 'node:crypto';
 import type { AppConfig, ChatMessage, CommandReply } from './types.js';
 import { clampChatMessage } from './chat.js';
 import { FeatureStore, type CustomCommand } from './feature-store.js';
+import { QuestPollFeatures } from './quest-poll.js';
 
 type UserLookup = (login: string) => Promise<{ id: string; login: string; displayName: string } | undefined>;
 type RandomInclusive = (min: number, max: number) => number;
@@ -17,12 +18,14 @@ const DEFAULT_8BALL = [
 ];
 
 export class CommunityFeatures {
+  private readonly questPoll: QuestPollFeatures;
+
   constructor(
     private readonly store: FeatureStore,
     private readonly config: AppConfig,
     private readonly lookupUser: UserLookup = async () => undefined,
     private readonly random: RandomInclusive = secureRandomInclusive,
-  ) {}
+  ) { this.questPoll = new QuestPollFeatures(store, config); }
 
   observeActivity(message: ChatMessage, now = Date.now()): void {
     if (message.senderUserId === this.config.botUserId || message.senderLogin.toLowerCase() === this.config.botLogin.toLowerCase()) return;
@@ -38,13 +41,16 @@ export class CommunityFeatures {
 
   activeEventId(): string | undefined { return this.store.activeEvent()?.id; }
 
-  tick(now = Date.now()): void { this.refreshScheduledEvents(now); }
+  tick(now = Date.now()): void { this.refreshScheduledEvents(now); this.questPoll.tick(now); }
 
   async handle(message: ChatMessage, command: string, args: string[], now = Date.now()): Promise<CommandReply[]> {
     const modules = this.store.config<Record<string, boolean>>('modules', {});
     const name = cleanName(message.senderDisplayName);
     const say = (value: string): CommandReply[] => [{ message: clampChatMessage(value, this.config.appChatMessageLength),
       ...(message.messageId ? { replyParentMessageId: message.messageId } : {}) }];
+
+    const questPollResponse = this.questPoll.handle(message, command, args, now);
+    if (questPollResponse !== undefined) return questPollResponse ? say(questPollResponse) : [];
 
     if (modules.events !== false && (['gift', 'egghunt'].includes(command) || ['eventscore', 'eventtop', 'startevent', 'endevent'].includes(command))) {
       const result = this.handleEvents(message, command, args, name, now);
@@ -87,7 +93,7 @@ export class CommunityFeatures {
 
   private handleEvents(message: ChatMessage, command: string, args: string[], name: string, now: number): string | undefined {
     if (command === 'startevent' || command === 'endevent') {
-      if (!this.isModerator(message)) return '⛔ Nur Yannick oder autorisierte Mods dürfen Events steuern.';
+      if (!this.isModerator(message)) return '⛔ Nur Jannik oder autorisierte Mods dürfen Events steuern.';
       const eventId = (args[0] || '').toLowerCase();
       if (command === 'startevent') {
         const started = this.store.setEventActive(eventId, true, now);
@@ -178,7 +184,7 @@ export class CommunityFeatures {
   }
 
   private startGuess(message: ChatMessage, now: number): string {
-    if (!this.isModerator(message)) return '⛔ Nur Yannick oder Mods dürfen eine Zahlenrunde starten.';
+    if (!this.isModerator(message)) return '⛔ Nur Jannik oder Mods dürfen eine Zahlenrunde starten.';
     const settings = this.store.config('game_settings', { guessMin: 1, guessMax: 100, guessTimeoutMs: 120_000, guessAttempts: 5 });
     if (this.store.state('guess', null)) return '🔢 Eine Zahlenrunde läuft bereits.';
     const target = this.random(settings.guessMin, settings.guessMax);
@@ -233,7 +239,7 @@ export class CommunityFeatures {
   }
 
   private startBoss(message: ChatMessage, args: string[], now: number): string {
-    if (!this.isModerator(message)) return '⛔ Nur Yannick oder Mods dürfen einen Bosskampf starten.';
+    if (!this.isModerator(message)) return '⛔ Nur Jannik oder Mods dürfen einen Bosskampf starten.';
     const settings = this.store.config('game_settings', { bossHp: 1000, bossDurationMs: 900_000 });
     const bossName = cleanName(args.join(' ') || 'Schattenkönig');
     if (!this.store.startBoss(randomUUID(), bossName, settings.bossHp, settings.bossDurationMs, now)) return '👾 Es läuft bereits ein Bosskampf.';
@@ -252,7 +258,7 @@ export class CommunityFeatures {
 
   private attackBoss(message: ChatMessage, now: number): string {
     const settings = this.store.config('game_settings', { attackMin: 20, attackMax: 60, attackCooldownMs: 10_000, bossWinXp: 30, bossTopBonusXp: 10 });
-    if (!this.store.activeBoss(now)) return '👾 Kein aktiver Boss. Frag Yannick nach !startboss.';
+    if (!this.store.activeBoss(now)) return '👾 Kein aktiver Boss. Frag Jannik nach !startboss.';
     const left = this.store.useCooldown('boss-attack', message.senderUserId, now, settings.attackCooldownMs);
     if (left) return `⏳ Nächster Angriff in ${Math.ceil(left / 1000)} Sek.`;
     const critical = this.random(1, 100) <= 10;
@@ -260,18 +266,18 @@ export class CommunityFeatures {
     const xp = this.store.config<Record<string, number>>('xp_settings', { dailyGameCap: 100 });
     const result = this.store.attackBoss(message.senderUserId, cleanName(message.senderDisplayName), rawDamage, now,
       message.eventId, 2, settings.bossWinXp, settings.bossTopBonusXp, xp.dailyGameCap);
-    if (result.status === 'missing') return '👾 Kein aktiver Boss. Frag Yannick nach !startboss.';
+    if (result.status === 'missing') return '👾 Kein aktiver Boss. Frag Jannik nach !startboss.';
     if (result.status === 'defeated') return `💥 ${critical ? 'Kritischer Treffer! ' : ''}${cleanName(message.senderDisplayName)} verursacht ${result.damage} Schaden — ${result.name} ist besiegt! Die Gruppe erhält XP.`;
     return `⚔️ ${critical ? 'Kritischer Treffer! ' : ''}${cleanName(message.senderDisplayName)} verursacht ${result.damage} Schaden. ${result.name}: ${result.hp} HP übrig.`;
   }
 
   private endBoss(message: ChatMessage, now: number): string {
-    if (!this.isModerator(message)) return '⛔ Nur Yannick oder autorisierte Mods dürfen den Bosskampf beenden.';
+    if (!this.isModerator(message)) return '⛔ Nur Jannik oder autorisierte Mods dürfen den Bosskampf beenden.';
     return this.store.endBoss(now) ? '👾 Der Bosskampf wurde beendet.' : '👾 Gerade läuft kein Bosskampf.';
   }
 
   private addCommand(message: ChatMessage, args: string[], now: number): string {
-    if (message.senderUserId !== this.config.broadcasterUserId) return '⛔ Nur Yannick darf neue Chatbefehle anlegen.';
+    if (message.senderUserId !== this.config.broadcasterUserId) return '⛔ Nur Jannik darf neue Chatbefehle anlegen.';
     const [head, ...body] = args.join(' ').split('|');
     const name = (head || '').trim().replace(/^!/u, '');
     const response = body.join('|').trim();
@@ -299,7 +305,7 @@ export class CommunityFeatures {
   }
 
   private deleteCommand(message: ChatMessage, args: string[], now: number): string {
-    if (message.senderUserId !== this.config.broadcasterUserId) return '⛔ Nur Yannick darf Chatbefehle löschen.';
+    if (message.senderUserId !== this.config.broadcasterUserId) return '⛔ Nur Jannik darf Chatbefehle löschen.';
     const name = (args[0] || '').replace(/^!/u, '').toLowerCase();
     if (!name || !this.store.deleteCustomCommand(name)) return '💬 Befehl nicht gefunden. Format: !delcommand name';
     this.store.adminAudit(message.senderUserId, 'custom-command-delete', name, {}, now);

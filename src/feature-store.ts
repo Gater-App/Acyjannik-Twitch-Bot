@@ -31,6 +31,83 @@ export interface CustomCommand {
   modsMayManage: boolean;
 }
 
+export type QuestStatus = 'pending' | 'approved' | 'active' | 'completed' | 'failed' | 'rejected' | 'canceled';
+export type QuestSource = 'chat' | 'channel_points' | 'dashboard';
+export type PollStatus = 'active' | 'ended' | 'canceled';
+export type WidgetType = 'quest' | 'poll';
+
+export interface QuestRecord {
+  id: string;
+  submitterUserId: string;
+  displayName: string;
+  title: string;
+  source: QuestSource;
+  game: string | null;
+  submittedAt: number;
+  status: QuestStatus;
+  moderationStatus: 'pending' | 'approved' | 'rejected' | 'canceled';
+  approvedAt: number | null;
+  activatedAt: number | null;
+  completedAt: number | null;
+  expiresAt: number | null;
+  queuedNext: boolean;
+  updatedAt: number;
+}
+
+export interface PollOptionResult { label: string; votes: number; percent: number; questId?: string; }
+export interface PollRecord {
+  id: string;
+  type: 'chat' | 'quest';
+  question: string;
+  options: PollOptionResult[];
+  status: PollStatus;
+  startsAt: number;
+  endsAt: number;
+  endedAt: number | null;
+  winnerOption: number | null;
+  tied: boolean;
+  allowVoteChange: boolean;
+  totalVotes: number;
+}
+
+export interface QuestPolicy {
+  maxLength: number; queueLimit: number; maxOpenPerUser: number; cooldownMs: number;
+  activeDurationMs: number; completionXp: number;
+}
+
+export interface QuestSubmission {
+  submitterUserId: string; displayName: string; title: string; source: QuestSource;
+  game?: string | null; sourceEventId?: string | null; redemptionId?: string | null;
+}
+
+export interface PollOptionInput { label: string; questId?: string; }
+export interface PollCreateInput {
+  id?: string; type: 'chat' | 'quest'; question: string; options: PollOptionInput[];
+  durationMs: number; allowVoteChange: boolean; createdBy: string; now: number;
+}
+
+export type QuestSubmitResult =
+  | { ok: true; quest: QuestRecord }
+  | { ok: false; reason: 'duplicate' | 'cooldown' | 'user-limit' | 'queue-limit'; remainingMs?: number };
+export type QuestTransitionResult =
+  | { ok: true; quest: QuestRecord; rewardedXp: number }
+  | { ok: false; reason: 'missing' | 'invalid-transition' | 'active-exists' | 'not-approved' };
+export type PollVoteResult =
+  | { ok: true; poll: PollRecord; changed: boolean }
+  | { ok: false; reason: 'missing' | 'ended' | 'invalid-option' | 'already-voted' | 'duplicate' | 'ignored' };
+
+interface QuestRow {
+  id: string; submitter_user_id: string; display_name: string; title: string; source: QuestSource; game: string | null;
+  submitted_at: number; status: QuestStatus; moderation_status: QuestRecord['moderationStatus']; approved_at: number | null;
+  activated_at: number | null; completed_at: number | null; expires_at: number | null; queued_next: number; updated_at: number;
+}
+
+interface PollRow {
+  id: string; poll_type: 'chat' | 'quest'; question: string; options_json: string; status: PollStatus;
+  starts_at: number; ends_at: number; ended_at: number | null; winner_option: number | null; tied: number;
+  allow_vote_change: number; linked_quest_ids_json: string;
+}
+
 interface EventRow {
   id: string; name: string; emoji: string; active: number; start_at: number | null; end_at: number | null;
   timezone: string; currency: string; cooldown_ms: number; command_name: string; archived_at: number | null;
@@ -57,12 +134,15 @@ const RESERVED_COMMANDS = new Set([
   'gift', 'egghunt', 'eventscore', 'eventtop', 'startevent', 'endevent', 'level', 'xptop', 'rank',
   '8ball', 'rps', 'guess', 'startguess', 'duel', 'accept', 'cancelduel', 'startboss', 'attack',
   'boss', 'bosstop', 'endboss', 'addcommand', 'setcommand', 'delcommand', 'help',
+  'quest', 'quests', 'myquest', 'questhelp', 'questqueue', 'approvequest', 'rejectquest', 'skipquest', 'poll', 'vote', 'pollresults',
 ]);
 
 export class FeatureStore {
   private readonly db: BetterSqlite3.Database;
+  private readonly filePath: string;
 
   constructor(filePath: string) {
+    this.filePath = filePath;
     if (filePath !== ':memory:') fs.mkdirSync(path.dirname(filePath), { recursive: true });
     this.db = new BetterSqlite3(filePath);
     this.db.pragma('journal_mode = WAL');
@@ -83,9 +163,9 @@ export class FeatureStore {
       INSERT OR IGNORE INTO game_state(id,active,changed_at) VALUES(1,0,${Date.now()});
     `);
     this.db.exec('CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)');
-    const applied = this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null };
-    if ((applied.version ?? 0) >= 1) return;
-    const migration = this.db.transaction(() => {
+    let currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? 0;
+    if (currentVersion < 1) {
+      const migration = this.db.transaction(() => {
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS xp_users (
           user_id TEXT PRIMARY KEY, display_name TEXT NOT NULL, xp INTEGER NOT NULL DEFAULT 0 CHECK (xp >= 0), updated_at INTEGER NOT NULL
@@ -164,8 +244,103 @@ export class FeatureStore {
           ('game_settings', '{"guessMin":1,"guessMax":100,"guessTimeoutMs":120000,"guessAttempts":5,"duelTtlMs":60000,"bossHp":1000,"bossDurationMs":900000,"attackMin":20,"attackMax":60,"attackCooldownMs":10000,"bossWinXp":30,"bossTopBonusXp":10}');
         INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (1, unixepoch()*1000);
       `);
-    });
-    migration();
+      });
+      migration();
+      currentVersion = 1;
+    }
+    if (currentVersion < 2) {
+      if (currentVersion > 0) this.backupBeforeMigration(2);
+      this.db.transaction(() => {
+        this.db.exec(`
+          CREATE TABLE quests (
+            id TEXT PRIMARY KEY,
+            submitter_user_id TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            title TEXT NOT NULL CHECK(length(title) BETWEEN 3 AND 240),
+            source TEXT NOT NULL CHECK(source IN ('chat','channel_points','dashboard')),
+            game TEXT,
+            source_event_id TEXT UNIQUE,
+            redemption_id TEXT UNIQUE,
+            submitted_at INTEGER NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('pending','approved','active','completed','failed','rejected','canceled')),
+            moderation_status TEXT NOT NULL CHECK(moderation_status IN ('pending','approved','rejected','canceled')),
+            moderated_by TEXT,
+            approved_at INTEGER,
+            activated_at INTEGER,
+            completed_at INTEGER,
+            expires_at INTEGER,
+            queued_next INTEGER NOT NULL DEFAULT 0 CHECK(queued_next IN (0,1)),
+            reward_xp INTEGER NOT NULL DEFAULT 0 CHECK(reward_xp >= 0),
+            reward_granted_at INTEGER,
+            updated_at INTEGER NOT NULL
+          );
+          CREATE INDEX quests_queue_order ON quests(status, submitted_at);
+          CREATE INDEX quests_submitter_status ON quests(submitter_user_id, status, submitted_at);
+          CREATE UNIQUE INDEX one_active_quest ON quests(status) WHERE status='active';
+          CREATE UNIQUE INDEX one_selected_quest ON quests(queued_next) WHERE queued_next=1;
+          CREATE TABLE quest_cooldowns (user_id TEXT PRIMARY KEY, last_submitted_at INTEGER NOT NULL);
+
+          CREATE TABLE polls (
+            id TEXT PRIMARY KEY,
+            poll_type TEXT NOT NULL CHECK(poll_type IN ('chat','quest')),
+            question TEXT NOT NULL CHECK(length(question) BETWEEN 3 AND 240),
+            options_json TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('active','ended','canceled')),
+            starts_at INTEGER NOT NULL,
+            ends_at INTEGER NOT NULL,
+            ended_at INTEGER,
+            winner_option INTEGER,
+            tied INTEGER NOT NULL DEFAULT 0 CHECK(tied IN (0,1)),
+            allow_vote_change INTEGER NOT NULL DEFAULT 1 CHECK(allow_vote_change IN (0,1)),
+            created_by TEXT NOT NULL,
+            linked_quest_ids_json TEXT NOT NULL DEFAULT '[]'
+          );
+          CREATE UNIQUE INDEX one_active_poll ON polls(status) WHERE status='active';
+          CREATE INDEX polls_history ON polls(starts_at DESC);
+          CREATE TABLE poll_votes (
+            poll_id TEXT NOT NULL REFERENCES polls(id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            option_index INTEGER NOT NULL CHECK(option_index BETWEEN 0 AND 4),
+            voted_at INTEGER NOT NULL,
+            PRIMARY KEY(poll_id,user_id)
+          );
+          CREATE INDEX poll_votes_option ON poll_votes(poll_id,option_index);
+          CREATE TABLE poll_vote_events (
+            event_id TEXT PRIMARY KEY,
+            poll_id TEXT NOT NULL REFERENCES polls(id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+          );
+
+          CREATE TABLE widget_tokens (
+            id TEXT PRIMARY KEY,
+            widget_type TEXT NOT NULL CHECK(widget_type IN ('quest','poll')),
+            token_hash TEXT NOT NULL UNIQUE,
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER,
+            revoked_at INTEGER
+          );
+          CREATE INDEX widget_tokens_active ON widget_tokens(widget_type,revoked_at,expires_at);
+          INSERT OR IGNORE INTO feature_config(key,value) VALUES
+            ('quest_settings','{"enabled":true,"chatEnabled":true,"channelPointsEnabled":false,"maxLength":180,"queueLimit":100,"maxOpenPerUser":2,"cooldownMs":300000,"modsCanModerate":false,"modsCanSkip":false,"moderatorUserIds":[],"completionXp":25,"activeDurationMs":0}'),
+            ('poll_settings','{"enabled":true,"durationMs":60000,"allowVoteChange":true,"ignoredUserIds":[]}'),
+            ('widget_settings','{"theme":"violet","fontSize":34}');
+          UPDATE feature_config SET value=json_set(value,'$.quests',true,'$.polls',true) WHERE key='modules';
+          INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (2, unixepoch()*1000);
+        `);
+      })();
+    }
+  }
+
+  private backupBeforeMigration(version: number): void {
+    if (this.filePath === ':memory:' || !fs.existsSync(this.filePath) || fs.statSync(this.filePath).size === 0) return;
+    const backupDirectory = path.resolve(path.dirname(this.filePath), '..', 'backups');
+    fs.mkdirSync(backupDirectory, { recursive: true, mode: 0o700 });
+    const destination = path.join(backupDirectory, `before-feature-migration-v${version}-${new Date().toISOString().replace(/[:.]/gu, '-')}-${randomUUID().slice(0, 8)}.sqlite`);
+    const quoted = destination.replace(/'/gu, "''");
+    this.db.exec(`VACUUM INTO '${quoted}'`);
+    fs.chmodSync(destination, 0o600);
   }
 
   config<T>(key: string, fallback: T): T {
@@ -177,6 +352,318 @@ export class FeatureStore {
   setConfig(key: string, value: unknown): void {
     this.db.prepare('INSERT INTO feature_config(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
       .run(key, JSON.stringify(value));
+  }
+
+  submitQuest(input: QuestSubmission, policy: QuestPolicy, now: number): QuestSubmitResult {
+    return this.db.transaction(() => {
+      if (input.sourceEventId && this.db.prepare('SELECT 1 FROM quests WHERE source_event_id=?').get(input.sourceEventId)) {
+        return { ok: false as const, reason: 'duplicate' as const };
+      }
+      if (input.redemptionId && this.db.prepare('SELECT 1 FROM quests WHERE redemption_id=?').get(input.redemptionId)) {
+        return { ok: false as const, reason: 'duplicate' as const };
+      }
+      const open = this.db.prepare("SELECT COUNT(*) AS count FROM quests WHERE submitter_user_id=? AND status IN ('pending','approved','active')")
+        .get(input.submitterUserId) as { count: number };
+      if (open.count >= policy.maxOpenPerUser) return { ok: false as const, reason: 'user-limit' as const };
+      const pending = this.db.prepare("SELECT COUNT(*) AS count FROM quests WHERE status='pending'").get() as { count: number };
+      if (pending.count >= policy.queueLimit) return { ok: false as const, reason: 'queue-limit' as const };
+      const cooldown = this.db.prepare('SELECT last_submitted_at FROM quest_cooldowns WHERE user_id=?').get(input.submitterUserId) as { last_submitted_at: number } | undefined;
+      if (cooldown && now - cooldown.last_submitted_at < policy.cooldownMs) {
+        return { ok: false as const, reason: 'cooldown' as const, remainingMs: policy.cooldownMs - (now - cooldown.last_submitted_at) };
+      }
+      const id = randomUUID();
+      this.db.prepare(`INSERT INTO quests(id,submitter_user_id,display_name,title,source,game,source_event_id,redemption_id,
+        submitted_at,status,moderation_status,reward_xp,updated_at) VALUES(?,?,?,?,?,?,?,?,?,'pending','pending',?,?)`)
+        .run(id, input.submitterUserId, input.displayName, input.title, input.source, input.game ?? null,
+          input.sourceEventId ?? null, input.redemptionId ?? null, now, policy.completionXp, now);
+      this.db.prepare(`INSERT INTO quest_cooldowns(user_id,last_submitted_at) VALUES(?,?)
+        ON CONFLICT(user_id) DO UPDATE SET last_submitted_at=excluded.last_submitted_at`).run(input.submitterUserId, now);
+      const quest = this.quest(id)!;
+      this.recordCommunityEvent('quest.submitted', { id, source: input.source, status: 'pending' }, now);
+      return { ok: true as const, quest };
+    })();
+  }
+
+  quest(id: string): QuestRecord | undefined {
+    const row = this.db.prepare('SELECT * FROM quests WHERE id=?').get(id) as QuestRow | undefined;
+    return row ? this.toQuest(row) : undefined;
+  }
+
+  listQuests(filter: QuestStatus | 'all' = 'all', query = '', limit = 100): QuestRecord[] {
+    const safeLimit = Math.max(1, Math.min(250, Math.trunc(limit)));
+    const search = query.trim().slice(0, 80);
+    const rows = this.db.prepare(`SELECT * FROM quests
+      WHERE (?='all' OR status=?) AND (?='' OR lower(title) LIKE lower(?) OR lower(display_name) LIKE lower(?) OR id LIKE ?)
+      ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'pending' THEN 1 WHEN 'approved' THEN 2 ELSE 3 END,
+        queued_next DESC, submitted_at ASC LIMIT ?`)
+      .all(filter, filter, search, `%${search}%`, `%${search}%`, `%${search}%`, safeLimit) as QuestRow[];
+    return rows.map((row) => this.toQuest(row));
+  }
+
+  lastQuestForUser(userId: string): QuestRecord | undefined {
+    const row = this.db.prepare('SELECT * FROM quests WHERE submitter_user_id=? ORDER BY submitted_at DESC LIMIT 1').get(userId) as QuestRow | undefined;
+    return row ? this.toQuest(row) : undefined;
+  }
+
+  findPendingQuestByPrefix(prefix: string): QuestRecord | undefined {
+    if (!/^[a-f0-9-]{4,36}$/iu.test(prefix)) return undefined;
+    const rows = this.db.prepare("SELECT * FROM quests WHERE status='pending' AND lower(id) LIKE lower(?) LIMIT 2")
+      .all(`${prefix}%`) as QuestRow[];
+    return rows.length === 1 ? this.toQuest(rows[0]!) : undefined;
+  }
+
+  activeQuest(): QuestRecord | undefined {
+    const row = this.db.prepare("SELECT * FROM quests WHERE status='active' LIMIT 1").get() as QuestRow | undefined;
+    return row ? this.toQuest(row) : undefined;
+  }
+
+  approvedQuests(limit = 50): QuestRecord[] {
+    const rows = this.db.prepare("SELECT * FROM quests WHERE status='approved' ORDER BY queued_next DESC, submitted_at ASC LIMIT ?")
+      .all(Math.max(1, Math.min(100, limit))) as QuestRow[];
+    return rows.map((row) => this.toQuest(row));
+  }
+
+  questSummary(): Record<string, number> {
+    const rows = this.db.prepare('SELECT status,COUNT(*) AS count FROM quests GROUP BY status').all() as Array<{ status: QuestStatus; count: number }>;
+    return Object.fromEntries(rows.map((row) => [row.status, row.count]));
+  }
+
+  editQuest(id: string, title: string, game: string | null, actorId: string, now: number): boolean {
+    if (!title.trim() || title.length > 240 || (game !== null && game.length > 80)) return false;
+    return this.db.transaction(() => {
+      const row = this.db.prepare("SELECT status FROM quests WHERE id=? AND status IN ('pending','approved')").get(id) as { status: QuestStatus } | undefined;
+      if (!row) return false;
+      this.db.prepare('UPDATE quests SET title=?,game=?,updated_at=? WHERE id=?').run(title, game, now, id);
+      this.adminAudit(actorId, 'quest-edit', id, { game }, now);
+      this.recordCommunityEvent('quest.edited', { id, status: row.status }, now);
+      return true;
+    })();
+  }
+
+  selectNextQuest(id: string, actorId: string, now: number): boolean {
+    return this.db.transaction(() => {
+      const quest = this.db.prepare("SELECT status FROM quests WHERE id=?").get(id) as { status: QuestStatus } | undefined;
+      if (!quest || quest.status !== 'approved') return false;
+      this.db.prepare('UPDATE quests SET queued_next=0,updated_at=? WHERE queued_next=1').run(now);
+      this.db.prepare('UPDATE quests SET queued_next=1,updated_at=? WHERE id=? AND status=\'approved\'').run(now, id);
+      this.adminAudit(actorId, 'quest-select-next', id, {}, now);
+      this.recordCommunityEvent('quest.next.selected', { id }, now);
+      return true;
+    })();
+  }
+
+  transitionQuest(id: string, target: QuestStatus, actorId: string, now: number, policy: QuestPolicy): QuestTransitionResult {
+    const allowed: Record<QuestStatus, QuestStatus[]> = {
+      pending: ['approved', 'rejected', 'canceled'], approved: ['active', 'rejected', 'canceled'],
+      active: ['completed', 'failed', 'canceled'], completed: [], failed: [], rejected: [], canceled: [],
+    };
+    return this.db.transaction(() => {
+      const row = this.db.prepare('SELECT * FROM quests WHERE id=?').get(id) as QuestRow | undefined;
+      if (!row) return { ok: false as const, reason: 'missing' as const };
+      const current = this.toQuest(row);
+      if (!allowed[current.status].includes(target)) return { ok: false as const, reason: 'invalid-transition' as const };
+      if (target === 'active') {
+        const another = this.db.prepare("SELECT 1 FROM quests WHERE status='active' AND id<>? LIMIT 1").get(id);
+        if (another) return { ok: false as const, reason: 'active-exists' as const };
+        if (current.status !== 'approved') return { ok: false as const, reason: 'not-approved' as const };
+      }
+      const moderation = target === 'approved' || target === 'active' || target === 'completed' || target === 'failed'
+        ? 'approved' : target === 'rejected' ? 'rejected' : target === 'canceled' ? 'canceled' : 'pending';
+      const expiresAt = target === 'active' && policy.activeDurationMs > 0 ? now + policy.activeDurationMs : null;
+      const changed = this.db.prepare(`UPDATE quests SET status=?,moderation_status=?,moderated_by=?,
+        approved_at=CASE WHEN ?='approved' AND approved_at IS NULL THEN ? ELSE approved_at END,
+        activated_at=CASE WHEN ?='active' THEN ? ELSE activated_at END,
+        completed_at=CASE WHEN ? IN ('completed','failed','canceled') THEN ? ELSE completed_at END,
+        expires_at=?,queued_next=CASE WHEN ?='active' THEN 0 ELSE queued_next END,updated_at=?
+        WHERE id=? AND status=?`).run(target, moderation, actorId,
+        target, now, target, now, target, now, expiresAt, target, now, id, current.status);
+      if (!changed.changes) return { ok: false as const, reason: 'invalid-transition' as const };
+      let rewardedXp = 0;
+      if (target === 'completed' && policy.completionXp > 0) {
+        rewardedXp = this.awardXpInside(`quest:${id}:completion`, current.submitterUserId, current.displayName,
+          policy.completionXp, 'quest:completion', now);
+        if (rewardedXp > 0) this.db.prepare('UPDATE quests SET reward_granted_at=? WHERE id=?').run(now, id);
+      }
+      const finalQuest = this.quest(id)!;
+      this.adminAudit(actorId, `quest-${target}`, id, { rewardedXp }, now);
+      this.recordCommunityEvent('quest.status.changed', { id, status: target, title: target === 'active' ? current.title : undefined,
+        displayName: target === 'active' ? current.displayName : undefined, game: target === 'active' ? current.game : undefined,
+        rewardedXp }, now);
+      return { ok: true as const, quest: finalQuest, rewardedXp };
+    })();
+  }
+
+  expireQuests(now: number): number {
+    return this.db.transaction(() => {
+      const expired = this.db.prepare("SELECT id FROM quests WHERE status='active' AND expires_at IS NOT NULL AND expires_at<=?").all(now) as Array<{ id: string }>;
+      for (const { id } of expired) {
+        this.db.prepare("UPDATE quests SET status='failed',completed_at=?,updated_at=? WHERE id=? AND status='active'").run(now, now, id);
+        this.recordCommunityEvent('quest.status.changed', { id, status: 'failed', reason: 'expired' }, now);
+      }
+      return expired.length;
+    })();
+  }
+
+  createPoll(input: PollCreateInput): PollRecord | undefined {
+    const id = input.id || randomUUID();
+    if (!validViewerText(input.question, 240) || input.options.length < 2 || input.options.length > 5
+      || input.options.some((option) => !validViewerText(option.label, 100, 1))
+      || !Number.isSafeInteger(input.durationMs) || input.durationMs < 10_000 || input.durationMs > 86_400_000) return undefined;
+    return this.db.transaction(() => {
+      if (this.db.prepare("SELECT 1 FROM polls WHERE status='active'").get()) return undefined;
+      const linkedIds = input.options.map((option) => option.questId).filter((value): value is string => Boolean(value));
+      if (input.type === 'quest' && (linkedIds.length !== input.options.length || new Set(linkedIds).size !== linkedIds.length)) return undefined;
+      if (input.type === 'quest') {
+        const placeholders = linkedIds.map(() => '?').join(',');
+        const approved = this.db.prepare(`SELECT COUNT(*) AS count FROM quests WHERE status='approved' AND id IN (${placeholders})`).get(...linkedIds) as { count: number };
+        if (approved.count !== linkedIds.length) return undefined;
+      } else if (linkedIds.length) return undefined;
+      this.db.prepare(`INSERT INTO polls(id,poll_type,question,options_json,status,starts_at,ends_at,allow_vote_change,created_by,linked_quest_ids_json)
+        VALUES(?,?,?,?,'active',?,?,?,?,?)`)
+        .run(id, input.type, input.question, JSON.stringify(input.options), input.now, input.now + input.durationMs,
+          input.allowVoteChange ? 1 : 0, input.createdBy, JSON.stringify(linkedIds));
+      this.recordCommunityEvent('poll.started', { id, type: input.type }, input.now);
+      return this.poll(id);
+    })();
+  }
+
+  activePoll(now = Date.now()): PollRecord | undefined {
+    this.finishExpiredPolls(now);
+    const row = this.db.prepare("SELECT * FROM polls WHERE status='active' LIMIT 1").get() as PollRow | undefined;
+    return row ? this.toPoll(row) : undefined;
+  }
+
+  poll(id: string): PollRecord | undefined {
+    const row = this.db.prepare('SELECT * FROM polls WHERE id=?').get(id) as PollRow | undefined;
+    return row ? this.toPoll(row) : undefined;
+  }
+
+  pollHistory(limit = 25): PollRecord[] {
+    const rows = this.db.prepare('SELECT * FROM polls ORDER BY starts_at DESC LIMIT ?').all(Math.max(1, Math.min(100, limit))) as PollRow[];
+    return rows.map((row) => this.toPoll(row));
+  }
+
+  vote(pollId: string, userId: string, displayName: string, optionNumber: number, eventId: string, now: number,
+    ignoredUserIds: string[] = []): PollVoteResult {
+    return this.db.transaction(() => {
+      if (ignoredUserIds.includes(userId)) return { ok: false as const, reason: 'ignored' as const };
+      const pollRow = this.db.prepare('SELECT * FROM polls WHERE id=?').get(pollId) as PollRow | undefined;
+      if (!pollRow || pollRow.status !== 'active') return { ok: false as const, reason: 'missing' as const };
+      if (pollRow.ends_at <= now) { this.finishPollInside(pollId, now); return { ok: false as const, reason: 'ended' as const }; }
+      const options = parsePollOptions(pollRow.options_json);
+      if (!Number.isInteger(optionNumber) || optionNumber < 1 || optionNumber > options.length) return { ok: false as const, reason: 'invalid-option' as const };
+      const event = this.db.prepare('INSERT OR IGNORE INTO poll_vote_events(event_id,poll_id,user_id,created_at) VALUES(?,?,?,?)')
+        .run(eventId, pollId, userId, now);
+      if (!event.changes) return { ok: false as const, reason: 'duplicate' as const };
+      const existing = this.db.prepare('SELECT option_index FROM poll_votes WHERE poll_id=? AND user_id=?').get(pollId, userId) as { option_index: number } | undefined;
+      if (existing && pollRow.allow_vote_change === 0) return { ok: false as const, reason: 'already-voted' as const };
+      this.db.prepare(`INSERT INTO poll_votes(poll_id,user_id,display_name,option_index,voted_at) VALUES(?,?,?,?,?)
+        ON CONFLICT(poll_id,user_id) DO UPDATE SET display_name=excluded.display_name,option_index=excluded.option_index,voted_at=excluded.voted_at`)
+        .run(pollId, userId, displayName, optionNumber - 1, now);
+      this.recordCommunityEvent(existing ? 'poll.vote.changed' : 'poll.vote.added', { id: pollId }, now);
+      return { ok: true as const, poll: this.poll(pollId)!, changed: Boolean(existing) };
+    })();
+  }
+
+  endPoll(id: string, now: number, canceled = false): PollRecord | undefined {
+    return this.db.transaction(() => {
+      const poll = this.db.prepare("SELECT id,status FROM polls WHERE id=? AND status='active'").get(id) as { id: string; status: PollStatus } | undefined;
+      if (!poll) return this.poll(id);
+      if (canceled) {
+        this.db.prepare("UPDATE polls SET status='canceled',ended_at=? WHERE id=? AND status='active'").run(now, id);
+        this.recordCommunityEvent('poll.canceled', { id }, now);
+      } else this.finishPollInside(id, now);
+      return this.poll(id);
+    })();
+  }
+
+  finishExpiredPolls(now: number): number {
+    return this.db.transaction(() => {
+      const rows = this.db.prepare("SELECT id FROM polls WHERE status='active' AND ends_at<=?").all(now) as Array<{ id: string }>;
+      for (const row of rows) this.finishPollInside(row.id, now);
+      return rows.length;
+    })();
+  }
+
+  choosePollWinner(id: string, optionNumber: number, actorId: string, now: number): boolean {
+    return this.db.transaction(() => {
+      const poll = this.db.prepare("SELECT * FROM polls WHERE id=? AND status='ended'").get(id) as PollRow | undefined;
+      if (!poll) return false;
+      const options = parsePollOptions(poll.options_json);
+      if (!Number.isInteger(optionNumber) || optionNumber < 1 || optionNumber > options.length) return false;
+      const option = options[optionNumber - 1];
+      if (poll.poll_type === 'quest') {
+        const quest = option?.questId ? this.quest(option.questId) : undefined;
+        if (!quest || quest.status !== 'approved') return false;
+        this.db.prepare('UPDATE quests SET queued_next=0,updated_at=? WHERE queued_next=1').run(now);
+        this.db.prepare("UPDATE quests SET queued_next=1,updated_at=? WHERE id=? AND status='approved'").run(now, quest.id);
+      }
+      this.db.prepare('UPDATE polls SET winner_option=?,tied=0 WHERE id=? AND status=\'ended\'').run(optionNumber - 1, id);
+      this.adminAudit(actorId, 'poll-winner-manual', id, { optionNumber }, now);
+      this.recordCommunityEvent('poll.winner.selected', { id, optionNumber }, now);
+      return true;
+    })();
+  }
+
+  rotateWidgetToken(type: WidgetType, tokenHash: string, now: number, actorId: string): string {
+    const id = randomUUID();
+    this.db.transaction(() => {
+      this.db.prepare('UPDATE widget_tokens SET revoked_at=? WHERE widget_type=? AND revoked_at IS NULL').run(now, type);
+      this.db.prepare('INSERT INTO widget_tokens(id,widget_type,token_hash,created_at) VALUES(?,?,?,?)').run(id, type, tokenHash, now);
+      this.adminAudit(actorId, 'widget-token-rotated', type, {}, now);
+    })();
+    return id;
+  }
+
+  revokeWidgetToken(type: WidgetType, now: number, actorId: string): boolean {
+    return this.db.transaction(() => {
+      const result = this.db.prepare('UPDATE widget_tokens SET revoked_at=? WHERE widget_type=? AND revoked_at IS NULL').run(now, type);
+      if (result.changes) this.adminAudit(actorId, 'widget-token-revoked', type, {}, now);
+      return result.changes > 0;
+    })();
+  }
+
+  widgetTokenValid(type: WidgetType, tokenHash: string, now: number): boolean {
+    return Boolean(this.db.prepare(`SELECT 1 FROM widget_tokens WHERE widget_type=? AND token_hash=? AND revoked_at IS NULL
+      AND (expires_at IS NULL OR expires_at>?)`).get(type, tokenHash, now));
+  }
+
+  widgetSnapshot(type: WidgetType, now: number): Record<string, unknown> {
+    if (type === 'quest') {
+      const active = this.activeQuest();
+      if (active) return { type, visible: true, quest: publicQuest(active), capturedAt: now };
+      const recent = this.db.prepare("SELECT * FROM quests WHERE status IN ('completed','failed','canceled') AND updated_at>=? ORDER BY updated_at DESC LIMIT 1")
+        .get(now - 12_000) as QuestRow | undefined;
+      return { type, visible: Boolean(recent), quest: recent ? publicQuest(this.toQuest(recent)) : null, capturedAt: now };
+    }
+    const activePoll = this.activePoll(now);
+    if (activePoll) return { type, visible: true, poll: publicPoll(activePoll), capturedAt: now };
+    const recent = this.db.prepare("SELECT * FROM polls WHERE status='ended' AND ended_at>=? ORDER BY ended_at DESC LIMIT 1")
+      .get(now - 15_000) as PollRow | undefined;
+    return { type, visible: Boolean(recent), poll: recent ? publicPoll(this.toPoll(recent)) : null, capturedAt: now };
+  }
+
+  private finishPollInside(id: string, now: number): void {
+    const row = this.db.prepare("SELECT * FROM polls WHERE id=? AND status='active'").get(id) as PollRow | undefined;
+    if (!row) return;
+    const options = parsePollOptions(row.options_json);
+    const counts = this.db.prepare('SELECT option_index,COUNT(*) AS count FROM poll_votes WHERE poll_id=? GROUP BY option_index').all(id) as Array<{ option_index: number; count: number }>;
+    const total = counts.reduce((sum, entry) => sum + entry.count, 0);
+    const maxVotes = Math.max(0, ...counts.map((entry) => entry.count));
+    const leaders = total ? counts.filter((entry) => entry.count === maxVotes) : [];
+    const winner = leaders.length === 1 ? leaders[0]!.option_index : null;
+    const tied = leaders.length > 1;
+    const changed = this.db.prepare(`UPDATE polls SET status='ended',ended_at=?,winner_option=?,tied=? WHERE id=? AND status='active'`)
+      .run(now, winner, tied ? 1 : 0, id);
+    if (!changed.changes) return;
+    if (row.poll_type === 'quest' && winner !== null) {
+      const option = options[winner];
+      if (option?.questId) {
+        this.db.prepare('UPDATE quests SET queued_next=0,updated_at=? WHERE queued_next=1').run(now);
+        this.db.prepare("UPDATE quests SET queued_next=1,updated_at=? WHERE id=? AND status='approved'").run(now, option.questId);
+      }
+    }
+    this.recordCommunityEvent('poll.ended', { id, totalVotes: total, winnerOption: winner, tied }, now);
   }
 
   awardXp(eventId: string, userId: string, displayName: string, amount: number, reason: string, now: number, dailyCap?: number): number {
@@ -587,6 +1074,29 @@ export class FeatureStore {
 
   close(): void { this.db.close(); }
 
+  private toQuest(row: QuestRow): QuestRecord {
+    return { id: row.id, submitterUserId: row.submitter_user_id, displayName: row.display_name, title: row.title,
+      source: row.source, game: row.game, submittedAt: row.submitted_at, status: row.status,
+      moderationStatus: row.moderation_status, approvedAt: row.approved_at, activatedAt: row.activated_at,
+      completedAt: row.completed_at, expiresAt: row.expires_at, queuedNext: row.queued_next === 1, updatedAt: row.updated_at };
+  }
+
+  private toPoll(row: PollRow): PollRecord {
+    const baseOptions = parsePollOptions(row.options_json);
+    const counts = this.db.prepare('SELECT option_index,COUNT(*) AS count FROM poll_votes WHERE poll_id=? GROUP BY option_index').all(row.id) as
+      Array<{ option_index: number; count: number }>;
+    const countByOption = new Map(counts.map((entry) => [entry.option_index, entry.count]));
+    const totalVotes = counts.reduce((sum, entry) => sum + entry.count, 0);
+    const options: PollOptionResult[] = baseOptions.map((option, index) => {
+      const votes = countByOption.get(index) ?? 0;
+      return { label: option.label, votes, percent: totalVotes ? Math.round((votes / totalVotes) * 100) : 0,
+        ...(option.questId ? { questId: option.questId } : {}) };
+    });
+    return { id: row.id, type: row.poll_type, question: row.question, options, status: row.status,
+      startsAt: row.starts_at, endsAt: row.ends_at, endedAt: row.ended_at, winnerOption: row.winner_option,
+      tied: row.tied === 1, allowVoteChange: row.allow_vote_change === 1, totalVotes };
+  }
+
   private toEvent(row: EventRow): SeasonalEvent {
     return { id: row.id, name: row.name, emoji: row.emoji, active: row.active === 1, startAt: row.start_at, endAt: row.end_at,
       timezone: row.timezone, currency: row.currency, cooldownMs: row.cooldown_ms, command: row.command_name, archivedAt: row.archived_at,
@@ -608,4 +1118,30 @@ function parseJsonObject<T extends string | number>(value: string): Record<strin
     const parsed: unknown = JSON.parse(value);
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, T> : {};
   } catch { return {}; }
+}
+
+function parsePollOptions(value: string): PollOptionInput[] {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry): entry is PollOptionInput => Boolean(entry) && typeof entry === 'object'
+      && typeof (entry as PollOptionInput).label === 'string'
+      && (!('questId' in (entry as object)) || typeof (entry as PollOptionInput).questId === 'string'));
+  } catch { return []; }
+}
+
+function validViewerText(value: string, maxLength: number, minLength = 3): boolean {
+  const length = Array.from(value).length;
+  return length >= minLength && length <= maxLength && !/[\u0000-\u001F\u007F<>\u202A-\u202E\u2066-\u2069]/u.test(value);
+}
+
+function publicQuest(quest: QuestRecord): Record<string, unknown> {
+  return { id: quest.id, title: quest.title, displayName: quest.displayName, game: quest.game,
+    status: quest.status, expiresAt: quest.expiresAt, updatedAt: quest.updatedAt };
+}
+
+function publicPoll(poll: PollRecord): Record<string, unknown> {
+  return { question: poll.question, options: poll.options.map(({ label, votes, percent }) => ({ label, votes, percent })),
+    status: poll.status, startsAt: poll.startsAt, endsAt: poll.endsAt, endedAt: poll.endedAt,
+    winnerOption: poll.winnerOption, tied: poll.tied, totalVotes: poll.totalVotes };
 }

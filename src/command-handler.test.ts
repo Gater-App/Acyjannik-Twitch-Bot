@@ -13,7 +13,7 @@ function message(config: AppConfig, text: string, senderUserId = config.broadcas
     broadcasterUserId: config.broadcasterUserId,
     senderUserId,
     senderLogin: senderUserId,
-    senderDisplayName: senderUserId === config.broadcasterUserId ? 'Yannick' : 'Viewer',
+    senderDisplayName: senderUserId === config.broadcasterUserId ? 'Jannik' : 'Viewer',
     message: text,
     sentAt: Date.now(),
     ...(senderUserId === config.broadcasterUserId ? { isModerator: true } : {}),

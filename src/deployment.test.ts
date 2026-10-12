@@ -12,7 +12,7 @@ const backupScript = path.join(projectRoot, 'scripts', 'backup.mjs');
 const restoreScript = path.join(projectRoot, 'scripts', 'restore.mjs');
 
 test('Deployment-Backup wird geprüft und Restore sichert den vorherigen Zielstand', () => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'yannick-backup-restore-'));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'jannik-backup-restore-'));
   const source = path.join(directory, 'source.sqlite');
   const target = path.join(directory, 'target.sqlite');
   const backups = path.join(directory, 'backups');

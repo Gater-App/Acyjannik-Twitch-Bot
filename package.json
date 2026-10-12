@@ -1,8 +1,8 @@
 {
-  "name": "twitch-halloween-bot-yannick",
+  "name": "twitch-halloween-bot-jannik",
   "version": "1.0.0",
   "private": true,
-  "description": "Modularer Twitch-Community-Bot für Yannicks Kanal mit Events, XP, Minispielen und Admin-Dashboard",
+  "description": "Modularer Twitch-Community-Bot für Janniks Kanal mit Events, XP, Minispielen und Admin-Dashboard",
   "type": "module",
   "engines": {
     "node": ">=24"

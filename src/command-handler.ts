@@ -45,16 +45,16 @@ export class CommandHandler {
       case 'top': return reply(this.topMessage());
       case 'halloween': return reply(this.halloweenMessage());
       case 'starthalloween':
-        if (!this.isAuthorizedModerator(message)) return reply('⛔ Nur Yannick oder autorisierte Mods dürfen das Event starten.');
+        if (!this.isAuthorizedModerator(message)) return reply('⛔ Nur Jannik oder autorisierte Mods dürfen das Event starten.');
         if (this.community?.activeEventId() && this.community.activeEventId() !== 'halloween') return reply('🎃 Erst das aktuell laufende Saison-Event beenden.');
         if (!this.game.start(now)) return reply('🎃 Halloween läuft bereits.');
         this.community?.syncLegacyHalloween(now);
         return reply('🎃 Halloween ist gestartet! !trickortreat für Kürbisse.');
       case 'endhalloween':
-        if (!this.isAuthorizedModerator(message)) return reply('⛔ Nur Yannick oder autorisierte Mods dürfen das Event beenden.');
+        if (!this.isAuthorizedModerator(message)) return reply('⛔ Nur Jannik oder autorisierte Mods dürfen das Event beenden.');
         { const text = this.endMessage(now); this.community?.syncLegacyHalloween(now); return reply(text); }
       case 'resethalloween':
-        if (message.senderUserId !== this.config.broadcasterUserId) return reply('⛔ Nur Yannick darf die Punkte zurücksetzen.');
+        if (message.senderUserId !== this.config.broadcasterUserId) return reply('⛔ Nur Jannik darf die Punkte zurücksetzen.');
         return reply(await this.resetMessage(message.senderUserId, args, now));
       default: {
         const response = await this.community?.handle(message, command, args, now);

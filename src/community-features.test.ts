@@ -12,7 +12,7 @@ import { GameService } from './game.js';
 import type { ChatMessage } from './types.js';
 
 function fixture(): { file: string; directory: string; close: () => void } {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'yannick-community-'));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'jannik-community-'));
   const file = path.join(directory, 'bot.sqlite');
   return { file, directory, close: () => fs.rmSync(directory, { recursive: true, force: true }) };
 }
@@ -127,8 +127,8 @@ test('Chatintegration routet Event, XP, Minispiele, Duell, Boss und Custom Comma
     return handler.handle(msg, 1_800_000_000_000 + eventNo);
   };
   try {
-    assert.match((await send('alice', 'Alice', '!startguess'))[0]?.message || '', /Nur Yannick|Mods/u);
-    assert.match((await send(config.broadcasterUserId, 'Yannick', '!startguess'))[0]?.message || '', /Zahlenrunde gestartet/u);
+    assert.match((await send('alice', 'Alice', '!startguess'))[0]?.message || '', /Nur Jannik|Mods/u);
+    assert.match((await send(config.broadcasterUserId, 'Jannik', '!startguess'))[0]?.message || '', /Zahlenrunde gestartet/u);
     assert.match((await send('alice', 'Alice', '!guess 1'))[0]?.message || '', /hat die Zahl 1 erraten/u);
     assert.match((await send('alice', 'Alice', '!8ball Wird das klappen?'))[0]?.message || '', /Auf jeden Fall/u);
     assert.match((await send('alice', 'Alice', '!rps stein'))[0]?.message || '', /Du gewinnst/u);
@@ -142,12 +142,12 @@ test('Chatintegration routet Event, XP, Minispiele, Duell, Boss und Custom Comma
 
     assert.match((await send('alice', 'Alice', '!duel @bob'))[0]?.message || '', /herausgefordert/u);
     assert.match((await send('bob-id', 'Bob', '!accept'))[0]?.message || '', /gewinnt das faire Duell/u);
-    assert.match((await send(config.broadcasterUserId, 'Yannick', '!startboss'))[0]?.message || '', /erscheint/u);
+    assert.match((await send(config.broadcasterUserId, 'Jannik', '!startboss'))[0]?.message || '', /erscheint/u);
     assert.match((await send('alice', 'Alice', '!attack'))[0]?.message || '', /verursacht/u);
-    assert.match((await send(config.broadcasterUserId, 'Yannick', '!endboss'))[0]?.message || '', /beendet/u);
+    assert.match((await send(config.broadcasterUserId, 'Jannik', '!endboss'))[0]?.message || '', /beendet/u);
 
-    assert.match((await send('alice', 'Alice', '!addcommand socials | Hallo {user}'))[0]?.message || '', /Nur Yannick/u);
-    assert.match((await send(config.broadcasterUserId, 'Yannick', '!addcommand socials | Hallo {user}'))[0]?.message || '', /ist angelegt/u);
+    assert.match((await send('alice', 'Alice', '!addcommand socials | Hallo {user}'))[0]?.message || '', /Nur Jannik/u);
+    assert.match((await send(config.broadcasterUserId, 'Jannik', '!addcommand socials | Hallo {user}'))[0]?.message || '', /ist angelegt/u);
     assert.match((await send('alice', 'Alice', '!socials'))[0]?.message || '', /Hallo Alice/u);
     store.setConfig('modules', { ...store.config<Record<string, boolean>>('modules', {}), xp: false });
     assert.equal((await send('alice', 'Alice', '!rank')).length, 0);
