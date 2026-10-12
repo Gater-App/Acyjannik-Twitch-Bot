@@ -13,6 +13,8 @@ import { EventSubClient } from './eventsub.js';
 import { SendQueue } from './send-queue.js';
 import { parseEventSubChatMessage } from './chat.js';
 import type { ChatMessage } from './types.js';
+import { ChannelPointsService } from './channel-points.js';
+import type { QuestPolicy } from './feature-store.js';
 
 const isTestMode = process.argv.includes('--test') || process.env.TEST_MODE === 'true';
 
@@ -73,7 +75,10 @@ async function runLiveMode(): Promise<void> {
     new FileTokenStore(config.tokenFile),
   );
   const api = new TwitchApi(config.clientId, oauth);
-  const oauthServer = new OAuthCallbackServer(config.oauthHost, config.oauthPort, config.oauthStateTtlMs, oauth);
+  const redemptionOauth = new TwitchOAuth(config.clientId,config.clientSecret,config.redemptionRedirectUri,['channel:manage:redemptions'],
+    new FileTokenStore(config.redemptionTokenFile));
+  const oauthServer = new OAuthCallbackServer(config.oauthHost, config.oauthPort, config.oauthStateTtlMs, oauth, logger,
+    [{name:'channel-points',oauth:redemptionOauth,callbackPath:'/oauth/redemptions/callback'}]);
   const game = new GameService(database, config);
   const handler = new CommandHandler(database, game, config, undefined, community);
   const queue = new SendQueue(
@@ -85,11 +90,21 @@ async function runLiveMode(): Promise<void> {
     logger,
     config.maxChatMessageLength,
   );
+  let channelPoints:ChannelPointsService|undefined;
   const eventsub = new EventSubClient(
     async (sessionId) => {
       await api.ensureChatSubscription(sessionId, config.broadcasterUserId, config.botUserId);
+      if(channelPoints)try{await channelPoints.ensureSubscription(sessionId);}
+      catch(error){logger.warn('Kanalpunkte-EventSub konnte nicht aktiviert werden; Chatbetrieb läuft weiter.',{error:error instanceof Error?error.message:'unbekannt'});}
     },
     async (rawMessage) => {
+      const payload=rawMessage.payload as Record<string,unknown>|undefined;
+      const subscription=payload?.subscription as Record<string,unknown>|undefined;
+      if(subscription?.type==='channel.channel_points_custom_reward_redemption.add'){
+        try{await channelPoints?.acceptEventSub(rawMessage);}
+        catch(error){logger.error('Kanalpunkte-Einlösung konnte nicht verarbeitet werden.',{error:error instanceof Error?error.message:'unbekannt'});}
+        return;
+      }
       const chatMessage = parseEventSubChatMessage(rawMessage);
       const replies = await handler.handle(chatMessage);
       for (const reply of replies) {
@@ -97,11 +112,7 @@ async function runLiveMode(): Promise<void> {
       }
     },
   );
-  const dashboard = new DashboardServer(features, () => ({
-    twitchConnected: eventsub.isConnected,
-    channel: config.channelLogin,
-    startedAt: botStartedAt,
-  }), logger, fetch, () => community.conversationSpark.snapshot());
+  let dashboard:DashboardServer|undefined;
   const featureTicker = setInterval(() => {
     try { community.tick(); }
     catch (error) { logger.error('Quest-/Umfrage-Timer konnte nicht aktualisiert werden.', { error: error instanceof Error ? error.message : 'unbekannt' }); }
@@ -110,6 +121,8 @@ async function runLiveMode(): Promise<void> {
 
   try {
     await oauth.initialize(config.accessToken, config.refreshToken);
+    try{await redemptionOauth.initialize();}
+    catch(error){logger.warn('Optionales Broadcaster-Kanalpunkte-Token konnte nicht geladen werden; Dashboard-Reauthorisierung ist erforderlich.',{error:error instanceof Error?error.message:'unbekannt'});}
     await oauthServer.start();
     if (!oauth.hasAccessToken) {
       logger.warn('Noch kein Twitch-OAuth vorhanden. Öffne die folgende URL im Browser:', { url: oauthServer.startUrl });
@@ -124,13 +137,20 @@ async function runLiveMode(): Promise<void> {
     config.broadcasterUserId = broadcaster.id;
     config.botUserId = bot.id;
     logger.info('Twitch-Konten erkannt.', { channel: broadcaster.login, bot: bot.login });
+    channelPoints=new ChannelPointsService(features,new TwitchApi(config.clientId,redemptionOauth),redemptionOauth,config.broadcasterUserId,()=>{
+      const settings=features.config<Partial<QuestPolicy>>('quest_settings',{});
+      return {maxLength:settings.maxLength??180,queueLimit:settings.queueLimit??100,maxOpenPerUser:settings.maxOpenPerUser??2,
+        cooldownMs:settings.cooldownMs??300_000,activeDurationMs:settings.activeDurationMs??0,completionXp:settings.completionXp??25};
+    },logger);
+    dashboard = new DashboardServer(features, () => ({twitchConnected:eventsub.isConnected,channel:config.channelLogin,startedAt:botStartedAt}),
+      logger,fetch,()=>community.conversationSpark.snapshot(),channelPoints,()=>oauthServer.startUrlFor('channel-points'));
     logger.info('OAuth-Server erreichbar unter http://127.0.0.1:3000/oauth/start');
     await dashboard.start();
     eventsub.start();
   } catch (error) {
     clearInterval(featureTicker);
     await eventsub.stop();
-    await dashboard.stop();
+    await dashboard?.stop();
     await oauthServer.stop();
     features.close();
     database.close();
@@ -140,7 +160,7 @@ async function runLiveMode(): Promise<void> {
   const shutdown = async () => {
     clearInterval(featureTicker);
     await eventsub.stop();
-    await dashboard.stop();
+    await dashboard?.stop();
     await oauthServer.stop();
     features.close();
     database.close();

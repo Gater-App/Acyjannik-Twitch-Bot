@@ -6,6 +6,8 @@ import { FeatureStore, type CustomCommand, type QuestPolicy, type QuestStatus, t
 import { communityWidgetHtml, QUEST_POLL_CARD, QUEST_POLL_SCRIPT } from './dashboard-community-ui.js';
 import { SPARK_CARD, SPARK_SCRIPT } from './conversation-spark-ui.js';
 import { DEFAULT_SPARK_CONFIG, type SparkActionType, type SparkConfig, type SparkTopic } from './conversation-spark.js';
+import { CHANNEL_POINTS_CARD, CHANNEL_POINTS_SCRIPT } from './channel-points-ui.js';
+import { DEFAULT_CHANNEL_POINTS_SETTINGS, type ChannelPointsService, type ChannelPointsSettings } from './channel-points.js';
 import type { Logger } from './logger.js';
 
 interface Session { userId: string; login: string; csrf: string; expiresAt: number; }
@@ -46,6 +48,8 @@ export class DashboardServer {
     private readonly logger: Logger,
     private readonly fetchImpl: typeof fetch = fetch,
     private readonly getSparkSnapshot: () => unknown[] = () => [],
+    private readonly channelPoints?:ChannelPointsService,
+    private readonly getChannelPointsConnectUrl?:()=>string,
   ) { this.adminIds = new Set((process.env.DASHBOARD_ADMIN_IDS || '').split(/[ ,]+/u).filter(Boolean)); }
 
   async start(): Promise<boolean> {
@@ -99,8 +103,8 @@ export class DashboardServer {
       const nonce = randomBytes(18).toString('base64');
       res.setHeader('Content-Security-Policy', `default-src 'self'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`);
       res.statusCode = 200; res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      const page = PAGE.replace('</section></main>', `${SETTINGS_CARD}${QUEST_POLL_CARD}${SPARK_CARD}</section></main>`)
-        .replace('</script>', `${SETTINGS_SCRIPT}${QUEST_POLL_SCRIPT}${SPARK_SCRIPT}</script>`);
+      const page = PAGE.replace('</section></main>', `${SETTINGS_CARD}${QUEST_POLL_CARD}${SPARK_CARD}${CHANNEL_POINTS_CARD}</section></main>`)
+        .replace('</script>', `${SETTINGS_SCRIPT}${QUEST_POLL_SCRIPT}${SPARK_SCRIPT}${CHANNEL_POINTS_SCRIPT}</script>`);
       res.end(page.replaceAll('__CSRF__', session.csrf).replaceAll('__NONCE__', nonce)); return;
     }
     if (url.pathname.startsWith('/widgets/')) { await this.widgetRoute(url, req, res); return; }
@@ -234,10 +238,50 @@ export class DashboardServer {
         proposals:this.store.sparkProposals('all',50),pending:this.store.sparkProposals('pending_approval',100).length,
         cooldowns:this.store.sparkCooldowns(Date.now())}); return;
     }
+    if(route==='channel-points'&&req.method==='GET'){
+      const settings=this.channelPoints?.settings()||this.store.config<ChannelPointsSettings>('channel_points_settings',DEFAULT_CHANNEL_POINTS_SETTINGS);
+      this.json(res,200,{settings,connected:this.channelPoints?.connected()||false,redemptions:this.store.channelRedemptions(100),
+        message:this.channelPoints?.connected()?'API-Berechtigung verfügbar.':(this.channelPoints?.oauthStatusMessage||'Broadcaster-OAuth mit channel:manage:redemptions fehlt.')});return;
+    }
+    if(route==='channel-points/rewards'&&req.method==='GET'){
+      if(!this.channelPoints){this.json(res,503,{error:'Kanalpunkte-Service ist nicht gestartet.'});return;}
+      try{this.json(res,200,{rewards:await this.channelPoints.manageableRewards()});}
+      catch(error){this.json(res,502,{error:error instanceof Error?error.message:'Twitch-Rewards konnten nicht geladen werden.'});}return;
+    }
     if (route === 'stream' && req.method === 'GET') { this.openEventStream(url, req, res); return; }
     if (req.method !== 'POST') { this.json(res, 405, { error: 'Methode nicht erlaubt.' }); return; }
     const body = await this.readJson(req); if (!body) { this.json(res, 400, { error: 'Ungültiger JSON-Body.' }); return; }
     const now = Date.now();
+    if(route==='channel-points/connect'){
+      if(!this.channelPoints||!this.getChannelPointsConnectUrl){this.json(res,503,{error:'Kanalpunkte-OAuth ist nicht konfiguriert.'});return;}
+      this.json(res,200,{url:this.getChannelPointsConnectUrl()});return;
+    }
+    if(route==='channel-points/settings'){
+      if(!this.channelPoints){this.json(res,503,{error:'Kanalpunkte-Service ist nicht gestartet.'});return;}
+      const current=this.channelPoints.settings(),enabled=body.enabled,fulfillOnApproval=body.fulfillOnApproval,cost=Number(body.cost);
+      if(typeof enabled!=='boolean'||typeof fulfillOnApproval!=='boolean'||!Number.isSafeInteger(cost)||cost<1||cost>1_000_000){this.json(res,400,{error:'Kanalpunkte-Schalter oder Kosten ungültig.'});return;}
+      try{
+        await this.channelPoints.saveSettings({...current,enabled,fulfillOnApproval,cost});
+        this.store.setConfig('quest_settings',{...this.store.config('quest_settings',defaultQuestSettings()),channelPointsEnabled:enabled});
+        this.audit(session,'channel-points-settings','quest-reward',{enabled,cost,fulfillOnApproval},now);this.json(res,200,{ok:true});
+      }catch(error){this.json(res,409,{error:error instanceof Error?error.message:'Kanalpunkte-Einstellungen konnten nicht gespeichert werden.'});}return;
+    }
+    if(route==='channel-points/reward'){
+      if(!this.channelPoints){this.json(res,503,{error:'Kanalpunkte-Service ist nicht gestartet.'});return;}
+      try{
+        const reward=body.action==='create'?await this.channelPoints.createReward(Number(body.cost))
+          :body.action==='select'?await this.channelPoints.selectReward(String(body.rewardId||'')):undefined;
+        if(!reward){this.json(res,400,{error:'Reward-Aktion ungültig.'});return;}
+        this.store.setConfig('quest_settings',{...this.store.config('quest_settings',defaultQuestSettings()),channelPointsEnabled:false});
+        this.audit(session,body.action==='create'?'channel-points-reward-created':'channel-points-reward-selected',reward.id,{cost:reward.cost},now);
+        this.json(res,200,{reward});
+      }catch(error){this.json(res,409,{error:error instanceof Error?error.message:'Twitch-Belohnung konnte nicht verknüpft werden.'});}return;
+    }
+    if(route==='channel-points/retry'){
+      if(!this.channelPoints){this.json(res,503,{error:'Kanalpunkte-Service ist nicht gestartet.'});return;}
+      try{await this.channelPoints.retry(String(body.id||''));this.audit(session,'channel-points-retry',String(body.id||''),{},now);this.json(res,200,{ok:true});}
+      catch(error){this.json(res,409,{error:error instanceof Error?error.message:'Redemption konnte nicht wiederholt werden.'});}return;
+    }
     if (route === 'spark/settings') {
       try {
         const settings=normalizeSparkConfig(body,this.store.config<SparkConfig>('spark_settings',DEFAULT_SPARK_CONFIG));
@@ -318,6 +362,8 @@ export class DashboardServer {
           || Object.entries(body.level_titles).some(([level, title]) => !/^[1-9][0-9]{0,3}$/u.test(level) || typeof title !== 'string' || !title.trim() || title.length > 48)) throw new Error('Leveltitel sind ungültig.');
         const events = normalizeEvents(body.events, this.store.events());
         const questSettings = normalizeQuestSettings(body.quest_settings, this.store.config('quest_settings', defaultQuestSettings()));
+        if(questSettings.channelPointsEnabled&&(!this.channelPoints?.connected()||!this.channelPoints.settings().rewardId))
+          throw new Error('Kanalpunkte-Quests lassen sich erst über die Kanalpunkte-Verwaltung nach OAuth und Reward-Verknüpfung aktivieren.');
         const pollSettings = normalizePollSettings(body.poll_settings, this.store.config('poll_settings', defaultPollSettings()));
         const widgetSettings = normalizeWidgetSettings(body.widget_settings, this.store.config('widget_settings', defaultWidgetSettings()));
         this.store.saveEvents(events);
@@ -359,6 +405,7 @@ export class DashboardServer {
       if (!status) { this.json(res, 400, { error: 'Quest-Aktion ist ungültig.' }); return; }
       const result = this.store.transitionQuest(id, status, session.userId, now, policy);
       if (!result.ok) { this.json(res, 409, { error: questTransitionError(result.reason) }); return; }
+      if(status==='approved'||status==='rejected')await this.channelPoints?.resolveQuest(id,status);
       this.json(res, 200, { ok: true, quest: result.quest, rewardedXp: result.rewardedXp }); return;
     }
     if (route === 'polls') {
@@ -629,7 +676,6 @@ function normalizeQuestSettings(input: unknown, current: DashboardQuestSettings)
   const enabled = boolValue(input.enabled, current.enabled, 'Quest aktiv');
   const chatEnabled = boolValue(input.chatEnabled, current.chatEnabled, 'Chat-Quests');
   const channelPointsEnabled = boolValue(input.channelPointsEnabled, current.channelPointsEnabled, 'Kanalpunkte');
-  if (channelPointsEnabled) throw new Error('Kanalpunkte-Redemptions sind in dieser Version noch nicht angebunden; die Option muss deaktiviert bleiben.');
   const modsCanModerate = boolValue(input.modsCanModerate, current.modsCanModerate, 'Moderatoren-Freigabe');
   const modsCanSkip = boolValue(input.modsCanSkip, current.modsCanSkip, 'Moderator-Überspringen');
   return { ...numbers, enabled, chatEnabled, channelPointsEnabled, modsCanModerate, modsCanSkip,

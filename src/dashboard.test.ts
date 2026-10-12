@@ -42,7 +42,7 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     if (url.endsWith('/helix/users')) return Response.json({ data: [{ id: verifiedUserId, login: 'admin', display_name: 'Admin' }] });
     throw new Error(`Unerwarteter externer Aufruf: ${url}`);
   };
-  const dashboard = new DashboardServer(store, () => ({ twitchConnected: true, channel: 'yannick', startedAt: 1 }), logger, fetchImpl);
+  const dashboard = new DashboardServer(store, () => ({ twitchConnected: true, channel: 'acyjannik', startedAt: 1 }), logger, fetchImpl);
   try {
     assert.equal(await dashboard.start(), true);
     const base = `http://127.0.0.1:${port}`;

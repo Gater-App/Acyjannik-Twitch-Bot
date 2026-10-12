@@ -60,6 +60,12 @@ export interface QuestRecord {
   updatedAt: number;
 }
 
+export type ChannelRedemptionStatus = 'pending' | 'fulfilled' | 'cancel_pending' | 'fulfillment_pending' | 'canceled' | 'manual' | 'failed';
+export interface ChannelRedemptionRecord {
+  redemptionId: string; rewardId: string; userId: string; displayName: string; userInput: string; redeemedAt: number;
+  status: ChannelRedemptionStatus; questId: string | null; questStatus: QuestStatus | null; lastError: string | null; updatedAt: number;
+}
+
 export interface PollOptionResult { label: string; votes: number; percent: number; questId?: string; }
 export interface PollRecord {
   id: string;
@@ -360,6 +366,22 @@ export class FeatureStore {
         `);
       })();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 4) {
+      if (currentVersion > 0) this.backupBeforeMigration(4);
+      this.db.transaction(() => this.db.exec(`
+        CREATE TABLE channel_point_redemptions (
+          redemption_id TEXT PRIMARY KEY, reward_id TEXT NOT NULL, user_id TEXT NOT NULL, display_name TEXT NOT NULL,
+          user_input TEXT NOT NULL, redeemed_at INTEGER NOT NULL,
+          status TEXT NOT NULL CHECK(status IN ('pending','fulfilled','cancel_pending','fulfillment_pending','canceled','manual','failed')),
+          quest_id TEXT REFERENCES quests(id), last_error TEXT, updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX channel_point_redemptions_status_time ON channel_point_redemptions(status,redeemed_at DESC);
+        INSERT OR IGNORE INTO feature_config(key,value) VALUES
+          ('channel_points_settings','{"enabled":false,"rewardId":null,"rewardTitle":"Quest für Jannik 🎯","cost":2000,"fulfillOnApproval":true}');
+        INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (4, unixepoch()*1000);
+      `))();
+    }
   }
 
   private backupBeforeMigration(version: number): void {
@@ -472,6 +494,61 @@ export class FeatureStore {
       this.recordCommunityEvent('quest.submitted', { id, source: input.source, status: 'pending' }, now);
       return { ok: true as const, quest };
     })();
+  }
+
+  acceptChannelRedemption(input: { redemptionId:string; rewardId:string; userId:string; displayName:string; userInput:string; redeemedAt:number },
+    policy:QuestPolicy, now:number): { duplicate:true } | { duplicate:false; result:QuestSubmitResult } {
+    return this.db.transaction(() => {
+      const inserted=this.db.prepare(`INSERT OR IGNORE INTO channel_point_redemptions(redemption_id,reward_id,user_id,display_name,user_input,
+        redeemed_at,status,updated_at) VALUES(?,?,?,?,?,?,'failed',?)`).run(input.redemptionId,input.rewardId,input.userId,input.displayName,input.userInput,input.redeemedAt,now);
+      if (!inserted.changes) return {duplicate:true as const};
+      const result=this.submitQuest({submitterUserId:input.userId,displayName:input.displayName,title:input.userInput,source:'channel_points',redemptionId:input.redemptionId},policy,now);
+      if (result.ok) this.db.prepare("UPDATE channel_point_redemptions SET status='pending',quest_id=?,user_input='',last_error=NULL,updated_at=? WHERE redemption_id=?")
+        .run(result.quest.id,now,input.redemptionId);
+      else this.db.prepare('UPDATE channel_point_redemptions SET last_error=?,updated_at=? WHERE redemption_id=?')
+        .run(`Quest konnte nicht angenommen werden: ${result.reason}`,now,input.redemptionId);
+      return {duplicate:false as const,result};
+    })();
+  }
+
+  recordManualChannelRedemption(input:{redemptionId:string;rewardId:string;userId:string;displayName:string;userInput:string;redeemedAt:number},reason:string,now:number):boolean {
+    return this.db.prepare(`INSERT OR IGNORE INTO channel_point_redemptions(redemption_id,reward_id,user_id,display_name,user_input,redeemed_at,status,last_error,updated_at)
+      VALUES(?,?,?,?,?,?,'manual',?,?)`).run(input.redemptionId,input.rewardId,input.userId,input.displayName,
+        Array.from(input.userInput).slice(0,500).join(''),input.redeemedAt,reason.slice(0,240),now).changes>0;
+  }
+
+  retryChannelRedemption(redemptionId:string,policy:QuestPolicy,now:number):QuestSubmitResult|undefined {
+    return this.db.transaction(() => {
+      const row=this.db.prepare("SELECT * FROM channel_point_redemptions WHERE redemption_id=? AND status IN ('failed','manual')")
+        .get(redemptionId) as Record<string,unknown>|undefined;
+      if(!row)return undefined;
+      const result=this.submitQuest({submitterUserId:String(row.user_id),displayName:String(row.display_name),title:String(row.user_input),
+        source:'channel_points',redemptionId},policy,now);
+      if(result.ok)this.db.prepare("UPDATE channel_point_redemptions SET status='pending',quest_id=?,user_input='',last_error=NULL,updated_at=? WHERE redemption_id=?")
+        .run(result.quest.id,now,redemptionId);
+      else this.db.prepare('UPDATE channel_point_redemptions SET last_error=?,updated_at=? WHERE redemption_id=?')
+        .run(`Quest konnte nicht angenommen werden: ${result.reason}`,now,redemptionId);
+      return result;
+    })();
+  }
+
+  channelRedemption(redemptionId:string):ChannelRedemptionRecord|undefined {
+    const row=this.db.prepare('SELECT r.*,q.title AS quest_title,q.status AS quest_status FROM channel_point_redemptions r LEFT JOIN quests q ON q.id=r.quest_id WHERE r.redemption_id=?').get(redemptionId) as Record<string,unknown>|undefined;
+    return row?toChannelRedemption(row):undefined;
+  }
+
+  channelRedemptionForQuest(questId:string):ChannelRedemptionRecord|undefined {
+    const row=this.db.prepare('SELECT r.*,q.title AS quest_title,q.status AS quest_status FROM channel_point_redemptions r LEFT JOIN quests q ON q.id=r.quest_id WHERE r.quest_id=?').get(questId) as Record<string,unknown>|undefined;
+    return row?toChannelRedemption(row):undefined;
+  }
+
+  channelRedemptions(limit=100):ChannelRedemptionRecord[] {
+    return (this.db.prepare('SELECT r.*,q.title AS quest_title,q.status AS quest_status FROM channel_point_redemptions r LEFT JOIN quests q ON q.id=r.quest_id ORDER BY r.redeemed_at DESC LIMIT ?').all(Math.max(1,Math.min(500,limit))) as Array<Record<string,unknown>>).map(toChannelRedemption);
+  }
+
+  updateChannelRedemption(redemptionId:string,status:ChannelRedemptionStatus,lastError:string|null,now:number):boolean {
+    return this.db.prepare('UPDATE channel_point_redemptions SET status=?,last_error=?,updated_at=? WHERE redemption_id=?')
+      .run(status,lastError,now,redemptionId).changes>0;
   }
 
   quest(id: string): QuestRecord | undefined {
@@ -1218,6 +1295,13 @@ function parsePollOptions(value: string): PollOptionInput[] {
       && typeof (entry as PollOptionInput).label === 'string'
       && (!('questId' in (entry as object)) || typeof (entry as PollOptionInput).questId === 'string'));
   } catch { return []; }
+}
+
+function toChannelRedemption(row:Record<string,unknown>):ChannelRedemptionRecord {
+  return {redemptionId:String(row.redemption_id),rewardId:String(row.reward_id),userId:String(row.user_id),displayName:String(row.display_name),
+    userInput:String(row.quest_title??row.user_input),redeemedAt:Number(row.redeemed_at),status:row.status as ChannelRedemptionStatus,
+    questId:row.quest_id?String(row.quest_id):null,questStatus:row.quest_status?row.quest_status as QuestStatus:null,
+    lastError:row.last_error?String(row.last_error):null,updatedAt:Number(row.updated_at)};
 }
 
 function validViewerText(value: string, maxLength: number, minLength = 3): boolean {

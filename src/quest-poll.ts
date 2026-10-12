@@ -102,7 +102,7 @@ export class QuestPollFeatures {
   }
 
   private questHelp(settings: QuestSettings): string {
-    return `📜 !quest AUFGABE reicht einen Vorschlag ein (max. ${settings.maxLength} Zeichen). Jede Quest wird zuerst moderiert; Cooldown ${Math.ceil(settings.cooldownMs / 60_000)} Min., höchstens ${settings.maxOpenPerUser} offene Vorschläge. !quests zeigt die Live-Quest, !myquest deinen Status. Kanalpunkte sind noch nicht angebunden.`;
+    return `📜 !quest AUFGABE reicht einen Vorschlag ein (max. ${settings.maxLength} Zeichen). Jede Quest wird zuerst moderiert; Cooldown ${Math.ceil(settings.cooldownMs / 60_000)} Min., höchstens ${settings.maxOpenPerUser} offene Vorschläge. !quests zeigt die Live-Quest, !myquest deinen Status. Kanalpunkte-Einlösungen werden privat im Dashboard verwaltet.`;
   }
 
   private skipQuest(message: ChatMessage, settings: QuestSettings, now: number): string {
@@ -134,6 +134,7 @@ export class QuestPollFeatures {
     if (!this.canModerate(message, settings)) return '⛔ Nur Jannik oder ausdrücklich freigegebene Moderatoren dürfen Quest-Vorschläge moderieren.';
     const quest = this.store.findPendingQuestByPrefix(args[0] || '');
     if (!quest) return '📜 Quest-ID nicht gefunden oder nicht eindeutig. Nutze !questqueue für IDs und prüfe den Text im Dashboard.';
+    if (quest.source === 'channel_points') return '📜 Kanalpunkte-Quests bitte im Dashboard moderieren, damit der Twitch-Einlösungsstatus sicher abgeglichen wird.';
     const result = this.store.transitionQuest(quest.id, target, message.senderUserId, now, this.questSettings());
     return result.ok ? `📜 Vorschlag #${quest.id.slice(0, 8)} wurde ${target === 'approved' ? 'freigegeben' : 'abgelehnt'}.`
       : '📜 Dieser Vorschlag kann nicht mehr moderiert werden.';

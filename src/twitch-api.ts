@@ -14,6 +14,13 @@ export interface SendChatResult {
 }
 
 interface HelixResponse<T> { data: T[]; }
+export interface TwitchCustomReward {
+  id:string; broadcaster_id:string; title:string; prompt:string; cost:number; is_user_input_required:boolean;
+  should_redemptions_skip_request_queue:boolean; is_enabled:boolean;
+}
+export interface TwitchRedemption { id:string; broadcaster_id:string; user_id:string; user_name:string; user_input:string; redeemed_at:string;
+  status:'UNFULFILLED'|'FULFILLED'|'CANCELED'; reward:{id:string;title:string;cost:number;prompt:string}; }
+interface HelixPagedResponse<T>{data:T[];pagination?:{cursor?:string};}
 
 export class TwitchApiError extends Error {
   constructor(public readonly status: number, message: string, public readonly retryAfterMs?: number) {
@@ -69,6 +76,54 @@ export class TwitchApi {
       }),
     });
     this.logger.info('EventSub-Chat-Abonnement eingerichtet.');
+  }
+
+  async ensureChannelPointsSubscription(sessionId:string,broadcasterId:string,rewardId:string):Promise<void> {
+    const condition={broadcaster_user_id:broadcasterId,reward_id:rewardId};
+    const current=await this.request<HelixResponse<{type:string;status:string;condition:Record<string,string>;transport:{session_id?:string}}>>('/eventsub/subscriptions');
+    const exists=current.data.some((subscription)=>subscription.type==='channel.channel_points_custom_reward_redemption.add'
+      && subscription.status==='enabled'&&subscription.condition.broadcaster_user_id===broadcasterId
+      && subscription.condition.reward_id===rewardId&&subscription.transport.session_id===sessionId);
+    if(exists)return;
+    await this.request('/eventsub/subscriptions',{method:'POST',body:JSON.stringify({type:'channel.channel_points_custom_reward_redemption.add',version:'1',
+      condition,transport:{method:'websocket',session_id:sessionId}})});
+    this.logger.info('EventSub-Kanalpunkte-Redemptions-Abonnement eingerichtet.');
+  }
+
+  async getCustomRewards(broadcasterId:string,manageableOnly=true):Promise<TwitchCustomReward[]> {
+    const query=new URLSearchParams({broadcaster_id:broadcasterId,only_manageable_rewards:String(manageableOnly)});
+    return (await this.request<HelixResponse<TwitchCustomReward>>(`/channel_points/custom_rewards?${query}`)).data;
+  }
+
+  async createCustomReward(broadcasterId:string,input:{title:string;prompt:string;cost:number}):Promise<TwitchCustomReward> {
+    const query=new URLSearchParams({broadcaster_id:broadcasterId});
+    const response=await this.request<HelixResponse<TwitchCustomReward>>(`/channel_points/custom_rewards?${query}`,{method:'POST',body:JSON.stringify({
+      title:input.title,prompt:input.prompt,cost:input.cost,is_user_input_required:true,should_redemptions_skip_request_queue:false})});
+    const reward=response.data[0];if(!reward)throw new TwitchApiError(502,'Twitch lieferte die erstellte Reward-ID nicht zurück.');return reward;
+  }
+
+  async getRedemption(broadcasterId:string,rewardId:string,redemptionId:string):Promise<TwitchRedemption|undefined> {
+    const query=new URLSearchParams({broadcaster_id:broadcasterId,reward_id:rewardId,id:redemptionId});
+    try{return (await this.request<HelixResponse<TwitchRedemption>>(`/channel_points/custom_rewards/redemptions?${query}`)).data[0];}
+    catch(error){if(error instanceof TwitchApiError&&error.status===404)return undefined;throw error;}
+  }
+
+  async getUnfulfilledRedemptions(broadcasterId:string,rewardId:string):Promise<TwitchRedemption[]> {
+    const result:TwitchRedemption[]=[];let cursor:string|undefined;
+    for(let page=0;page<20;page++){
+      const query=new URLSearchParams({broadcaster_id:broadcasterId,reward_id:rewardId,status:'UNFULFILLED',first:'50'});
+      if(cursor)query.set('after',cursor);
+      const response=await this.request<HelixPagedResponse<TwitchRedemption>>(`/channel_points/custom_rewards/redemptions?${query}`);
+      result.push(...response.data);cursor=response.pagination?.cursor;if(!cursor)break;
+    }
+    return result;
+  }
+
+  async setRedemptionStatus(broadcasterId:string,rewardId:string,redemptionId:string,status:'FULFILLED'|'CANCELED'):Promise<TwitchRedemption> {
+    const query=new URLSearchParams({broadcaster_id:broadcasterId,reward_id:rewardId,id:redemptionId});
+    const response=await this.request<HelixResponse<TwitchRedemption>>(`/channel_points/custom_rewards/redemptions?${query}`,{
+      method:'PATCH',body:JSON.stringify({status})});
+    const redemption=response.data[0];if(!redemption||redemption.status!==status)throw new TwitchApiError(502,'Twitch hat den Einlösungsstatus nicht bestätigt.');return redemption;
   }
 
   private async request<T = unknown>(path: string, init: RequestInit = {}, allowRefresh = true): Promise<T> {

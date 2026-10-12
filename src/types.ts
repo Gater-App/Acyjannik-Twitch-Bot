@@ -50,6 +50,8 @@ export interface AppConfig {
   broadcasterUserId: string;
   botUserId: string;
   redirectUri: string;
+  redemptionRedirectUri: string;
+  redemptionTokenFile: string;
   oauthHost: string;
   oauthPort: number;
   oauthStateTtlMs: number;

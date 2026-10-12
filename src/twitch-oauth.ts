@@ -9,7 +9,10 @@ export interface StoredTokens {
   accessToken: string;
   refreshToken: string;
   expiresAt?: number;
+  scopes?: string[];
 }
+
+export interface OAuthFlow { name:string; oauth:TwitchOAuth; startPath?:string; callbackPath:string; }
 
 interface TwitchTokenResponse {
   access_token: string;
@@ -29,7 +32,8 @@ export class FileTokenStore {
       const raw = await fs.readFile(this.filePath, 'utf8');
       const parsed = JSON.parse(raw) as Partial<StoredTokens>;
       if (!parsed.accessToken || !parsed.refreshToken) return undefined;
-      return { accessToken: parsed.accessToken, refreshToken: parsed.refreshToken, ...(parsed.expiresAt ? { expiresAt: parsed.expiresAt } : {}) };
+      return { accessToken: parsed.accessToken, refreshToken: parsed.refreshToken, ...(parsed.expiresAt ? { expiresAt: parsed.expiresAt } : {}),
+        ...(Array.isArray(parsed.scopes)?{scopes:parsed.scopes.filter((scope):scope is string=>typeof scope==='string')}: {}) };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
       throw error;
@@ -64,13 +68,15 @@ export class TwitchOAuth {
     const resolvedRefreshToken = refreshToken || stored?.refreshToken;
     const resolvedAccessToken = accessToken || stored?.accessToken;
     if (resolvedAccessToken && resolvedRefreshToken) {
-      this.tokens = { accessToken: resolvedAccessToken, refreshToken: resolvedRefreshToken, ...(stored?.expiresAt ? { expiresAt: stored.expiresAt } : {}) };
+      this.tokens = { accessToken: resolvedAccessToken, refreshToken: resolvedRefreshToken, ...(stored?.expiresAt ? { expiresAt: stored.expiresAt } : {}),
+        ...(stored?.scopes ? {scopes:stored.scopes}: {}) };
     } else if (resolvedRefreshToken) {
       await this.refresh(resolvedRefreshToken);
     }
   }
 
   get hasAccessToken(): boolean { return Boolean(this.tokens?.accessToken); }
+  get grantedScopes(): string[] { return this.tokens?.scopes || []; }
 
   waitForAuthorization(): Promise<void> {
     if (this.hasAccessToken) return Promise.resolve();
@@ -133,10 +139,12 @@ export class TwitchOAuth {
   private async savePayload(payload: TwitchTokenResponse, fallbackRefreshToken?: string): Promise<void> {
     const refreshToken = payload.refresh_token || fallbackRefreshToken;
     if (!refreshToken) throw new Error('Twitch lieferte keinen Refresh-Token.');
+    const scopes = payload.scope ?? this.tokens?.scopes;
     this.tokens = {
       accessToken: payload.access_token,
       refreshToken,
       expiresAt: Date.now() + payload.expires_in * 1000,
+      ...(scopes ? { scopes } : {}),
     };
     await this.store.save(this.tokens);
   }
@@ -148,6 +156,7 @@ export class TwitchOAuth {
 
 export class OAuthCallbackServer {
   private readonly pendingStates = new Map<string, number>();
+  private readonly extraStates = new Map<string, Map<string, number>>();
   private server: http.Server | undefined;
 
   constructor(
@@ -156,6 +165,7 @@ export class OAuthCallbackServer {
     private readonly stateTtlMs: number,
     private readonly oauth: TwitchOAuth,
     private readonly logger: Logger = consoleLogger,
+    private readonly additionalFlows: OAuthFlow[] = [],
   ) {}
 
   async start(): Promise<void> {
@@ -173,11 +183,21 @@ export class OAuthCallbackServer {
   }
 
   get startUrl(): string {
-    const state = randomBytes(24).toString('hex');
-    this.pendingStates.set(state, Date.now() + this.stateTtlMs);
-    const url = new URL(this.oauth.authorizationUrl);
-    url.searchParams.set('state', state);
-    return url.toString();
+    return this.makeStartUrl(this.oauth,this.pendingStates,'/oauth/callback');
+  }
+
+  startUrlFor(name:string):string {
+    const flow=this.additionalFlows.find((item)=>item.name===name);
+    if(!flow)throw new Error('Unbekannter OAuth-Freigabefluss.');
+    let states=this.extraStates.get(name);if(!states){states=new Map();this.extraStates.set(name,states);}
+    return this.makeStartUrl(flow.oauth,states,flow.callbackPath);
+  }
+
+  private makeStartUrl(oauth:TwitchOAuth,states:Map<string,number>,callbackPath:string):string {
+    const state=randomBytes(24).toString('hex');states.set(state,Date.now()+this.stateTtlMs);
+    const url=new URL(oauth.authorizationUrl);const redirect=url.searchParams.get('redirect_uri');
+    if(redirect){const callback=new URL(redirect);callback.pathname=callbackPath;callback.search='';callback.hash='';url.searchParams.set('redirect_uri',callback.toString());}
+    url.searchParams.set('state',state);return url.toString();
   }
 
   async stop(): Promise<void> {
@@ -194,14 +214,17 @@ export class OAuthCallbackServer {
       response.end();
       return;
     }
-    if (url.pathname !== '/oauth/callback') {
+    const flow=this.additionalFlows.find((item)=>item.startPath===url.pathname||item.callbackPath===url.pathname);
+    if(flow?.startPath&&url.pathname===flow.startPath){response.statusCode=302;response.setHeader('Location',this.startUrlFor(flow.name));response.end();return;}
+    if (url.pathname !== '/oauth/callback' && !(flow&&url.pathname===flow.callbackPath)) {
       response.statusCode = 404;
       response.end('Nicht gefunden. OAuth starten: /oauth/start');
       return;
     }
+    const activeOauth=flow?.oauth||this.oauth, states=flow?(this.extraStates.get(flow.name)||new Map<string,number>()):this.pendingStates;
     const state = url.searchParams.get('state') || '';
-    const expiresAt = this.pendingStates.get(state) || 0;
-    this.pendingStates.delete(state);
+    const expiresAt = states.get(state) || 0;
+    states.delete(state);
     if (!state || expiresAt < Date.now()) {
       response.statusCode = 400;
       response.end('Ungültiger oder abgelaufener OAuth-State.');
@@ -219,7 +242,7 @@ export class OAuthCallbackServer {
       response.end('Kein OAuth-Code erhalten.');
       return;
     }
-    await this.oauth.exchangeCode(code);
+    await activeOauth.exchangeCode(code);
     response.statusCode = 200;
     response.end('OAuth erfolgreich. Dieser Tab kann geschlossen werden.');
     this.logger.info('Twitch-OAuth erfolgreich abgeschlossen.');

@@ -52,6 +52,14 @@ test('Quest-Vorschläge bleiben privat bis zur Freigabe, beachten Cooldown/Rolle
     assert.doesNotMatch(modQueue, /Gewinne die nächste Runde/u, 'Chat-Warteschlange darf ungeprüften Vorschlagstext nicht ausgeben');
     assert.equal(store.transitionQuest(quest.id, 'active', 'broadcaster-1', 10_006, policy).ok, false,
       'pending darf nicht direkt gestartet werden');
+    const redemptionQuest = store.submitQuest({ submitterUserId: 'viewer-cp', displayName: 'KanalpunkteViewer', title: 'Kanalpunkte-Challenge',
+      source: 'channel_points', redemptionId: 'redemption-chat-moderation' }, policy, 10_006);
+    assert.equal(redemptionQuest.ok, true);
+    if (!redemptionQuest.ok) throw new Error('Kanalpunkte-Testquest wurde nicht angelegt.');
+    const blockedChatModeration = features.handle(chat('approve-cp', 'broadcaster-1', 'Broadcaster', '!approvequest'), 'approvequest',
+      [redemptionQuest.quest.id.slice(0, 8)], 10_006) || '';
+    assert.match(blockedChatModeration, /im Dashboard moderieren/u);
+    assert.equal(store.quest(redemptionQuest.quest.id)?.status, 'pending', 'Kanalpunkte-Moderation muss über den Statusabgleich im Dashboard laufen');
     assert.match(features.handle(chat('approve-mod', 'mod-1', 'Mod', '!approvequest', true), 'approvequest', [quest.id.slice(0, 8)], 10_007) || '', /freigegeben/u);
     assert.equal(store.transitionQuest(quest.id, 'active', 'broadcaster-1', 10_008, policy).ok, true);
     assert.equal((store.widgetSnapshot('quest', 10_009).quest as { title: string }).title, quest.title);
@@ -153,8 +161,9 @@ test('SQLite-Migration sichert die vorherige Datenbank und erhält Halloween-Pun
       DROP TABLE quest_cooldowns; DROP TABLE quests;
       DELETE FROM feature_config WHERE key IN ('quest_settings','poll_settings','widget_settings');
       UPDATE feature_config SET value='{"xp":true}' WHERE key='modules';
-      DROP TABLE spark_proposals; DROP TABLE spark_cooldowns;
-      DELETE FROM schema_migrations WHERE version=3;`);
+      DROP TABLE channel_point_redemptions;
+      DELETE FROM feature_config WHERE key='channel_points_settings';
+      DELETE FROM schema_migrations WHERE version=4;`);
     raw.close();
     const before = fs.readdirSync(path.join(directory, 'backups')).length;
     store = new FeatureStore(databasePath);
@@ -165,7 +174,7 @@ test('SQLite-Migration sichert die vorherige Datenbank und erhält Halloween-Pun
     const newest = path.join(directory, 'backups', backups.sort().at(-1)!);
     assert.equal(fs.statSync(newest).mode & 0o777, 0o600);
     const backup = new BetterSqlite3(newest, { readonly: true });
-    assert.equal((backup.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='spark_proposals'").get() as { n: number }).n, 0);
+    assert.equal((backup.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='channel_point_redemptions'").get() as { n: number }).n, 0);
     backup.close();
   } finally {
     try { store.close(); } catch { /* A prior assertion may already have closed the connection. */ }
