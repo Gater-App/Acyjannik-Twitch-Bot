@@ -5,13 +5,14 @@ import { FeatureStore } from './feature-store.js';
 export interface ArcadeSettings {
   petEnabled: boolean; dropsEnabled: boolean; wheelEnabled: boolean; autoDrops: boolean;
   petCooldownMs: number; dropDurationMs: number; wheelCooldownMs: number; allowChatSpin: boolean;
+  activityRetentionDays: number;
 }
 export interface PetState {
   name: string; level: number; xp: number; hunger: number; happiness: number; energy: number;
   stage: 'egg'|'baby'|'young'|'adult'|'legendary'; paused: boolean; animation: string; updatedAt: number;
 }
 interface PetRow {name:string;level:number;xp:number;hunger:number;happiness:number;energy:number;stage:PetState['stage'];paused:number;animation:string;updated_at:number}
-const DEFAULT_SETTINGS: ArcadeSettings = { petEnabled:false,dropsEnabled:false,wheelEnabled:false,autoDrops:false,petCooldownMs:120_000,dropDurationMs:60_000,wheelCooldownMs:300_000,allowChatSpin:false };
+const DEFAULT_SETTINGS: ArcadeSettings = { petEnabled:false,dropsEnabled:false,wheelEnabled:false,autoDrops:false,petCooldownMs:120_000,dropDurationMs:60_000,wheelCooldownMs:300_000,allowChatSpin:false,activityRetentionDays:90 };
 const DEFAULT_CHALLENGES = ['Eine Runde ohne Springen','Fünf Minuten nur Pistolen','Chat wählt die nächste Quest','Zeit für ein Gaming-Quiz','Der Drache bekommt einen Energieschub!','Mystery Drop für den Chat'];
 const LIMITS: Record<string,number> = { common:5,rare:10,epic:20,legendary:35,community:10 };
 const clean = (s:string,n=80) => Array.from(s.replace(/[\u0000-\u001f\u007f]/gu,' ').replace(/\s+/gu,' ').trim()).slice(0,n).join('');
@@ -29,6 +30,7 @@ export class CommunityArcade {
   updateSettings(next:ArcadeSettings):void {
     for(const k of ['petEnabled','dropsEnabled','wheelEnabled','autoDrops','allowChatSpin'] as const)if(typeof next[k]!=='boolean')throw new Error(`Ungültige Arcade-Einstellung: ${k}`);
     for(const k of ['petCooldownMs','dropDurationMs','wheelCooldownMs'] as const)if(!Number.isInteger(next[k])||next[k]<1000||next[k]>86_400_000)throw new Error(`Ungültige Arcade-Einstellung: ${k}`);
+    if(!Number.isInteger(next.activityRetentionDays)||next.activityRetentionDays<1||next.activityRetentionDays>3650)throw new Error('activityRetentionDays muss zwischen 1 und 3650 liegen.');
     this.store.setConfig('arcade_settings',next);
   }
   pet():PetState { return this.store.miniGameQuery(db=>this.toPet(db.prepare('SELECT * FROM community_pet WHERE id=1').get() as PetRow)); }
@@ -116,6 +118,10 @@ export class CommunityArcade {
     this.store.miniGameTransaction(db=>{
       db.prepare("UPDATE community_pet SET hunger=MAX(20,hunger-MIN(5,MAX(0,CAST((?-updated_at)/86400000 AS INTEGER)))),energy=MIN(100,energy+MIN(5,MAX(0,CAST((?-updated_at)/86400000 AS INTEGER)))),updated_at=updated_at+MAX(0,CAST((?-updated_at)/86400000 AS INTEGER))*86400000 WHERE id=1 AND ?-updated_at>=86400000").run(now,now,now,now);
       db.prepare("UPDATE community_pet SET animation=CASE WHEN paused=1 THEN 'sleep' WHEN animation IN ('feed','play','care','happy','drop','levelup','evolution') AND updated_at<? THEN 'idle' ELSE animation END WHERE id=1").run(now-12000);
+      const cutoff=now-this.settings().activityRetentionDays*86_400_000;
+      db.prepare('DELETE FROM mystery_claims WHERE claimed_at<?').run(cutoff);
+      db.prepare("DELETE FROM mystery_drops WHERE status IN ('completed','canceled','expired') AND COALESCE(resolved_at,created_at)<?").run(cutoff);
+      db.prepare('DELETE FROM chaos_wheel_spins WHERE created_at<?').run(cutoff);
     });
     return out;
   }

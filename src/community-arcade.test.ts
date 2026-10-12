@@ -29,6 +29,15 @@ test('Mystery-Drop nimmt pro Twitch-ID einen Claim an und vergibt XP genau einma
   store.close();
 });
 
+test('Abgelaufene Teilnehmerdetails werden gemäß Aufbewahrungsfrist bereinigt',()=>{
+  const {store,arcade}=setup();arcade.updateSettings({...arcade.settings(),dropsEnabled:true,dropDurationMs:5000,activityRetentionDays:90});
+  const old=Date.now()-100*86_400_000;arcade.startDropAdmin('broadcaster','common',old);
+  arcade.handle(message('viewer','old-claim','!claim'),'claim',[],old+1);
+  arcade.tick(Date.now());
+  const remaining=store.miniGameQuery(db=>(db.prepare('SELECT COUNT(*) n FROM mystery_claims').get() as {n:number}).n);
+  assert.equal(remaining,0);store.close();
+});
+
 test('Chaos Wheel verlangt zwei Segmente und persistiert das vom Server gezogene Ergebnis',()=>{
   const {store,arcade}=setup();arcade.updateSettings({...arcade.settings(),wheelEnabled:true});
   arcade.configureChallenge('Test A',1,true);arcade.configureChallenge('Test B',3,true);

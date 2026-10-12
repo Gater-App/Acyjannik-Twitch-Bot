@@ -302,7 +302,7 @@ Die drei Community-Arcade-Module verwenden dieselbe SQLite-Datei, das vorhandene
 
 Die drei OBS-Widgets werden wie die übrigen Lesewidgets im Dashboard über **OBS-Widgets → Pet/Drop/Wheel-URL erneuern** ausgegeben und können dort widerrufen werden. URLs verwenden `/widgets/pet?token=…`, `/widgets/drop?token=…` und `/widgets/wheel?token=…` mit einem im Dashboard erzeugten Token.
 
-Aktueller Implementierungsumfang: gemeinschaftlicher Drache mit begrenzten Pflegewerten, Level-/Evolutionsstufen und einfachen Animationen; manuell gestartete, kostenlose Drops mit einmaligen Claims und XP; serverseitige gewichtete Wheel-Auswahl mit persistentem Ergebnis. Automatische Drops, volle Kosmetik-/Sammlungsverwaltung, Community-Meilenstein-Verteilung, Wheel-Historien-/Segmentbearbeitung und Quest-Übergabe sind noch nicht Bestandteil dieser ersten Ausbaustufe. Für Production sind HTTPS/Domain, Tokens, Twitch-Berechtigungen und eine separate Deployment-Freigabe nötig.
+Aktueller Implementierungsumfang: gemeinschaftlicher Drache mit begrenzten Pflegewerten, Level-/Evolutionsstufen und einfachen Animationen; manuell gestartete, kostenlose Drops mit einmaligen Claims und XP; serverseitige gewichtete Wheel-Auswahl mit persistentem Ergebnis. Drop-Teilnahmedetails und Wheel-Historie werden standardmäßig nach 90 Tagen bereinigt. Automatische Drops, volle Kosmetik-/Sammlungsverwaltung, Community-Meilenstein-Verteilung, vollständige Wheel-Historien-/Segmentverwaltung und Quest-Übergabe sind noch nicht Bestandteil dieser ersten Ausbaustufe. Für Production sind HTTPS/Domain, Tokens, Twitch-Berechtigungen und eine separate Deployment-Freigabe nötig.
 
 ## Befehle
 
