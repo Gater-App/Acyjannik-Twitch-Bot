@@ -34,7 +34,7 @@ export interface CustomCommand {
 export type QuestStatus = 'pending' | 'approved' | 'active' | 'completed' | 'failed' | 'rejected' | 'canceled';
 export type QuestSource = 'chat' | 'channel_points' | 'dashboard';
 export type PollStatus = 'active' | 'ended' | 'canceled';
-export type WidgetType = 'quest' | 'poll';
+export type WidgetType = 'quest' | 'poll' | 'imposter' | 'detective';
 export type SparkStatus = 'detected' | 'pending_approval' | 'approved' | 'rejected' | 'expired' | 'executed' | 'canceled';
 export interface SparkProposal {
   id: string; channelId: string; topicId: string; topicLabel: string; score: number; participants: number;
@@ -148,6 +148,8 @@ const RESERVED_COMMANDS = new Set([
   'boss', 'bosstop', 'endboss', 'addcommand', 'setcommand', 'delcommand', 'help',
   'quest', 'quests', 'myquest', 'questhelp', 'questqueue', 'approvequest', 'rejectquest', 'skipquest', 'poll', 'vote', 'pollresults',
   'spark','sparks','sparkhelp','sparkapprove','sparkreject','sparkpause','sparkresume','sparktopics',
+  'imposter','imposterstatus','joinimposter','leaveimposter','startimposter','closeimposter','cancelimposter','sus',
+  'quoteoptin','quoteoptout','savequote','myquotes','deletequote','detektiv','startdetektiv','wer','quote','skipdetektiv','enddetektiv',
 ]);
 
 export class FeatureStore {
@@ -344,7 +346,6 @@ export class FeatureStore {
         `);
       })();
     }
-    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
     if (currentVersion < 3) {
       if (currentVersion > 0) this.backupBeforeMigration(3);
       this.db.transaction(() => {
@@ -382,6 +383,59 @@ export class FeatureStore {
         INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (4, unixepoch()*1000);
       `))();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 5) {
+      if (currentVersion > 0) this.backupBeforeMigration(5);
+      this.db.transaction(() => this.db.exec(`
+        CREATE TABLE imposter_rounds(id TEXT PRIMARY KEY, phase TEXT NOT NULL, rule_id TEXT, rule_text TEXT,
+          imposter_id TEXT, started_at INTEGER NOT NULL, phase_ends_at INTEGER, result_json TEXT, updated_at INTEGER NOT NULL);
+        CREATE UNIQUE INDEX one_live_imposter_round ON imposter_rounds((1)) WHERE phase IN ('registration','role_distribution','playing','voting');
+        CREATE TABLE imposter_players(round_id TEXT NOT NULL REFERENCES imposter_rounds(id) ON DELETE CASCADE,
+          user_id TEXT NOT NULL, login TEXT NOT NULL, display_name TEXT NOT NULL, role TEXT NOT NULL, joined_at INTEGER NOT NULL,
+          PRIMARY KEY(round_id,user_id));
+        CREATE TABLE imposter_votes(round_id TEXT NOT NULL REFERENCES imposter_rounds(id) ON DELETE CASCADE,
+          voter_id TEXT NOT NULL, target_id TEXT NOT NULL, voted_at INTEGER NOT NULL, PRIMARY KEY(round_id,voter_id));
+        CREATE TABLE detective_quotes(id TEXT PRIMARY KEY, author_id TEXT NOT NULL, author_login TEXT NOT NULL, author_name TEXT NOT NULL,
+          text TEXT NOT NULL, submitted_at INTEGER NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected')),
+          uses INTEGER NOT NULL DEFAULT 0, last_used_at INTEGER, expires_at INTEGER);
+        CREATE INDEX detective_quotes_author ON detective_quotes(author_id,status);
+        CREATE TABLE detective_rounds(id TEXT PRIMARY KEY, quote_id TEXT NOT NULL REFERENCES detective_quotes(id) ON DELETE CASCADE,
+          phase TEXT NOT NULL, started_at INTEGER NOT NULL, ends_at INTEGER NOT NULL, result_json TEXT, updated_at INTEGER NOT NULL);
+        CREATE UNIQUE INDEX one_live_detective_round ON detective_rounds((1)) WHERE phase IN ('playing','results');
+        CREATE TABLE detective_guesses(round_id TEXT NOT NULL REFERENCES detective_rounds(id) ON DELETE CASCADE,
+          user_id TEXT NOT NULL, display_name TEXT NOT NULL, target_id TEXT NOT NULL, guessed_at INTEGER NOT NULL,
+          PRIMARY KEY(round_id,user_id));
+        CREATE TABLE mini_game_awards(event_id TEXT PRIMARY KEY, game TEXT NOT NULL, round_id TEXT NOT NULL,
+          user_id TEXT NOT NULL, xp INTEGER NOT NULL, created_at INTEGER NOT NULL);
+        CREATE TABLE mini_game_consent(user_id TEXT PRIMARY KEY, opted_in_at INTEGER NOT NULL);
+        INSERT OR IGNORE INTO feature_config(key,value) VALUES
+          ('mini_game_settings','{"enabled":false,"imposter":{"minPlayers":4,"maxPlayers":20,"registrationMs":120000,"playMs":180000,"votingMs":45000,"cooldownMs":600000,"allowVoteChange":false,"noSelfVote":true,"winXp":20,"participationXp":5,"rules":[]},"detective":{"roundMs":30000,"quoteRetentionDays":90,"winXp":10,"dailyXpCap":50,"allowGuessChange":false}}');
+        INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (5, unixepoch()*1000);
+      `))();
+    }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 6) {
+      if (currentVersion === 5) this.backupBeforeMigration(6);
+      this.db.transaction(() => this.db.exec(`
+        CREATE TABLE IF NOT EXISTS widget_tokens (
+          id TEXT PRIMARY KEY, widget_type TEXT NOT NULL CHECK(widget_type IN ('quest','poll')),
+          token_hash TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL, expires_at INTEGER, revoked_at INTEGER
+        );
+        CREATE TABLE widget_tokens_v6 (
+          id TEXT PRIMARY KEY,
+          widget_type TEXT NOT NULL CHECK(widget_type IN ('quest','poll','imposter','detective')),
+          token_hash TEXT NOT NULL UNIQUE,
+          created_at INTEGER NOT NULL,
+          expires_at INTEGER,
+          revoked_at INTEGER
+        );
+        INSERT INTO widget_tokens_v6 SELECT * FROM widget_tokens;
+        DROP TABLE widget_tokens;
+        ALTER TABLE widget_tokens_v6 RENAME TO widget_tokens;
+        CREATE INDEX widget_tokens_active ON widget_tokens(widget_type,revoked_at,expires_at);
+        INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (6, unixepoch()*1000);
+      `))();
+    }
   }
 
   private backupBeforeMigration(version: number): void {
@@ -393,6 +447,10 @@ export class FeatureStore {
     this.db.exec(`VACUUM INTO '${quoted}'`);
     fs.chmodSync(destination, 0o600);
   }
+
+  /** Shared connection for feature modules; all mutations must remain transactional. */
+  miniGameTransaction<T>(operation: (db: BetterSqlite3.Database) => T): T { return this.db.transaction(() => operation(this.db))(); }
+  miniGameQuery<T>(operation: (db: BetterSqlite3.Database) => T): T { return operation(this.db); }
 
   config<T>(key: string, fallback: T): T {
     const row = this.db.prepare('SELECT value FROM feature_config WHERE key=?').get(key) as { value: string } | undefined;
@@ -796,6 +854,24 @@ export class FeatureStore {
   }
 
   widgetSnapshot(type: WidgetType, now: number): Record<string, unknown> {
+    if (type === 'imposter') {
+      const row = this.db.prepare("SELECT id,phase,phase_ends_at,result_json,updated_at FROM imposter_rounds WHERE phase IN ('registration','role_distribution','playing','voting','results','finished') ORDER BY updated_at DESC LIMIT 1").get() as {id:string;phase:string;phase_ends_at:number|null;result_json:string|null;updated_at:number}|undefined;
+      if (!row || (row.phase === 'finished' && now - row.updated_at>12_000)) return {type,visible:false,capturedAt:now};
+      const count=(this.db.prepare('SELECT COUNT(*) n FROM imposter_players WHERE round_id=?').get(row.id) as {n:number}).n;
+      const votes=(this.db.prepare('SELECT COUNT(*) n FROM imposter_votes WHERE round_id=?').get(row.id) as {n:number}).n;
+      let result:Record<string,unknown>|null=null;
+      if((row.phase==='results'||row.phase==='finished')&&row.result_json){const stored=JSON.parse(row.result_json) as {caught:boolean;neutral:boolean;imposterId:string;rule:string;tie:boolean;votes:number};
+        const player=this.db.prepare('SELECT display_name FROM imposter_players WHERE round_id=? AND user_id=?').get(row.id,stored.imposterId) as {display_name:string}|undefined;
+        result={caught:stored.caught,neutral:stored.neutral,imposterName:player?.display_name||'Unbekannt',rule:stored.rule,tie:stored.tie,votes:stored.votes};}
+      return {type,visible:true,game:{phase:row.phase,participants:count,votes,endsAt:row.phase_ends_at,result},capturedAt:now};
+    }
+    if (type === 'detective') {
+      const row=this.db.prepare("SELECT r.phase,r.ends_at,r.updated_at,q.text,r.result_json FROM detective_rounds r JOIN detective_quotes q ON q.id=r.quote_id WHERE r.phase IN ('playing','results','finished') ORDER BY r.updated_at DESC LIMIT 1").get() as {phase:string;ends_at:number;updated_at:number;text:string;result_json:string|null}|undefined;
+      if(!row||(row.phase==='finished'&&now-row.updated_at>12_000))return {type,visible:false,capturedAt:now};
+      const guesses=(this.db.prepare("SELECT COUNT(*) n FROM detective_guesses g JOIN detective_rounds r ON r.id=g.round_id WHERE r.phase IN ('playing','finished') AND r.updated_at=(SELECT MAX(updated_at) FROM detective_rounds)").get() as {n:number}).n;
+      let result:Record<string,unknown>|null=null;if((row.phase==='results'||row.phase==='finished')&&row.result_json){const stored=JSON.parse(row.result_json) as {authorName:string;winners:Array<{display_name:string}>};result={authorName:stored.authorName,winners:stored.winners.map(w=>w.display_name)};}
+      return {type,visible:true,game:{phase:row.phase,text:row.text,endsAt:row.ends_at,guesses,result},capturedAt:now};
+    }
     if (type === 'quest') {
       const active = this.activeQuest();
       if (active) return { type, visible: true, quest: publicQuest(active), capturedAt: now };

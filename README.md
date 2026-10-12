@@ -34,6 +34,9 @@ oder Sachpreisverlosungen.
 - Persistenter, typisierter Community-Event-Feed mit authentifiziertem SSE-Endpunkt
   als Grundlage für spätere OBS-Overlays
 - Optionaler, regelbasierter Gesprächs-Funken für gemeinsame Gaming-Themen; standardmäßig deaktiviert, mit Moderatorfreigabe und ohne gespeicherte Chatinhalte
+- Freiwillige Chat-Minispiele: Chat-Imposter mit geheimer, persönlich per Twitch-OAuth abrufbarer Rolle; Chat-Detektiv mit einzeln eingereichten, moderierten Zitaten. Beide starten deaktiviert.
+- Persistente Runden, eindeutige Twitch-User-IDs, abstimmungs-/tippbasierte Auflösung und idempotente XP-Awards über das bestehende XP-Ledger
+- Zwei zusätzliche transparente OBS-Widgets mit eigenen widerrufbaren Lesetokens; öffentliche Snapshots enthalten während des Spiels weder Imposter noch geheime Regel oder Zitatautor
 - Versionierte SQLite-Migrationen im WAL-Modus; vorhandene Halloween-Punkte und
   Cooldowns werden übernommen und nicht zurückgesetzt
 - Docker-/Compose-Betrieb für ARM64, Healthcheck, persistente Volumes,
@@ -66,6 +69,13 @@ alice|Alice|!pumpkins
 alice|Alice|!guess 42
 ```
 
+Die neuen Minispiele lassen sich ohne Twitch-Verbindung mit synthetischen
+Teilnehmern durchspielen:
+
+```bash
+npm run demo:games
+```
+
 `DATABASE_PATH` sollte für Testläufe von der späteren Live-Datenbank getrennt
 sein. Die Tests versenden keine echten Twitch-Nachrichten.
 
@@ -73,7 +83,10 @@ sein. Die Tests versenden keine echten Twitch-Nachrichten.
 
 1. Eine Twitch-Developer-App anlegen oder eine vorhandene App verwenden.
 2. In der Developer Console die Redirect-URLs aus der lokalen oder
-   Server-Konfiguration eintragen. Twitch verlangt einen exakten Treffer.
+   Server-Konfiguration eintragen. Twitch verlangt einen exakten Treffer. Für
+   die spätere Teilnehmer-Rollenanmeldung zusätzlich
+   `http://localhost:3001/games/imposter/callback` (lokal) und
+   `https://DEINE-DOMAIN/games/imposter/callback` (Server) eintragen.
 3. Ein Bot-Konto in `.env` als `TWITCH_BOT_LOGIN` eintragen. Es muss Janniks
    Chat beitreten dürfen; für den hier verwendeten WebSocket-Betrieb sollte es
    im Kanal als Moderator oder VIP zugelassen sein.
@@ -135,6 +148,42 @@ Jannik kann im Dashboard Quests filtern, bearbeiten, genehmigen, ablehnen,
 genau einmal. Optional kann eine Umfrage aus zwei bis fünf freigegebenen Quests
 gestartet werden; die Gewinnerquest wird nur markiert und niemals automatisch
 gestartet.
+
+Die Karte **Community-Minispiele** steuert Freigabe, Rundenstart, Rollenvergabe,
+Abstimmung, Detektiv-Runden und Zitatmoderation. Dort lassen sich außerdem
+Rundenzeiten, XP-Werte und der sichere Regelpool konfigurieren. Zum Starten
+müssen `DASHBOARD_REDIRECT_URI` und die zusätzliche Twitch-Callback-URL
+`/games/imposter/callback` denselben öffentlichen Host verwenden. Bei jedem
+Rollenaufruf meldet sich der Teilnehmer mit Twitch an; der Server liest die
+verifizierte Twitch-User-ID und gibt nur die zugehörige eigene Rolle aus. Der
+kurzlebige Browserzugang ist serverseitig gespeichert, enthält keine Rolle in
+URL oder Client-API und muss nach einem Bot-Neustart erneut angemeldet werden.
+
+Chatbefehle: `!startimposter`, `!joinimposter`, `!leaveimposter`,
+`!imposterstatus`, `!closeimposter`, `!sus @Name` und `!cancelimposter`.
+Zitate: `!quoteoptin` aktiviert die Möglichkeit zur Einreichung, speichert aber
+keinen Chat. Nur `!savequote TEXT` speichert genau diesen Text; er bleibt bis zur
+Dashboard-Freigabe unsichtbar. `!myquotes` zeigt die eigenen Zitat-IDs.
+`!quoteoptout` löscht sämtliche eigenen Zitate und widerruft die Einwilligung;
+`!deletequote ID` löscht einzeln. Detektiv:
+`!startdetektiv`, `!detektiv`, `!wer @Name`, `!enddetektiv`.
+
+Im OBS-Bereich je ein Token für **Imposter** und **Detektiv** erzeugen. Caddy
+leitet die Teilnehmerseiten unter `/games/*` per HTTPS zum bestehenden Dashboard-
+Webserver im selben Bot-Prozess weiter. Für den
+Imposter wird vor der Auflösung nur Phase, Teilnehmerzahl und Stimmzahl gezeigt;
+für den Detektiv wird der freigegebene Zitattext gezeigt, nicht der Autor. Die
+Identität erscheint erst in der Auflösung. Token-URL nicht öffentlich teilen;
+Erneuern widerruft die vorherige URL.
+
+Datensparsamkeit: Es werden keine Chatverläufe mitgeschnitten. Nur explizit
+eingereichte Zitate, Twitch-User-ID/Login/Anzeigename, Einreichungs-/Ablaufzeit,
+Freigabestatus und Verwendung werden bis zur Löschung beziehungsweise maximal
+zur konfigurierten Aufbewahrung gespeichert (Standard 90 Tage). Das Löschen
+oder Opt-out entfernt Zitate unmittelbar aus dem Pool und beendet eine gerade
+laufende Runde mit diesem Zitat. Vor öffentlicher Aktivierung muss Jannik die
+Teilnehmerinformation und Datenschutzhinweise prüfen/anpassen; diese technische
+Implementierung ist keine pauschale DSGVO-Konformitätszusage.
 
 Chat-Umfragen werden im Dashboard erstellt und beendet. Zuschauer sehen Frage
 und Optionen mit `!poll`, stimmen mit `!vote 1` bis `!vote 5` ab und sehen den
@@ -398,10 +447,11 @@ Die Tests decken die erhaltene Halloween-Mechanik und Punktestände,
 SQLite-Migration samt Sicherung, Quest-Freigabe/Rollen/Cooldown/Übergänge und
 einmalige XP-Belohnung, Abstimmungsänderungen/Deduplizierung/Gleichstände/
 Neustart, Quest-Abstimmungen, Dashboard-OAuth-Allowlist/Sessions/CSRF,
-Widget-Token und OBS-Snapshots sowie die bisherigen Minispiele ab. Twitch- und
-Dashboard-OAuth werden simuliert; Spark-Regeln, Schwellen, Deduplizierung,
-Cooldowns, Rollen und Vorschlagsabläufe werden isoliert getestet. Keine echten
-Chatnachrichten werden gesendet.
+Widget-Token und OBS-Snapshots sowie Chat-Imposter-/Detektiv-Zustände,
+Teilnehmer-OAuth, Rollenleckschutz, Quote-Opt-in/Freigabe/Löschung,
+Stimmenwechsel, Gleichstand, XP-Deduplizierung und Ablaufbereinigung ab. Twitch-
+und Dashboard-OAuth werden simuliert; keine echten Chatnachrichten werden
+gesendet. `npm run demo:games` ist eine lokale synthetische Durchspiel-Demo.
 
 Ein öffentlicher Oracle-Deploy oder ein echter Twitch-Kanaltest wird nicht
 automatisch ausgelöst. Vor dem Livegang müssen die Twitch-App, Redirect-URLs,

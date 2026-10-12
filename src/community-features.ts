@@ -4,6 +4,7 @@ import { clampChatMessage } from './chat.js';
 import { FeatureStore, type CustomCommand } from './feature-store.js';
 import { QuestPollFeatures } from './quest-poll.js';
 import { ConversationSpark } from './conversation-spark.js';
+import { MiniGames } from './mini-games.js';
 
 type UserLookup = (login: string) => Promise<{ id: string; login: string; displayName: string } | undefined>;
 type RandomInclusive = (min: number, max: number) => number;
@@ -21,13 +22,14 @@ const DEFAULT_8BALL = [
 export class CommunityFeatures {
   private readonly questPoll: QuestPollFeatures;
   readonly conversationSpark: ConversationSpark;
+  readonly miniGames: MiniGames;
 
   constructor(
     private readonly store: FeatureStore,
     private readonly config: AppConfig,
     private readonly lookupUser: UserLookup = async () => undefined,
     private readonly random: RandomInclusive = secureRandomInclusive,
-  ) { this.questPoll = new QuestPollFeatures(store, config); this.conversationSpark = new ConversationSpark(store, config.broadcasterUserId); }
+  ) { this.questPoll = new QuestPollFeatures(store, config); this.conversationSpark = new ConversationSpark(store, config.broadcasterUserId); this.miniGames = new MiniGames(store, config); }
 
   observeActivity(message: ChatMessage, now = Date.now()): string | undefined {
     if (message.senderUserId === this.config.botUserId || message.senderLogin.toLowerCase() === this.config.botLogin.toLowerCase()) return undefined;
@@ -46,7 +48,7 @@ export class CommunityFeatures {
 
   activeEventId(): string | undefined { return this.store.activeEvent()?.id; }
 
-  tick(now = Date.now()): void { this.refreshScheduledEvents(now); this.questPoll.tick(now); this.conversationSpark.tick(now); }
+  tick(now = Date.now(), advanceMiniGames = true): string[] { this.refreshScheduledEvents(now); this.questPoll.tick(now); this.conversationSpark.tick(now); return advanceMiniGames ? this.miniGames.tick(now) : []; }
 
   async handle(message: ChatMessage, command: string, args: string[], now = Date.now()): Promise<CommandReply[]> {
     const modules = this.store.config<Record<string, boolean>>('modules', {});
@@ -56,6 +58,8 @@ export class CommunityFeatures {
 
     const sparkResponse = await this.conversationSpark.handleCommand(message, command, args, now);
     if (sparkResponse !== undefined) return say(sparkResponse);
+    const miniGameResponse = this.miniGames.handle(message, command, args, now);
+    if (miniGameResponse !== undefined) return say(miniGameResponse);
     const questPollResponse = this.questPoll.handle(message, command, args, now);
     if (questPollResponse !== undefined) return questPollResponse ? say(questPollResponse) : [];
 

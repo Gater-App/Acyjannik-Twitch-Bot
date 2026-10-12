@@ -9,6 +9,8 @@ import { DEFAULT_SPARK_CONFIG, type SparkActionType, type SparkConfig, type Spar
 import { CHANNEL_POINTS_CARD, CHANNEL_POINTS_SCRIPT } from './channel-points-ui.js';
 import { DEFAULT_CHANNEL_POINTS_SETTINGS, type ChannelPointsService, type ChannelPointsSettings } from './channel-points.js';
 import type { Logger } from './logger.js';
+import type { MiniGames, MiniGameSettings } from './mini-games.js';
+import { MINI_GAME_CARD, MINI_GAME_SCRIPT } from './mini-games-ui.js';
 
 interface Session { userId: string; login: string; csrf: string; expiresAt: number; }
 interface RuntimeStatus { twitchConnected: boolean; channel: string; startedAt: number; lastError?: string; }
@@ -35,6 +37,8 @@ export class DashboardServer {
   private readonly rates = new Map<string, { count: number; resets: number }>();
   private readonly eventStreams = new Map<http.ServerResponse, NodeJS.Timeout>();
   private readonly widgetStreams = new Map<http.ServerResponse, NodeJS.Timeout>();
+  private readonly participantStates = new Map<string, number>();
+  private readonly participantSessions = new Map<string, {userId:string;expiresAt:number}>();
   private readonly adminIds: Set<string>;
   private readonly clientId = process.env.TWITCH_CLIENT_ID?.trim() || '';
   private readonly clientSecret = process.env.TWITCH_CLIENT_SECRET?.trim() || '';
@@ -50,6 +54,7 @@ export class DashboardServer {
     private readonly getSparkSnapshot: () => unknown[] = () => [],
     private readonly channelPoints?:ChannelPointsService,
     private readonly getChannelPointsConnectUrl?:()=>string,
+    private readonly miniGames?:MiniGames,
   ) { this.adminIds = new Set((process.env.DASHBOARD_ADMIN_IDS || '').split(/[ ,]+/u).filter(Boolean)); }
 
   async start(): Promise<boolean> {
@@ -82,6 +87,7 @@ export class DashboardServer {
     await new Promise<void>((resolve) => this.server!.close(() => resolve()));
     this.server = undefined;
     this.sessions.clear();
+    this.participantSessions.clear(); this.participantStates.clear();
   }
 
   address(): AddressInfo | undefined { const addr = this.server?.address(); return addr && typeof addr === 'object' ? addr : undefined; }
@@ -93,6 +99,9 @@ export class DashboardServer {
     if (!this.rateLimit(clientIp)) { this.json(res, 429, { error: 'Zu viele Anfragen. Bitte kurz warten.' }); return; }
     if (url.pathname === '/dashboard/login' && req.method === 'GET') { this.login(res); return; }
     if (url.pathname === '/dashboard/oauth/callback' && req.method === 'GET') { await this.callback(url, req, res); return; }
+    if (url.pathname === '/games/imposter/login' && req.method === 'GET') { this.participantLogin(res); return; }
+    if (url.pathname === '/games/imposter/callback' && req.method === 'GET') { await this.participantCallback(url,req,res); return; }
+    if (url.pathname === '/games/imposter/role' && req.method === 'GET') { this.participantRole(req,res); return; }
     if (url.pathname === '/dashboard/api/logout' && req.method === 'POST') {
       const session = this.authenticate(req, res, true); if (!session) return;
       if (!this.checkCsrf(req, session)) { this.json(res, 403, { error: 'CSRF-Prüfung fehlgeschlagen.' }); return; }
@@ -103,8 +112,8 @@ export class DashboardServer {
       const nonce = randomBytes(18).toString('base64');
       res.setHeader('Content-Security-Policy', `default-src 'self'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`);
       res.statusCode = 200; res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      const page = PAGE.replace('</section></main>', `${SETTINGS_CARD}${QUEST_POLL_CARD}${SPARK_CARD}${CHANNEL_POINTS_CARD}</section></main>`)
-        .replace('</script>', `${SETTINGS_SCRIPT}${QUEST_POLL_SCRIPT}${SPARK_SCRIPT}${CHANNEL_POINTS_SCRIPT}</script>`);
+      const page = PAGE.replace('</section></main>', `${SETTINGS_CARD}${QUEST_POLL_CARD}${SPARK_CARD}${CHANNEL_POINTS_CARD}${MINI_GAME_CARD}</section></main>`)
+        .replace('</script>', `${SETTINGS_SCRIPT}${QUEST_POLL_SCRIPT}${SPARK_SCRIPT}${CHANNEL_POINTS_SCRIPT}${MINI_GAME_SCRIPT}</script>`);
       res.end(page.replaceAll('__CSRF__', session.csrf).replaceAll('__NONCE__', nonce)); return;
     }
     if (url.pathname.startsWith('/widgets/')) { await this.widgetRoute(url, req, res); return; }
@@ -119,9 +128,9 @@ export class DashboardServer {
 
   private async widgetRoute(url: URL, req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     if (req.method !== 'GET') { this.json(res, 405, { error: 'Widgets sind nur lesend.' }); return; }
-    const page = /^\/widgets\/(quest|poll)$/u.exec(url.pathname);
-    const api = /^\/widgets\/api\/(quest|poll)$/u.exec(url.pathname);
-    const stream = /^\/widgets\/stream\/(quest|poll)$/u.exec(url.pathname);
+    const page = /^\/widgets\/(quest|poll|imposter|detective)$/u.exec(url.pathname);
+    const api = /^\/widgets\/api\/(quest|poll|imposter|detective)$/u.exec(url.pathname);
+    const stream = /^\/widgets\/stream\/(quest|poll|imposter|detective)$/u.exec(url.pathname);
     if (!page && !api && !stream) { this.json(res, 404, { error: 'Nicht gefunden.' }); return; }
     const type = (page?.[1] || api?.[1] || stream?.[1]) as WidgetType;
     const token = url.searchParams.get('token') || '';
@@ -133,7 +142,7 @@ export class DashboardServer {
       const settings = this.store.config('widget_settings', defaultWidgetSettings());
       res.setHeader('Content-Security-Policy', `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; img-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`);
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.end(communityWidgetHtml(type, nonce, settings.fontSize, settings.theme));
+      res.end(type==='quest'||type==='poll'?communityWidgetHtml(type, nonce, settings.fontSize, settings.theme):miniGameWidgetHtml(type,nonce,settings.fontSize,settings.theme));
       return;
     }
     if (api) { this.json(res, 200, this.store.widgetSnapshot(type, Date.now())); return; }
@@ -173,6 +182,43 @@ export class DashboardServer {
     res.setHeader('Location', auth.toString()); res.end();
   }
 
+  private participantLogin(res:http.ServerResponse):void {
+    const redirect=new URL('/games/imposter/callback',new URL(this.redirectUri).origin).toString();
+    const state=randomBytes(24).toString('hex');this.participantStates.set(state,Date.now()+10*60_000);
+    for(const [key,expires] of this.participantStates)if(expires<=Date.now())this.participantStates.delete(key);
+    const auth=new URL('https://id.twitch.tv/oauth2/authorize');auth.searchParams.set('client_id',this.clientId);auth.searchParams.set('redirect_uri',redirect);auth.searchParams.set('response_type','code');auth.searchParams.set('scope','');auth.searchParams.set('state',state);
+    res.statusCode=302;res.setHeader('Cache-Control','no-store');res.setHeader('Set-Cookie',`imposter_oauth_state=${state}; Path=/games/imposter; HttpOnly; Secure; SameSite=Lax; Max-Age=600`);res.setHeader('Location',auth.toString());res.end();
+  }
+
+  private async participantCallback(url:URL,req:http.IncomingMessage,res:http.ServerResponse):Promise<void>{
+    const state=url.searchParams.get('state')||'',expires=this.participantStates.get(state)||0;this.participantStates.delete(state);
+    const clear='imposter_oauth_state=; Path=/games/imposter; HttpOnly; Secure; SameSite=Lax; Max-Age=0';
+    if(!state||expires<Date.now()||this.cookieValue('imposter_oauth_state',req)!==state){res.setHeader('Set-Cookie',clear);this.json(res,400,{error:'Teilnehmer-Anmeldung ist ungültig oder abgelaufen.'});return;}
+    if(url.searchParams.has('error')){res.setHeader('Set-Cookie',clear);this.json(res,400,{error:'Twitch-Anmeldung abgebrochen.'});return;}
+    const code=url.searchParams.get('code');if(!code){res.setHeader('Set-Cookie',clear);this.json(res,400,{error:'OAuth-Code fehlt.'});return;}
+    const redirect=new URL('/games/imposter/callback',new URL(this.redirectUri).origin).toString();
+    const tokenResponse=await this.fetchImpl('https://id.twitch.tv/oauth2/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:this.clientId,client_secret:this.clientSecret,code,grant_type:'authorization_code',redirect_uri:redirect})});
+    if(!tokenResponse.ok){res.setHeader('Set-Cookie',clear);this.json(res,401,{error:'Twitch-Anmeldung konnte nicht verifiziert werden.'});return;}
+    const token=await tokenResponse.json() as {access_token?:string};if(!token.access_token){res.setHeader('Set-Cookie',clear);this.json(res,401,{error:'Twitch hat kein gültiges Token geliefert.'});return;}
+    const validResponse=await this.fetchImpl('https://id.twitch.tv/oauth2/validate',{headers:{Authorization:`OAuth ${token.access_token}`}});const valid=validResponse.ok?await validResponse.json() as TokenValidation:undefined;
+    const userResponse=valid?await this.fetchImpl('https://api.twitch.tv/helix/users',{headers:{'Client-Id':this.clientId,Authorization:`Bearer ${token.access_token}`}}):undefined;
+    const payload=userResponse?.ok?await userResponse.json() as {data?:HelixUser[]}:undefined;const user=payload?.data?.[0];
+    if(!valid||valid.client_id!==this.clientId||!user||valid.user_id!==user.id){res.setHeader('Set-Cookie',clear);this.json(res,401,{error:'Twitch-Identität konnte nicht bestätigt werden.'});return;}
+    const role=this.miniGames?.roleFor(user.id);if(!role){res.setHeader('Set-Cookie',clear);this.json(res,403,{error:'Für dieses Twitch-Konto gibt es keine aktive Rolle.'});return;}
+    const key=randomBytes(32).toString('hex');this.participantSessions.set(key,{userId:user.id,expiresAt:Date.now()+30*60_000});
+    res.setHeader('Cache-Control','no-store');res.setHeader('Set-Cookie',[clear,`imposter_participant=${key}; Path=/games/imposter; HttpOnly; Secure; SameSite=Strict; Max-Age=1800`]);res.statusCode=303;res.setHeader('Location','/games/imposter/role');res.end();
+  }
+
+  private participantRole(req:http.IncomingMessage,res:http.ServerResponse):void {
+    res.setHeader('Cache-Control','no-store, private');res.setHeader('Pragma','no-cache');
+    const key=this.cookieValue('imposter_participant',req)||'',session=this.participantSessions.get(key);
+    if(!session||session.expiresAt<=Date.now()){if(key)this.participantSessions.delete(key);res.setHeader('Set-Cookie','imposter_participant=; Path=/games/imposter; HttpOnly; Secure; SameSite=Strict; Max-Age=0');res.statusCode=303;res.setHeader('Location','/games/imposter/login');res.end();return;}
+    const role=this.miniGames?.roleFor(session.userId);if(!role){this.participantSessions.delete(key);this.json(res,410,{error:'Die Runde ist beendet oder deine Teilnahme wurde entfernt.'});return;}
+    const nonce=randomBytes(18).toString('base64');res.setHeader('Content-Security-Policy',`default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'`);res.setHeader('Content-Type','text/html; charset=utf-8');
+    const secret=role.role==='imposter'?'Du bist der IMPOSTER! Beobachte den Chat und versuche, nicht aufzufallen.':`Deine geheime Regel lautet: ${role.rule}`;
+    res.end(`<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Deine geheime Rolle</title><style nonce="${nonce}">body{margin:0;min-height:100vh;display:grid;place-items:center;background:#11131b;color:#f5f2ff;font:20px system-ui}main{max-width:640px;margin:24px;padding:28px;border:1px solid #7652bd;border-radius:18px;background:#1b1e29}p{line-height:1.6;color:#d1c5f1}</style><main><h1>🎭 Deine geheime Rolle</h1><p>${escapeHtml(secret)}</p><small>Bitte teile diese Information nicht im öffentlichen Chat oder Stream.</small></main></html>`);
+  }
+
   private async callback(url: URL, req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const state = url.searchParams.get('state') || '', expires = this.states.get(state) || 0;
     this.states.delete(state);
@@ -209,6 +255,10 @@ export class DashboardServer {
 
   private async api(url: URL, req: http.IncomingMessage, res: http.ServerResponse, session: Session): Promise<void> {
     const route = url.pathname.slice('/dashboard/api/'.length);
+    if(route==='minigames'&&req.method==='GET'){
+      if(!this.miniGames){this.json(res,503,{error:'Minispiele sind nicht initialisiert.'});return;}
+      this.json(res,200,{settings:this.miniGames.settings(),state:this.miniGames.snapshot(Date.now()),quotes:this.miniGames.managedQuotes()});return;
+    }
     if (route === 'overview' && req.method === 'GET') { this.json(res, 200, { admin: { login: session.login }, status: { ...this.store.overview(), ...this.getStatus() } }); return; }
     if (route === 'events' && req.method === 'GET') { this.json(res, 200, { events: this.store.events() }); return; }
     if (route === 'settings' && req.method === 'GET') {
@@ -252,6 +302,38 @@ export class DashboardServer {
     if (req.method !== 'POST') { this.json(res, 405, { error: 'Methode nicht erlaubt.' }); return; }
     const body = await this.readJson(req); if (!body) { this.json(res, 400, { error: 'Ungültiger JSON-Body.' }); return; }
     const now = Date.now();
+    if(route==='minigames/action'){
+      if(!this.miniGames){this.json(res,503,{error:'Minispiele sind nicht initialisiert.'});return;}
+      const action=String(body.action||'');let message='';
+      if(action==='settings'&&typeof body.enabled==='boolean'){
+        this.miniGames.updateSettings({...this.miniGames.settings(),enabled:body.enabled});this.audit(session,'minigames-enabled','bot',{enabled:body.enabled},now);this.json(res,200,{ok:true});return;
+      }
+      if(action==='save-settings'&&isRecord(body.settings)){
+        try{const current=this.miniGames.settings(),raw=body.settings,imp=isRecord(raw.imposter)?raw.imposter:{},det=isRecord(raw.detective)?raw.detective:{};
+          const number=(v:unknown,old:number,min:number,max:number)=>{const n=Number(v);if(!Number.isSafeInteger(n)||n<min||n>max)throw Error(`Zahl muss zwischen ${min} und ${max} liegen.`);return n;};
+          const bool=(v:unknown,old:boolean)=>{if(typeof v!=='boolean')throw Error('Boolescher Einstellungswert fehlt.');return v;};
+          if(!Array.isArray(imp.rules)||imp.rules.length<1||imp.rules.length>50)throw Error('Mindestens eine Regel (maximal 50) ist erforderlich.');
+          const rules=imp.rules.map((r)=>{if(!isRecord(r)||typeof r.id!=='string'||!/^[a-z0-9_-]{1,40}$/u.test(r.id)||typeof r.name!=='string'||!r.name.trim()||r.name.length>60||typeof r.description!=='string'||r.description.trim().length<8||r.description.length>240||typeof r.enabled!=='boolean')throw Error('Regel ungültig: ID, Name, verständliche Beschreibung und Aktiv-Status prüfen.');return {id:r.id,name:r.name.trim(),description:r.description.trim(),enabled:r.enabled};});
+          if(!rules.some(r=>r.enabled))throw Error('Mindestens eine Regel muss aktiviert bleiben.');
+          const tieOutcome=imp.tieOutcome??current.imposter.tieOutcome;if(tieOutcome!=='imposter'&&tieOutcome!=='neutral')throw Error('Gleichstandsregel muss imposter oder neutral sein.');
+          const settings:MiniGameSettings={enabled:bool(raw.enabled,current.enabled),imposter:{minPlayers:number(imp.minPlayers,current.imposter.minPlayers,3,20),maxPlayers:number(imp.maxPlayers,current.imposter.maxPlayers,4,100),registrationMs:number(imp.registrationMs,current.imposter.registrationMs,15_000,900_000),playMs:number(imp.playMs,current.imposter.playMs,30_000,900_000),votingMs:number(imp.votingMs,current.imposter.votingMs,10_000,300_000),cooldownMs:number(imp.cooldownMs,current.imposter.cooldownMs,0,86_400_000),allowVoteChange:bool(imp.allowVoteChange,current.imposter.allowVoteChange),noSelfVote:bool(imp.noSelfVote,current.imposter.noSelfVote),tieOutcome,winXp:number(imp.winXp,current.imposter.winXp,0,1000),participationXp:number(imp.participationXp,current.imposter.participationXp,0,1000),rules},detective:{roundMs:number(det.roundMs,current.detective.roundMs,10_000,300_000),quoteRetentionDays:number(det.quoteRetentionDays,current.detective.quoteRetentionDays,1,365),winXp:number(det.winXp,current.detective.winXp,0,1000),dailyXpCap:number(det.dailyXpCap,current.detective.dailyXpCap,0,10_000),allowGuessChange:bool(det.allowGuessChange,current.detective.allowGuessChange)}};
+          if(settings.imposter.minPlayers>=settings.imposter.maxPlayers)throw Error('Die Höchstzahl muss über der Mindestzahl liegen.');
+          this.miniGames.updateSettings(settings);this.audit(session,'minigames-settings-update','community-games',{enabled:settings.enabled,ruleCount:rules.length},now);this.json(res,200,{ok:true});return;
+        }catch(error){this.json(res,400,{error:error instanceof Error?error.message:'Spielkonfiguration ungültig.'});return;}
+      }
+      if(action==='start-imposter')message=this.miniGames.startImposter(session.userId,now);
+      else if(action==='close-imposter')message=this.miniGames.startRoles(session.userId,now);
+      else if(action==='vote-imposter')message=this.miniGames.beginVote(now);
+      else if(action==='start-detective')message=this.miniGames.startDetective(now);
+      else if(action==='quote'&&(body.status==='approved'||body.status==='rejected')){
+        const ok=this.miniGames.moderateQuote(String(body.id||''),body.status,now);if(!ok){this.json(res,409,{error:'Zitat nicht mehr wartend oder nicht gefunden.'});return;}
+        this.audit(session,'quote-'+body.status,String(body.id||''),{},now);this.json(res,200,{ok:true});return;
+      } else if(action==='quote'&&body.status==='deleted'){
+        const id=String(body.id||'');if(!this.miniGames.removeQuote(id)){this.json(res,404,{error:'Zitat nicht gefunden.'});return;}
+        this.audit(session,'quote-remove',id,{},now);this.json(res,200,{ok:true});return;
+      } else {this.json(res,400,{error:'Spielaktion ungültig.'});return;}
+      this.audit(session,'minigame-'+action,'community-games',{},now);this.json(res,200,{ok:true,message});return;
+    }
     if(route==='channel-points/connect'){
       if(!this.channelPoints||!this.getChannelPointsConnectUrl){this.json(res,503,{error:'Kanalpunkte-OAuth ist nicht konfiguriert.'});return;}
       this.json(res,200,{url:this.getChannelPointsConnectUrl()});return;
@@ -617,6 +699,14 @@ export class DashboardServer {
 }
 
 function clean(value: string, max: number): string { return Array.from(value.replace(/[\r\n\t]/gu, ' ').trim()).slice(0, max).join(''); }
+function escapeHtml(value:string):string{return value.replace(/[&<>"']/gu,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]||c));}
+function miniGameWidgetHtml(type:'imposter'|'detective',nonce:string,fontSize:number,theme:string):string{
+  const size=Math.max(22,Math.min(54,Number.isInteger(fontSize)?fontSize:34)),accent=theme==='magenta'?'#ff65bd':'#b69cff';
+  const title=type==='imposter'?'CHAT-IMPOSTER':'WER HAT DAS GESCHRIEBEN?';
+  const publicBody=type==='detective'?'(g.phase===\'results\'||g.phase===\'finished\')?\'Das Zitat stammt von @\'+(g.result?.authorName||\'Unbekannt\')+\'! Richtige Tipps: \'+(g.result?.winners||[]).join(\', \'):g.text||\'\'':'(g.phase===\'results\'||g.phase===\'finished\')?(g.result?.neutral?\'Gleichstand – neutrale Runde. \':g.result?.caught?\'Imposter erkannt: \':\'Imposter gewinnt: \')+(g.result?.imposterName||\'Unbekannt\')+\' · Regel: \'+(g.result?.rule||\'–\'):(g.participants+\' Teilnehmende · \'+g.votes+\' Stimmen\')';
+  const script=`const root=document.querySelector('main');async function update(){try{const d=await fetch('/widgets/api/${type}'+location.search,{cache:'no-store'}).then(r=>r.json()),g=d.game;if(!d.visible||!g){root.hidden=true;return}root.hidden=false;document.querySelector('#phase').textContent=g.phase==='registration'?'ANMELDUNG':g.phase==='playing'?'SPIEL LÄUFT':g.phase==='voting'?'ABSTIMMUNG':'AUFLÖSUNG';document.querySelector('#body').textContent=${publicBody};const left=Math.max(0,Math.ceil((g.endsAt-Date.now())/1000));document.querySelector('#time').textContent=left?left+'s':''}catch{}}update();setInterval(update,1000);`;
+  return `<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style nonce="${nonce}">*{box-sizing:border-box}body{margin:0;background:transparent;color:#f7f4ff;font:700 ${size}px system-ui;text-align:center}main{padding:20px;border-radius:18px;background:linear-gradient(120deg,#171923ed,#32233fed);border:2px solid ${accent};text-shadow:0 2px 8px #000}h1{font-size:.6em;letter-spacing:.08em;color:${accent};margin:0 0 12px}#body{font-size:.82em;overflow-wrap:anywhere}#phase,#time{font-size:.5em;color:#d1c5f1;margin:8px}</style><main hidden><h1>${title}</h1><div id="phase"></div><div id="body"></div><div id="time"></div></main><script nonce="${nonce}">${script}</script></html>`;
+}
 function boundedInt(value: unknown, fallback: number, min: number, max: number): number { const parsed = Number(value); return Number.isInteger(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback; }
 function numberOrNull(value: unknown, fallback: number | null): number | null { if (value === undefined || value === null || value === '') return fallback; const parsed = Number(value); return Number.isFinite(parsed) ? parsed : fallback; }
 function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === 'object' && !Array.isArray(value); }

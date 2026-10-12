@@ -18,5 +18,10 @@
 		reverse_proxy halloween-bot:3001
 	}
 
+	@games path /games/*
+	handle @games {
+		reverse_proxy halloween-bot:3001
+	}
+
 	respond "Not found" 404
 }

@@ -12,6 +12,7 @@
     "start": "node dist/main.js",
     "dev": "tsx src/main.ts",
     "test-mode": "tsx src/main.ts --test",
+    "demo:games": "tsx src/mini-games-demo.ts",
     "test": "node --import tsx --test src/*.test.ts",
     "check": "npm run build && npm test"
   },

@@ -114,8 +114,8 @@ async function runLiveMode(): Promise<void> {
   );
   let dashboard:DashboardServer|undefined;
   const featureTicker = setInterval(() => {
-    try { community.tick(); }
-    catch (error) { logger.error('Quest-/Umfrage-Timer konnte nicht aktualisiert werden.', { error: error instanceof Error ? error.message : 'unbekannt' }); }
+    try { for(const message of community.tick())void queue.enqueue(message); }
+    catch (error) { logger.error('Community-Spiel-Timer konnte nicht aktualisiert werden.', { error: error instanceof Error ? error.message : 'unbekannt' }); }
   }, 1000);
   featureTicker.unref();
 
@@ -143,7 +143,7 @@ async function runLiveMode(): Promise<void> {
         cooldownMs:settings.cooldownMs??300_000,activeDurationMs:settings.activeDurationMs??0,completionXp:settings.completionXp??25};
     },logger);
     dashboard = new DashboardServer(features, () => ({twitchConnected:eventsub.isConnected,channel:config.channelLogin,startedAt:botStartedAt}),
-      logger,fetch,()=>community.conversationSpark.snapshot(),channelPoints,()=>oauthServer.startUrlFor('channel-points'));
+      logger,fetch,()=>community.conversationSpark.snapshot(),channelPoints,()=>oauthServer.startUrlFor('channel-points'),community.miniGames);
     logger.info('OAuth-Server erreichbar unter http://127.0.0.1:3000/oauth/start');
     await dashboard.start();
     eventsub.start();

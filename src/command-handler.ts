@@ -30,7 +30,7 @@ export class CommandHandler {
     if (message.senderUserId === this.config.botUserId || message.senderLogin.toLowerCase() === this.config.botLogin.toLowerCase()) return [];
     if (message.broadcasterUserId !== this.config.broadcasterUserId) return [];
     if (!this.database.markEventProcessed(message.eventId, now)) return [];
-    this.community?.tick(now);
+    this.community?.tick(now, false);
     const reply = (text: string): CommandReply[] => [{ message: clampChatMessage(text, this.config.appChatMessageLength), ...(message.messageId ? { replyParentMessageId: message.messageId } : {}) }];
     const words = message.message.trim().split(/\s+/u);
     const rawCommand = words.shift();
