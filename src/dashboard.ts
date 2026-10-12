@@ -324,7 +324,9 @@ export class DashboardServer {
       if(action==='start-imposter')message=this.miniGames.startImposter(session.userId,now);
       else if(action==='close-imposter')message=this.miniGames.startRoles(session.userId,now);
       else if(action==='vote-imposter')message=this.miniGames.beginVote(now);
+      else if(action==='cancel-imposter')message=this.miniGames.cancelImposter(now);
       else if(action==='start-detective')message=this.miniGames.startDetective(now);
+      else if(action==='end-detective')message=this.miniGames.endDetective(now);
       else if(action==='quote'&&(body.status==='approved'||body.status==='rejected')){
         const ok=this.miniGames.moderateQuote(String(body.id||''),body.status,now);if(!ok){this.json(res,409,{error:'Zitat nicht mehr wartend oder nicht gefunden.'});return;}
         this.audit(session,'quote-'+body.status,String(body.id||''),{},now);this.json(res,200,{ok:true});return;
