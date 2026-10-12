@@ -3,7 +3,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypt
 import { URL } from 'node:url';
 import type { AddressInfo } from 'node:net';
 import { FeatureStore, type CustomCommand, type QuestPolicy, type QuestStatus, type SeasonalEvent, type WidgetType } from './feature-store.js';
-import { communityWidgetHtml, QUEST_POLL_CARD, QUEST_POLL_SCRIPT } from './dashboard-community-ui.js';
+import { ARCADE_CARD, ARCADE_SCRIPT, communityWidgetHtml, QUEST_POLL_CARD, QUEST_POLL_SCRIPT } from './dashboard-community-ui.js';
 import { SPARK_CARD, SPARK_SCRIPT } from './conversation-spark-ui.js';
 import { DEFAULT_SPARK_CONFIG, type SparkActionType, type SparkConfig, type SparkTopic } from './conversation-spark.js';
 import { CHANNEL_POINTS_CARD, CHANNEL_POINTS_SCRIPT } from './channel-points-ui.js';
@@ -11,6 +11,7 @@ import { DEFAULT_CHANNEL_POINTS_SETTINGS, type ChannelPointsService, type Channe
 import type { Logger } from './logger.js';
 import type { MiniGames, MiniGameSettings } from './mini-games.js';
 import { MINI_GAME_CARD, MINI_GAME_SCRIPT } from './mini-games-ui.js';
+import type { CommunityArcade, ArcadeSettings } from './community-arcade.js';
 
 interface Session { userId: string; login: string; csrf: string; expiresAt: number; }
 interface RuntimeStatus { twitchConnected: boolean; channel: string; startedAt: number; lastError?: string; }
@@ -55,6 +56,7 @@ export class DashboardServer {
     private readonly channelPoints?:ChannelPointsService,
     private readonly getChannelPointsConnectUrl?:()=>string,
     private readonly miniGames?:MiniGames,
+    private readonly arcade?:CommunityArcade,
   ) { this.adminIds = new Set((process.env.DASHBOARD_ADMIN_IDS || '').split(/[ ,]+/u).filter(Boolean)); }
 
   async start(): Promise<boolean> {
@@ -112,8 +114,8 @@ export class DashboardServer {
       const nonce = randomBytes(18).toString('base64');
       res.setHeader('Content-Security-Policy', `default-src 'self'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`);
       res.statusCode = 200; res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      const page = PAGE.replace('</section></main>', `${SETTINGS_CARD}${QUEST_POLL_CARD}${SPARK_CARD}${CHANNEL_POINTS_CARD}${MINI_GAME_CARD}</section></main>`)
-        .replace('</script>', `${SETTINGS_SCRIPT}${QUEST_POLL_SCRIPT}${SPARK_SCRIPT}${CHANNEL_POINTS_SCRIPT}${MINI_GAME_SCRIPT}</script>`);
+      const page = PAGE.replace('</section></main>', `${SETTINGS_CARD}${QUEST_POLL_CARD}${SPARK_CARD}${CHANNEL_POINTS_CARD}${MINI_GAME_CARD}${ARCADE_CARD}</section></main>`)
+        .replace('</script>', `${SETTINGS_SCRIPT}${QUEST_POLL_SCRIPT}${SPARK_SCRIPT}${CHANNEL_POINTS_SCRIPT}${MINI_GAME_SCRIPT}${ARCADE_SCRIPT}</script>`);
       res.end(page.replaceAll('__CSRF__', session.csrf).replaceAll('__NONCE__', nonce)); return;
     }
     if (url.pathname.startsWith('/widgets/')) { await this.widgetRoute(url, req, res); return; }
@@ -128,9 +130,9 @@ export class DashboardServer {
 
   private async widgetRoute(url: URL, req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     if (req.method !== 'GET') { this.json(res, 405, { error: 'Widgets sind nur lesend.' }); return; }
-    const page = /^\/widgets\/(quest|poll|imposter|detective)$/u.exec(url.pathname);
-    const api = /^\/widgets\/api\/(quest|poll|imposter|detective)$/u.exec(url.pathname);
-    const stream = /^\/widgets\/stream\/(quest|poll|imposter|detective)$/u.exec(url.pathname);
+    const page = /^\/widgets\/(quest|poll|imposter|detective|pet|drop|wheel)$/u.exec(url.pathname);
+    const api = /^\/widgets\/api\/(quest|poll|imposter|detective|pet|drop|wheel)$/u.exec(url.pathname);
+    const stream = /^\/widgets\/stream\/(quest|poll|imposter|detective|pet|drop|wheel)$/u.exec(url.pathname);
     if (!page && !api && !stream) { this.json(res, 404, { error: 'Nicht gefunden.' }); return; }
     const type = (page?.[1] || api?.[1] || stream?.[1]) as WidgetType;
     const token = url.searchParams.get('token') || '';
@@ -142,10 +144,10 @@ export class DashboardServer {
       const settings = this.store.config('widget_settings', defaultWidgetSettings());
       res.setHeader('Content-Security-Policy', `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; img-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`);
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.end(type==='quest'||type==='poll'?communityWidgetHtml(type, nonce, settings.fontSize, settings.theme):miniGameWidgetHtml(type,nonce,settings.fontSize,settings.theme));
+      res.end(type==='quest'||type==='poll'||type==='pet'||type==='drop'||type==='wheel'?communityWidgetHtml(type, nonce, settings.fontSize, settings.theme):miniGameWidgetHtml(type,nonce,settings.fontSize,settings.theme));
       return;
     }
-    if (api) { this.json(res, 200, this.store.widgetSnapshot(type, Date.now())); return; }
+    if (api) { this.json(res, 200, type==='pet'||type==='drop'||type==='wheel' ? this.arcade?.snapshot(type,Date.now())||{type,visible:false} : this.store.widgetSnapshot(type, Date.now())); return; }
     this.openWidgetEventStream(type, res);
   }
 
@@ -156,7 +158,7 @@ export class DashboardServer {
     let previous = '';
     const send = () => {
       try {
-        const snapshot = this.store.widgetSnapshot(type, Date.now());
+        const snapshot = type==='pet'||type==='drop'||type==='wheel' ? this.arcade?.snapshot(type,Date.now())||{type,visible:false} : this.store.widgetSnapshot(type, Date.now());
         const fingerprint = JSON.stringify({ ...snapshot, capturedAt: undefined });
         if (fingerprint !== previous) {
           res.write(`event: snapshot\ndata: ${JSON.stringify(snapshot)}\n\n`);
@@ -255,6 +257,17 @@ export class DashboardServer {
 
   private async api(url: URL, req: http.IncomingMessage, res: http.ServerResponse, session: Session): Promise<void> {
     const route = url.pathname.slice('/dashboard/api/'.length);
+    if(route==='arcade'&&this.arcade){
+      if(req.method==='GET'){this.json(res,200,{settings:this.arcade.settings(),pet:this.arcade.pet(),challenges:this.arcade.manageChallenges()});return;}
+      if(req.method==='POST'){
+        const body=await this.readJson(req);if(!body){this.json(res,400,{error:'Ungültiger JSON-Body.'});return;}const now=Date.now();
+        if(body.settings&&typeof body.settings==='object'){try{this.arcade.updateSettings(body.settings as ArcadeSettings);this.audit(session,'arcade-settings-update','community-arcade',{},now);this.json(res,200,{ok:true});}catch(e){this.json(res,400,{error:e instanceof Error?e.message:'Ungültige Einstellungen.'});}return;}
+        if(body.action==='challenge'){try{const id=this.arcade.configureChallenge(String(body.title||''),Number(body.weight),body.active!==false,typeof body.id==='string'?body.id:undefined);this.audit(session,body.id?'arcade-challenge-update':'arcade-challenge-create',id,{},now);this.json(res,200,{id});}catch(e){this.json(res,400,{error:e instanceof Error?e.message:'Ungültige Challenge.'});}return;}
+        if(body.action==='start-drop'){const message=this.arcade.startDropAdmin(session.userId,typeof body.rarity==='string'?body.rarity:undefined,now);this.audit(session,'arcade-drop-start','community-arcade',{},now);this.json(res,200,{message});return;}
+        if(body.action==='spin'){const message=this.arcade.spinAdmin(session.userId,now);this.audit(session,'arcade-wheel-spin','community-arcade',{},now);this.json(res,200,{message});return;}
+        this.json(res,400,{error:'Unbekannte Arcade-Aktion.'});return;
+      }
+    }
     if(route==='minigames'&&req.method==='GET'){
       if(!this.miniGames){this.json(res,503,{error:'Minispiele sind nicht initialisiert.'});return;}
       this.json(res,200,{settings:this.miniGames.settings(),state:this.miniGames.snapshot(Date.now()),quotes:this.miniGames.managedQuotes()});return;
@@ -550,8 +563,8 @@ export class DashboardServer {
       this.json(res, 400, { error: 'Umfrage-Aktion ist ungültig.' }); return;
     }
     if (route === 'widgets/token') {
-      const type = body.type;
-      if (type !== 'quest' && type !== 'poll') { this.json(res, 400, { error: 'Widget-Typ ist ungültig.' }); return; }
+      const type = body.type as WidgetType;
+      if (!['quest','poll','imposter','detective','pet','drop','wheel'].includes(String(type))) { this.json(res, 400, { error: 'Widget-Typ ist ungültig.' }); return; }
       if (body.action === 'revoke') {
         this.store.revokeWidgetToken(type, now, session.userId); this.audit(session, 'widget-token-revoke', type, {}, now);
         this.json(res, 200, { ok: true }); return;

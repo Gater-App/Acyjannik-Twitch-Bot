@@ -34,7 +34,7 @@ export interface CustomCommand {
 export type QuestStatus = 'pending' | 'approved' | 'active' | 'completed' | 'failed' | 'rejected' | 'canceled';
 export type QuestSource = 'chat' | 'channel_points' | 'dashboard';
 export type PollStatus = 'active' | 'ended' | 'canceled';
-export type WidgetType = 'quest' | 'poll' | 'imposter' | 'detective';
+export type WidgetType = 'quest' | 'poll' | 'imposter' | 'detective' | 'pet' | 'drop' | 'wheel';
 export type SparkStatus = 'detected' | 'pending_approval' | 'approved' | 'rejected' | 'expired' | 'executed' | 'canceled';
 export interface SparkProposal {
   id: string; channelId: string; topicId: string; topicLabel: string; score: number; participants: number;
@@ -150,6 +150,8 @@ const RESERVED_COMMANDS = new Set([
   'spark','sparks','sparkhelp','sparkapprove','sparkreject','sparkpause','sparkresume','sparktopics',
   'imposter','imposterstatus','joinimposter','leaveimposter','startimposter','closeimposter','cancelimposter','sus',
   'quoteoptin','quoteoptout','savequote','myquotes','deletequote','detektiv','startdetektiv','wer','quote','skipdetektiv','enddetektiv',
+  'pet','feed','play','petcare','petstats','petname','pethelp','petevolution','setpetname','petpause','petresume',
+  'claim','drop','dropstats','drops','startdrop','canceldrop','dropconfig','wheel','spin','wheelstatus','startwheel','cancelwheel','wheelpause','wheelresume',
 ]);
 
 export class FeatureStore {
@@ -434,6 +436,42 @@ export class FeatureStore {
         ALTER TABLE widget_tokens_v6 RENAME TO widget_tokens;
         CREATE INDEX widget_tokens_active ON widget_tokens(widget_type,revoked_at,expires_at);
         INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (6, unixepoch()*1000);
+      `))();
+    }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 7) {
+      if (currentVersion === 6) this.backupBeforeMigration(7);
+      this.db.transaction(() => this.db.exec(`
+        CREATE TABLE IF NOT EXISTS community_pet(id INTEGER PRIMARY KEY CHECK(id=1),name TEXT NOT NULL,level INTEGER NOT NULL DEFAULT 1 CHECK(level>=1),
+          xp INTEGER NOT NULL DEFAULT 0 CHECK(xp>=0),hunger INTEGER NOT NULL DEFAULT 70 CHECK(hunger BETWEEN 0 AND 100),
+          happiness INTEGER NOT NULL DEFAULT 70 CHECK(happiness BETWEEN 0 AND 100),energy INTEGER NOT NULL DEFAULT 70 CHECK(energy BETWEEN 0 AND 100),
+          stage TEXT NOT NULL DEFAULT 'egg',paused INTEGER NOT NULL DEFAULT 0 CHECK(paused IN (0,1)),animation TEXT NOT NULL DEFAULT 'idle',updated_at INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS community_pet_interactions(event_id TEXT PRIMARY KEY,user_id TEXT NOT NULL,kind TEXT NOT NULL,created_at INTEGER NOT NULL);
+        CREATE INDEX IF NOT EXISTS pet_interactions_user_time ON community_pet_interactions(user_id,created_at);
+        CREATE TABLE IF NOT EXISTS mystery_drops(id TEXT PRIMARY KEY,rarity TEXT NOT NULL,status TEXT NOT NULL,starts_at INTEGER NOT NULL,ends_at INTEGER NOT NULL,
+          result_json TEXT,created_by TEXT NOT NULL,created_at INTEGER NOT NULL DEFAULT 0,resolved_at INTEGER);
+        CREATE UNIQUE INDEX IF NOT EXISTS mystery_one_open ON mystery_drops(status) WHERE status IN ('announced','claiming','resolving');
+        CREATE TABLE IF NOT EXISTS mystery_claims(drop_id TEXT NOT NULL REFERENCES mystery_drops(id) ON DELETE CASCADE,user_id TEXT NOT NULL,display_name TEXT NOT NULL,
+          claimed_at INTEGER NOT NULL,reward_xp INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(drop_id,user_id));
+        CREATE TABLE IF NOT EXISTS chaos_wheel_challenges(id TEXT PRIMARY KEY,title TEXT NOT NULL,weight INTEGER NOT NULL CHECK(weight BETWEEN 1 AND 1000),active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)));
+        CREATE TABLE IF NOT EXISTS chaos_wheel_spins(id TEXT PRIMARY KEY,challenge_id TEXT NOT NULL,title TEXT NOT NULL,status TEXT NOT NULL,created_by TEXT NOT NULL,created_at INTEGER NOT NULL,resolved_at INTEGER);
+        INSERT OR IGNORE INTO feature_config(key,value) VALUES
+          ('arcade_settings','{"petEnabled":false,"dropsEnabled":false,"wheelEnabled":false,"autoDrops":false,"petCooldownMs":120000,"dropDurationMs":60000,"wheelCooldownMs":300000}');
+        INSERT OR IGNORE INTO community_pet(id,name,updated_at) VALUES(1,'Fünkchen',unixepoch()*1000);
+        INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (7, unixepoch()*1000);
+      `))();
+    }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 8) {
+      if (currentVersion === 7) this.backupBeforeMigration(8);
+      this.db.transaction(() => this.db.exec(`
+        CREATE TABLE widget_tokens_v8(id TEXT PRIMARY KEY,widget_type TEXT NOT NULL CHECK(widget_type IN ('quest','poll','imposter','detective','pet','drop','wheel')),
+          token_hash TEXT NOT NULL UNIQUE,created_at INTEGER NOT NULL,expires_at INTEGER,revoked_at INTEGER);
+        INSERT INTO widget_tokens_v8 SELECT * FROM widget_tokens;
+        DROP TABLE widget_tokens;
+        ALTER TABLE widget_tokens_v8 RENAME TO widget_tokens;
+        CREATE INDEX widget_tokens_active ON widget_tokens(widget_type,revoked_at,expires_at);
+        INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (8, unixepoch()*1000);
       `))();
     }
   }

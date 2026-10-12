@@ -292,6 +292,18 @@ konkrete Datenschutzerklärung diese Funktion abdeckt. Bis dahin Spark
 deaktiviert lassen. Streamer kann jederzeit `!sparkpause` und `!sparkresume`
 verwenden; der Dashboard-Schalter aktiviert/deaktiviert die Erkennung.
 
+## Community-Pet, Mystery Drops und Chaos Wheel
+
+Die drei Community-Arcade-Module verwenden dieselbe SQLite-Datei, das vorhandene XP-Ledger und die geschützte Dashboard-/OBS-Token-Infrastruktur. Alle drei Funktionen sind standardmäßig ausgeschaltet; im Dashboard unter **Community-Pet · Mystery Drops · Chaos Wheel** einzeln aktivieren. Automatische Mystery Drops bleiben ausgeschaltet.
+
+- Pet: `!pet`, `!feed`, `!play`, `!petcare`, `!petstats`, `!petname`, `!petevolution`, `!pethelp`. Nur Jannik kann mit `!setpetname NAME` umbenennen oder mit `!petpause` / `!petresume` pausieren.
+- Mystery Drop: `!claim`, `!drop`, `!dropstats`, `!drops`; Jannik/Mods starten mit `!startdrop [common|rare|epic|legendary|community]` und brechen mit `!canceldrop` ab.
+- Chaos Wheel: `!wheel`, `!wheelstatus`; Jannik/Mods starten mit `!startwheel` (Alias `!spin`). Nur virtuelle XP, keine Sachpreise. Jannik muss eine ausgeloste Herausforderung ausdrücklich annehmen.
+
+Die drei OBS-Widgets werden wie die übrigen Lesewidgets im Dashboard über **OBS-Widgets → Pet/Drop/Wheel-URL erneuern** ausgegeben und können dort widerrufen werden. URLs verwenden `/widgets/pet?token=…`, `/widgets/drop?token=…` und `/widgets/wheel?token=…` mit einem im Dashboard erzeugten Token.
+
+Aktueller Implementierungsumfang: gemeinschaftlicher Drache mit begrenzten Pflegewerten, Level-/Evolutionsstufen und einfachen Animationen; manuell gestartete, kostenlose Drops mit einmaligen Claims und XP; serverseitige gewichtete Wheel-Auswahl mit persistentem Ergebnis. Automatische Drops, volle Kosmetik-/Sammlungsverwaltung, Community-Meilenstein-Verteilung, Wheel-Historien-/Segmentbearbeitung und Quest-Übergabe sind noch nicht Bestandteil dieser ersten Ausbaustufe. Für Production sind HTTPS/Domain, Tokens, Twitch-Berechtigungen und eine separate Deployment-Freigabe nötig.
+
 ## Befehle
 
 | Befehl | Wirkung / Berechtigung |
@@ -316,6 +328,12 @@ verwenden; der Dashboard-Schalter aktiviert/deaktiviert die Erkennung.
 | `!sparkapprove ID`, `!sparkreject ID` | Jannik oder Twitch-Moderatoren; Freigabe erstellt noch keine Umfrage/Quest |
 | `!sparkpause`, `!sparkresume` | Nur Jannik; pausiert bzw. setzt die Erkennung fort |
 | `!poll`, `!vote 1–5`, `!pollresults` | Botinterne Umfrage ansehen, abstimmen und Ergebnisse lesen; Erstellen/Beenden im Dashboard |
+| `!pet`, `!feed`, `!play`, `!petcare`, `!petstats`, `!petname`, `!petevolution`, `!pethelp` | Community-Drache ansehen und gemeinschaftlich pflegen; Cooldowns und begrenzte Werte |
+| `!setpetname NAME`, `!petpause`, `!petresume` | Nur Jannik: Pet umbenennen, Pflege pausieren oder fortsetzen |
+| `!claim`, `!drop`, `!dropstats`, `!drops` | Kostenlos an einem laufenden Mystery Drop teilnehmen oder Regeln/Status ansehen |
+| `!startdrop [Seltenheit]`, `!canceldrop`, `!dropconfig` | Jannik/Mods: Drop manuell starten/abbrechen; Automatik bleibt aus |
+| `!wheel`, `!wheelstatus`, `!spin` | Wheel ansehen; Dreh nur durch Jannik/Mods, sofern Chat-Dreh nicht freigegeben ist |
+| `!startwheel`, `!cancelwheel`, `!wheelpause`, `!wheelresume` | Jannik/Mods steuern den Dreh; Pause/Fortsetzen nur Jannik |
 
 ## Oracle Always Free ARM64 – Installation und Abnahme
 

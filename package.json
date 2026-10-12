@@ -13,6 +13,7 @@
     "dev": "tsx src/main.ts",
     "test-mode": "tsx src/main.ts --test",
     "demo:games": "tsx src/mini-games-demo.ts",
+    "demo:arcade": "tsx src/community-arcade-demo.ts",
     "test": "node --import tsx --test src/*.test.ts",
     "check": "npm run build && npm test"
   },

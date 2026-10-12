@@ -5,6 +5,7 @@ import { FeatureStore, type CustomCommand } from './feature-store.js';
 import { QuestPollFeatures } from './quest-poll.js';
 import { ConversationSpark } from './conversation-spark.js';
 import { MiniGames } from './mini-games.js';
+import { CommunityArcade } from './community-arcade.js';
 
 type UserLookup = (login: string) => Promise<{ id: string; login: string; displayName: string } | undefined>;
 type RandomInclusive = (min: number, max: number) => number;
@@ -23,13 +24,14 @@ export class CommunityFeatures {
   private readonly questPoll: QuestPollFeatures;
   readonly conversationSpark: ConversationSpark;
   readonly miniGames: MiniGames;
+  readonly arcade: CommunityArcade;
 
   constructor(
     private readonly store: FeatureStore,
     private readonly config: AppConfig,
     private readonly lookupUser: UserLookup = async () => undefined,
     private readonly random: RandomInclusive = secureRandomInclusive,
-  ) { this.questPoll = new QuestPollFeatures(store, config); this.conversationSpark = new ConversationSpark(store, config.broadcasterUserId); this.miniGames = new MiniGames(store, config); }
+  ) { this.questPoll = new QuestPollFeatures(store, config); this.conversationSpark = new ConversationSpark(store, config.broadcasterUserId); this.miniGames = new MiniGames(store, config); this.arcade = new CommunityArcade(store,config.broadcasterUserId); }
 
   observeActivity(message: ChatMessage, now = Date.now()): string | undefined {
     if (message.senderUserId === this.config.botUserId || message.senderLogin.toLowerCase() === this.config.botLogin.toLowerCase()) return undefined;
@@ -48,7 +50,7 @@ export class CommunityFeatures {
 
   activeEventId(): string | undefined { return this.store.activeEvent()?.id; }
 
-  tick(now = Date.now(), advanceMiniGames = true): string[] { this.refreshScheduledEvents(now); this.questPoll.tick(now); this.conversationSpark.tick(now); return advanceMiniGames ? this.miniGames.tick(now) : []; }
+  tick(now = Date.now(), advanceMiniGames = true): string[] { this.refreshScheduledEvents(now); this.questPoll.tick(now); this.conversationSpark.tick(now); return [...(advanceMiniGames ? this.miniGames.tick(now) : []),...this.arcade.tick(now)]; }
 
   async handle(message: ChatMessage, command: string, args: string[], now = Date.now()): Promise<CommandReply[]> {
     const modules = this.store.config<Record<string, boolean>>('modules', {});
@@ -60,6 +62,8 @@ export class CommunityFeatures {
     if (sparkResponse !== undefined) return say(sparkResponse);
     const miniGameResponse = this.miniGames.handle(message, command, args, now);
     if (miniGameResponse !== undefined) return say(miniGameResponse);
+    const arcadeResponse = this.arcade.handle(message,command,args,now);
+    if (arcadeResponse !== undefined) return say(arcadeResponse);
     const questPollResponse = this.questPoll.handle(message, command, args, now);
     if (questPollResponse !== undefined) return questPollResponse ? say(questPollResponse) : [];
 
