@@ -1,0 +1,17 @@
+{$BOT_DOMAIN} {
+	header {
+		Strict-Transport-Security "max-age=31536000"
+	}
+
+	@oauth path /oauth/*
+	handle @oauth {
+		reverse_proxy halloween-bot:3000
+	}
+
+	@dashboard path /dashboard*
+	handle @dashboard {
+		reverse_proxy halloween-bot:3001
+	}
+
+	respond "Not found" 404
+}

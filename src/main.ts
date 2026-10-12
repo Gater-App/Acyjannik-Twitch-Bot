@@ -3,6 +3,9 @@ import { Database } from './database.js';
 import { loadConfig } from './config.js';
 import { CommandHandler } from './command-handler.js';
 import { GameService } from './game.js';
+import { FeatureStore } from './feature-store.js';
+import { CommunityFeatures } from './community-features.js';
+import { DashboardServer } from './dashboard.js';
 import { logger } from './logger.js';
 import { TwitchOAuth, FileTokenStore, OAuthCallbackServer } from './twitch-oauth.js';
 import { TwitchApi, TwitchApiError } from './twitch-api.js';
@@ -16,8 +19,11 @@ const isTestMode = process.argv.includes('--test') || process.env.TEST_MODE === 
 async function runTestMode(): Promise<void> {
   const config = loadConfig({ testMode: true });
   const database = new Database(config.databasePath, config.activeOnStart);
+  const features = new FeatureStore(config.databasePath);
   const game = new GameService(database, config);
-  const handler = new CommandHandler(database, game, config);
+  const community = new CommunityFeatures(features, config);
+  community.syncLegacyHalloween();
+  const handler = new CommandHandler(database, game, config, undefined, community);
   let eventNumber = 0;
   const input = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: false });
   logger.info('Testmodus aktiv. Eingabe: userId|Anzeigename|!befehl (ohne Präfix = Yannick).');
@@ -44,13 +50,21 @@ async function runTestMode(): Promise<void> {
     }
   } finally {
     input.close();
+    features.close();
     database.close();
   }
 }
 
 async function runLiveMode(): Promise<void> {
+  const botStartedAt = Date.now();
   const config = loadConfig();
   const database = new Database(config.databasePath, config.activeOnStart);
+  const features = new FeatureStore(config.databasePath);
+  const community = new CommunityFeatures(features, config, async (login) => {
+    const user = (await api.getUsers([login]))[0];
+    return user ? { id: user.id, login: user.login, displayName: user.display_name } : undefined;
+  });
+  community.syncLegacyHalloween();
   const oauth = new TwitchOAuth(
     config.clientId,
     config.clientSecret,
@@ -61,7 +75,7 @@ async function runLiveMode(): Promise<void> {
   const api = new TwitchApi(config.clientId, oauth);
   const oauthServer = new OAuthCallbackServer(config.oauthHost, config.oauthPort, config.oauthStateTtlMs, oauth);
   const game = new GameService(database, config);
-  const handler = new CommandHandler(database, game, config);
+  const handler = new CommandHandler(database, game, config, undefined, community);
   const queue = new SendQueue(
     async (message, replyParentMessageId) => {
       const result = await sendChatMessageWithRetry(api, config.broadcasterUserId, config.botUserId, message, replyParentMessageId);
@@ -83,6 +97,11 @@ async function runLiveMode(): Promise<void> {
       }
     },
   );
+  const dashboard = new DashboardServer(features, () => ({
+    twitchConnected: eventsub.isConnected,
+    channel: config.channelLogin,
+    startedAt: botStartedAt,
+  }), logger);
 
   try {
     await oauth.initialize(config.accessToken, config.refreshToken);
@@ -101,17 +120,22 @@ async function runLiveMode(): Promise<void> {
     config.botUserId = bot.id;
     logger.info('Twitch-Konten erkannt.', { channel: broadcaster.login, bot: bot.login });
     logger.info('OAuth-Server erreichbar unter http://127.0.0.1:3000/oauth/start');
+    await dashboard.start();
     eventsub.start();
   } catch (error) {
     await eventsub.stop();
+    await dashboard.stop();
     await oauthServer.stop();
+    features.close();
     database.close();
     throw error;
   }
 
   const shutdown = async () => {
     await eventsub.stop();
+    await dashboard.stop();
     await oauthServer.stop();
+    features.close();
     database.close();
   };
   process.once('SIGINT', () => { void shutdown().then(() => process.exit(0)); });

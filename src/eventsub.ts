@@ -17,6 +17,8 @@ export class EventSubClient {
   private reconnectUrl?: string;
   private keepaliveTimeoutSeconds = 10;
 
+  get isConnected(): boolean { return this.socket?.readyState === WebSocket.OPEN; }
+
   constructor(
     private readonly onSessionReady: (sessionId: string) => Promise<void>,
     private readonly onNotification: (message: Record<string, unknown>) => Promise<void>,

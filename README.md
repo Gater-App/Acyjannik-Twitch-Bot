@@ -1,165 +1,198 @@
-# Twitch Halloween Bot – Yannick 🎃
+# Yannick Twitch Community Bot 🎃⭐
 
-Ein eigenständiger, schlanker Twitch-Chatbot für ein virtuelles Halloween-Spiel.
-Der Bot vergibt ausschließlich Kürbispunkte – kein Echtgeld, keine Preise und
-keine öffentliche Admin-API.
+Ein einzelner, modularer Node.js-Prozess für Yannicks Twitch-Chat: Das bestehende
+Halloween-Spiel bleibt erhalten; saisonale Sammel-Events, XP, Minispiele,
+Community-Boss, eigene Chatbefehle und ein OAuth-geschütztes Admin-Dashboard
+kommen hinzu. SQLite speichert Spielstände persistent. Es gibt keine Echtgeld-
+oder Sachpreisverlosungen.
 
-## Enthalten
+## Funktionen
 
-- `!trickortreat` mit TREAT, TRICK, JACKPOT, GHOST, WITCH, EMPTY HOUSE und GOLDEN PUMPKIN
-- persistent gespeicherte Punkte und Cooldowns in SQLite
-- Twitch-User-ID als Primärschlüssel, Anzeigename nur für Antworten
-- EventSub WebSocket für Chat-Events und Helix Send Chat Message API für Antworten
-- OAuth Authorization Code Flow mit Refresh-Token-Rotation und lokaler Token-Datei
-- Deduplizierung von EventSub-Events und Ignorieren eigener Bot-Nachrichten
-- case-insensitive Befehle, Moderator-Rechte, sichere Reset-Bestätigung und Backup
-- Testmodus ohne Twitch-Verbindung
-- UTF-8-/Braille-Art-Loader mit Zeichenprüfung und kontrolliertem Chat-Splitting
-- Dockerfile, Compose-Datei und persistente Volumes
+- Halloween mit `!trickortreat`, `!pumpkins`, `!top`, den vorhandenen
+  Zufallsereignissen und den UTF-8-/Braille-Grafiken
+- Saisonale Events für Weihnachten (`!gift`) und Ostern (`!egghunt`),
+  getrennte Punktestände, Event-Ranglisten, Zeitplanung und eigene Events
+- XP und Level mit Nachrichten-Cooldown, Deduplizierung, Anti-Spam und
+  begrenzten Spiel-Belohnungen
+- `!level [@user]`, `!xptop`, `!rank`, `!8ball`, `!rps`, `!startguess` / `!guess`,
+  `!duel` / `!accept` / `!cancelduel`
+- Kooperativer Boss mit `!startboss`, `!attack`, `!boss`, `!bosstop` und
+  `!endboss`; Angriffe und einmalige Belohnungen werden transaktionssicher gespeichert
+- Eigene Chatbefehle mit Berechtigungsstufe, Alias, Cooldown, Ablauf und sicheren
+  Platzhaltern (`{user}`, `{channel}`, `{game}`, `{uptime}`)
+- Responsives Admin-Dashboard für Status, Module, Events, Nutzer-XP,
+  protokollierte Korrekturen und Chatbefehle; Twitch-OAuth, feste User-ID-Allowlist,
+  HttpOnly-/Secure-Cookies, SameSite, CSRF-Prüfung, Rate-Limit und Logout
+- Persistenter, typisierter Community-Event-Feed mit authentifiziertem SSE-Endpunkt
+  als Grundlage für spätere OBS-Overlays
+- Versionierte SQLite-Migrationen im WAL-Modus; vorhandene Halloween-Punkte und
+  Cooldowns werden übernommen und nicht zurückgesetzt
+- Docker-/Compose-Betrieb für ARM64, Healthcheck, persistente Volumes,
+  begrenzte Containerlogs sowie geprüfte Backup-/Restore-Skripte
 
-## 1. Lokal installieren und starten
+## Lokal starten und testen
 
-Voraussetzung ist Node.js 24 LTS oder neuer.
+Voraussetzung ist Node.js 24 oder neuer.
 
 ```bash
-npm install
+npm ci
 cp .env.example .env
 npm run check
 ```
 
-Für einen lokalen Chat-Simulator:
+Ein Chat-Simulator benötigt keine Twitch-Verbindung:
 
 ```bash
-npm run test-mode
+DATABASE_PATH=data/test.sqlite npm run test-mode
 ```
 
-Beispiele im Testmodus:
+Beispiele im Simulator:
 
 ```text
 !startHalloween
 alice|Alice|!trickortreat
 alice|Alice|!pumpkins
-alice|Alice|!top
 !endHalloween
+!startguess
+alice|Alice|!guess 42
 ```
 
-Der Testmodus verwendet `DATABASE_PATH` aus `.env`. Für einen frischen Lauf
-kann eine separate Datei wie `data/test.sqlite` verwendet werden.
+`DATABASE_PATH` sollte für Testläufe von der späteren Live-Datenbank getrennt
+sein. Die Tests versenden keine echten Twitch-Nachrichten.
 
-## 2. Twitch-Konto und Developer-App
+## Twitch-App und Chat-OAuth
 
-1. Für Yannicks Kanal ein separates Twitch-Bot-Konto anlegen oder verwenden.
-2. Das Bot-Konto muss Yannicks Chat beitreten können. Für ein getrenntes
-   Bot-Konto sollte es als Moderator oder VIP zugelassen werden; das ist für die
-   Kanalberechtigung und die normalen Chat-Ratelimits relevant.
-3. Im [Twitch Developer Console](https://dev.twitch.tv/console/apps) eine
-   Anwendung anlegen.
-4. Als OAuth-Redirect-URL exakt den Wert aus `TWITCH_REDIRECT_URI` eintragen,
-   lokal zunächst `http://127.0.0.1:3000/oauth/callback`.
-5. `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET`, `TWITCH_CHANNEL_LOGIN=yannick`
-   und `TWITCH_BOT_LOGIN` in `.env` setzen.
+1. Eine Twitch-Developer-App anlegen oder eine vorhandene App verwenden.
+2. In der Developer Console die Redirect-URLs aus der lokalen oder
+   Server-Konfiguration eintragen. Twitch verlangt einen exakten Treffer.
+3. Ein Bot-Konto in `.env` als `TWITCH_BOT_LOGIN` eintragen. Es muss Yannicks
+   Chat beitreten dürfen; für den hier verwendeten WebSocket-Betrieb sollte es
+   im Kanal als Moderator oder VIP zugelassen sein.
+4. `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET`, `TWITCH_CHANNEL_LOGIN` und
+   `TWITCH_BOT_LOGIN` setzen. Keine Secrets in Git committen.
+5. `npm run dev` starten und die vom Bot gemeldete OAuth-URL mit dem Bot-Konto
+   autorisieren. Der rotierende Token wird mit Dateirechten `0600` in
+   `TOKEN_FILE` gespeichert.
 
-## 3. OAuth-Verbindung durchführen
+Für den Chat benötigt die Anwendung `user:read:chat user:write:chat` und nutzt
+EventSub WebSocket plus Helix Send Chat Message. Sie legt keine öffentliche
+EventSub-Webhook-Adresse an. OAuth- und Chat-Token werden nicht im Dashboard,
+Chat oder Abschlussbericht angezeigt.
 
-Live starten:
+## Admin-Dashboard
 
-```bash
-npm run dev
+Das Dashboard startet nur, wenn `DASHBOARD_ADMIN_IDS`,
+`DASHBOARD_REDIRECT_URI`, `TWITCH_CLIENT_ID` und `TWITCH_CLIENT_SECRET` gesetzt
+sind. Die Allowlist enthält numerische Twitch User-IDs, niemals Login-Namen.
+Twitchs OAuth-Callback und das Dashboard verwenden dieselbe Developer-App,
+aber unterschiedliche, exakt eingetragene Redirect-URLs.
+
+Für eine lokale Einrichtung:
+
+```dotenv
+DASHBOARD_HOST=127.0.0.1
+DASHBOARD_PORT=3001
+DASHBOARD_REDIRECT_URI=http://localhost:3001/dashboard/oauth/callback
+DASHBOARD_ADMIN_IDS=DEINE_NUMERISCHE_TWITCH_USER_ID
 ```
 
-Wenn noch kein Token vorhanden ist, meldet der Bot eine lokale Autorisierungs-URL.
-Diese im Browser öffnen und mit dem separaten Bot-Konto bestätigen. Alternativ
-ist sie während des Betriebs unter `http://127.0.0.1:3000/oauth/start` erreichbar.
+Im Browser `http://localhost:3001/dashboard/login` öffnen. Der Dashboard-Token
+wird nur während des serverseitigen OAuth-Checks verwendet; die Sitzung bleibt
+als zufällige, serverseitig gespeicherte Session bis zu 12 Stunden im Speicher.
+Ein Neustart meldet bestehende Dashboard-Sitzungen ab. Dashboard-Änderungen
+werden in `admin_audit` protokolliert. Das Dashboard ist standardmäßig an
+`127.0.0.1` gebunden und nicht für das öffentliche Netz gedacht.
 
-Der Bot fordert für die angeforderte WebSocket-/Chat-Client-Variante nur
-`user:read:chat` und `user:write:chat` an. Access- und
-Refresh-Token werden nicht geloggt. Nach dem OAuth-Flow liegt der rotierende
-Token in `TOKEN_FILE` (standardmäßig `data/oauth-tokens.json`, Dateirechte 0600).
-Die Datei muss in Backups und bei Cloud-Übertragung genauso geschützt werden
-wie `.env`.
+Die Oberfläche umfasst Statusanzeige und Aktualisierung, Modul-Schalter,
+Eventstart/-ende und Eventanlage, XP-Korrekturen, Nutzer-XP-Suche und
+Custom-Command-Verwaltung sowie erweiterte JSON-Einstellungen für XP-Kurve,
+Leveltitel, Minispiele, 8-Ball-Antworten und Eventregeln. Derzeit werden `{game}` und `{uptime}` bei eigenen
+Chatantworten als „unbekannt“ ausgegeben, bis verlässliche Twitch-Daten
+angeschlossen sind.
 
-Die Umsetzung folgt Twitchs aktueller Chat-Client-Dokumentation:
+## Befehle
 
-- [Authenticating and Setting up EventSub](https://dev.twitch.tv/docs/chat/authenticating/)
-- [Sending and Receiving Chat Messages](https://dev.twitch.tv/docs/chat/send-receive-messages/)
-- [EventSub Subscription Types](https://dev.twitch.tv/docs/eventsub/eventsub-subscription-types/)
-- [OAuth Authorization Code Flow](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/)
-- [Refreshing Access Tokens](https://dev.twitch.tv/docs/authentication/refresh-tokens/)
-
-Für die WebSocket-Variante wird ein User-Access-Token des autorisierten
-Chat-/Bot-Kontos verwendet. Der Bot legt danach `channel.chat.message` für
-Yannicks Kanal und die Bot-User-ID an. Für Antworten werden `broadcaster_id`
-und `sender_id` an Helix übergeben.
-
-Twitch unterscheidet daneben aktuell einen „Cloud Chatbot“: Dafür beschreibt
-Twitch eine App-Authorization des Bot-Kontos mit `user:read:chat`,
-`user:write:chat`, `user:bot` sowie eine separate Broadcaster-Authorization mit
-`channel:bot`; für Cloud Chatbots empfiehlt Twitch EventSub Webhooks statt
-WebSockets. Dieses Projekt implementiert bewusst die angeforderte einzelne
-WebSocket-Verbindung für einen schlanken Ein-Kanal-Bot. Wenn Twitch die
-separate Bot-Authorization in Yannicks Kanal damit ablehnt, darf nicht einfach
-ein zusätzlicher Scope in Produktion ergänzt werden; dann muss vorab zwischen
-Moderator/VIP-WebSocket-Betrieb und einer späteren Cloud-Webhook-Erweiterung
-entschieden werden.
-
-## 4. Befehle testen
-
-| Befehl | Wirkung |
+| Befehl | Wirkung / Berechtigung |
 |---|---|
-| `!trickortreat` | Spielt einmal, sofern Halloween aktiv ist und der Cooldown abgelaufen ist |
-| `!pumpkins` | Zeigt den eigenen Punktestand |
-| `!top` | Zeigt die Top 10 |
-| `!halloween` | Zeigt Status, Regeln und Cooldown |
-| `!startHalloween` | Yannick oder autorisierter Moderator |
-| `!endHalloween` | Yannick oder autorisierter Moderator; nennt den Gewinner |
-| `!resetHalloween` | Nur Yannick; fordert eine separate `CONFIRM`-Bestätigung an |
+| `!trickortreat`, `!pumpkins`, `!top`, `!halloween` | Bestehendes Halloween-Spiel und Kürbisrangliste |
+| `!startHalloween`, `!endHalloween` | Yannick oder autorisierte Mods; nur ein primäres Sammel-Event gleichzeitig |
+| `!resetHalloween CONFIRM` | Nur Yannick; legt vorher ein SQLite-Backup an; betrifft nur Halloween-Punkte |
+| `!gift`, `!egghunt` | Sammelbefehl des aktiven Weihnachts- bzw. Oster-Events |
+| `!eventscore [event-id]`, `!eventtop [event-id]` | Punktestand bzw. Event-Rangliste |
+| `!startevent ID`, `!endevent ID` | Yannick oder Mods; beendet Events archiviert statt sie zu löschen |
+| `!level [@user]`, `!xptop`, `!rank` | XP-Stand, Topliste und Rang |
+| `!8ball FRAGE`, `!rps schere\|stein\|papier` | Chat-Minispiele; Cooldowns, serverseitige Zufallswahl und XP-Tageslimit |
+| `!startguess`, `!guess ZAHL` | Mod startet eine persistente Zahlenrunde; Teilnehmer haben begrenzte Versuche |
+| `!duel @user`, `!accept`, `!cancelduel` | Zufälliges Duell ohne Einsatz; Annahme läuft ab |
+| `!startboss [Name]`, `!attack`, `!boss`, `!bosstop`, `!endboss` | Kooperativer Bosskampf; Start/Ende nur Yannick oder Mods |
+| `!addcommand name \| Antwort` | Nur Yannick; eigene Antwort mit sicheren Platzhaltern |
+| `!setcommand name \| Antwort`, `!delcommand name` | Yannick; Mods dürfen nur ausdrücklich freigegebene Befehle verwalten |
 
-`!resetHalloween` löscht keine Datei. Nach der Bestätigung wird zuerst ein
-SQLite-Backup unter `backups/` erstellt, danach werden Punkte und Cooldowns in
-einer Transaktion auf null gesetzt.
+## Docker und Oracle Cloud ARM64
 
-## 5. Docker
+Die Compose-Datei bindet OAuth- und Dashboard-Port ausschließlich an Loopback
+des Hosts (`127.0.0.1`). Die bestehenden Volume-Namen `halloween-data` und
+`halloween-backups` bleiben erhalten. Das Dockerfile nutzt Node 24 und kann für
+ARM64 gebaut werden.
 
 ```bash
 cp .env.example .env
-# .env ausfüllen
-docker compose up -d --build
+# .env mit Twitch- und Dashboard-Werten ausfüllen
+docker compose up -d --build halloween-bot
+docker compose ps
 docker compose logs -f halloween-bot
 ```
 
-`halloween-data` hält SQLite und OAuth-Token persistent; `halloween-backups`
-hält die Reset-Backups. Niemals `docker compose down -v` verwenden, wenn diese
-Daten erhalten bleiben sollen.
+Für öffentliches HTTPS zuerst eine Domain auf die VM zeigen lassen, in `.env`
+`BOT_DOMAIN`, `TWITCH_REDIRECT_URI=https://DEINE-DOMAIN/oauth/callback` und
+`DASHBOARD_REDIRECT_URI=https://DEINE-DOMAIN/dashboard/oauth/callback` setzen
+und beide URLs in der Twitch-App registrieren. Danach im Cloud-Firewall-/NSG-
+Ingress nur SSH (bevorzugt eigene Quell-IP), TCP 80 und TCP 443 freigeben.
+Keinen eingehenden Port 3000 oder 3001 öffnen. SSH-Schlüssel, deaktivierte
+Passwortanmeldung und kein Root-Login werden empfohlen.
 
-Für einen Cloud-Server sollte OAuth über eine eigene HTTPS-Domain bzw. einen
-Reverse Proxy geführt werden. Dann `TWITCH_REDIRECT_URI` und die Twitch-App auf
-dieselbe HTTPS-Callback-URL setzen, den OAuth-Port nur lokal am Proxy erreichbar
-machen und das Token- sowie Datenvolume sichern. Der Bot hat keine Dashboard-
-oder Admin-Routen; `/oauth/start` und `/oauth/callback` dienen ausschließlich
-dem OAuth-Flow.
+Caddy stellt TLS bereit und leitet ausschließlich OAuth- und Dashboard-Pfade an
+die internen Container weiter:
 
-## 6. Logs und Fehlerbehebung
+```bash
+docker compose --profile https up -d --build
+```
 
-- `Twitch-OAuth ist abgelaufen`: `/oauth/start` erneut öffnen; der Refresh-Token
-  wird bei gültiger Authorization automatisch verwendet.
-- `Kanal- oder Bot-Konto nicht gefunden`: Logins prüfen; keine Anzeigenamen als
-  Primärschlüssel oder feste User-ID erfinden.
-- EventSub `403`: prüfen, ob das Bot-Konto autorisiert ist, dem Kanal beitreten
-  kann und nicht gebannt/timeoutet ist.
-- Antworten erscheinen nicht: `TWITCH_BOT_USER_ID`, Scopes und die Twitch-API-
-  Fehlermeldung prüfen. Chatantworten werden bewusst seriell mit einem
-  konservativen Abstand von 1,5 Sekunden gesendet.
-- Bei Neustart bleibt `DATABASE_PATH` unverändert; so bleiben Punkte und
-  Cooldowns erhalten.
+Port 80/443 werden mit dem HTTPS-Profil öffentlich gebunden. Ohne Domain kann
+das Dashboard per SSH-Tunnel administriert werden, z. B.:
 
-## ASCII-/Braille-Art
+```bash
+ssh -L 3001:127.0.0.1:3001 ubuntu@DEINE-VM
+```
 
-Die Vorlagen liegen unter [`assets/ascii-art/`](assets/ascii-art/). Die vier
-Originalgrafiken wurden noch nicht geliefert; dafür existieren die Dateien
-`original-01.txt` bis `original-04.txt` als klar markierte Platzhalter. Beim
-Import die gelieferten Originale bytegetreu als UTF-8 ersetzen. Der Loader
-bewahrt führende Leerzeichen und Unicode-Zeichen und verweigert zu lange
-Chatblöcke. Große Varianten bleiben für ein späteres OBS-Overlay verfügbar.
+Dann lokal `http://localhost:3001/dashboard/login` öffnen. Oracle-Kapazität und
+Always-Free-Verfügbarkeit hängen von Region, Kontingent und freier Ampere-
+Kapazität ab; dieses Projekt legt keine Oracle-Ressourcen automatisch an.
+
+### Backup und Wiederherstellung
+
+Ein konsistentes, integritätsgeprüftes SQLite-Backup erstellen:
+
+```bash
+docker compose exec -T halloween-bot node scripts/backup.mjs
+```
+
+Backupdateien liegen im persistenten Volume `/app/backups` und haben restriktive
+Dateirechte. `.env` und `data/oauth-tokens.json` enthalten separate Secrets und
+müssen außerhalb des Repositories zusätzlich geschützt gesichert werden.
+
+Vor der Wiederherstellung den Bot stoppen. Das Skript prüft die Quelldatei und
+legt vom bestehenden Ziel automatisch eine `before-restore`-Sicherung an:
+
+```bash
+docker compose stop halloween-bot
+docker compose run --rm --no-deps --entrypoint node halloween-bot \
+  scripts/restore.mjs /app/backups/DATEINAME.sqlite
+docker compose up -d --build halloween-bot
+```
+
+`docker compose down -v` löscht die persistenten Volumes und ist für normale
+Updates nicht erforderlich. Updates erfolgen mit `docker compose up -d --build`.
 
 ## Entwicklung und Tests
 
@@ -169,18 +202,14 @@ npm test
 npm run check
 ```
 
-Die Tests decken deterministische Ereignisse, Punkte, Cooldowns, Deduplizierung,
-Rangliste, Start/Ende, Berechtigungen, Reset-Backup, Neustart-Persistenz,
-Unicode-Art, OAuth-Tokenrotation, Nachrichtenlimits und Sendewarteschlange ab.
+Die Tests decken die erhaltene Halloween-Mechanik, Migration, Neustart-
+Persistenz, XP-Deduplizierung/Anti-Spam, Eventwechsel/-archivierung,
+Minispielbefehle, Duel-Timeout, Boss-Angriffe und einmalige Belohnung,
+Custom-Command-Validierung, Dashboard-OAuth-Allowlist, Sessions, CSRF,
+Logout, Unicode-Art und Chatlimits ab. Twitch- und Dashboard-OAuth werden in
+Tests simuliert; keine echten Chatnachrichten werden gesendet.
 
-## Erster echter Test
-
-1. Bot-Konto und Developer-App anlegen.
-2. `.env` ohne echte Tokens committen und lokal OAuth abschließen.
-3. Yannicks Kanal öffnen und mit `!startHalloween` aktivieren.
-4. Mit einem zweiten Zuschauer-Konto `!trickortreat` testen.
-5. `!pumpkins`, `!top`, Cooldown und `!endHalloween` prüfen.
-6. Erst danach den Prozess als Dienst bzw. per Docker auf einen Server verschieben.
-
-Es wird nichts automatisch auf einem öffentlichen Server deployed und der Bot
-sendet ohne deine separate Zustimmung keine Nachrichten in Yannicks Kanal.
+Ein öffentlicher Oracle-Deploy oder ein echter Twitch-Kanaltest wird nicht
+automatisch ausgelöst. Vor dem Livegang müssen die Twitch-App, Redirect-URLs,
+Bot-Konto, Admin-User-ID-Allowlist, Domain/DNS, HTTPS, Firewall und Server-
+Secrets vom Betreiber gesetzt und geprüft werden.

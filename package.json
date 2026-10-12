@@ -2,7 +2,7 @@
   "name": "twitch-halloween-bot-yannick",
   "version": "1.0.0",
   "private": true,
-  "description": "Schlanker Twitch-Halloween-Chatbot für Yannick",
+  "description": "Modularer Twitch-Community-Bot für Yannicks Kanal mit Events, XP, Minispielen und Admin-Dashboard",
   "type": "module",
   "engines": {
     "node": ">=24"

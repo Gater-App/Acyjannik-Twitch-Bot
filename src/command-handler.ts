@@ -2,6 +2,7 @@ import type { AppConfig, ChatMessage, CommandReply, HalloweenEvent } from './typ
 import { Database } from './database.js';
 import { formatCooldown, GameService } from './game.js';
 import { clampChatMessage, eventMessage } from './chat.js';
+import type { CommunityFeatures } from './community-features.js';
 
 const RESET_CONFIRMATION = 'confirm';
 const RESET_CONFIRMATION_TTL_MS = 60_000;
@@ -22,15 +23,17 @@ export class CommandHandler {
     private readonly game: GameService,
     private readonly config: AppConfig,
     private readonly backup: (destination: string) => Promise<void> = (destination) => this.database.backup(destination),
+    private readonly community?: CommunityFeatures,
   ) {}
 
   async handle(message: ChatMessage, now = Date.now()): Promise<CommandReply[]> {
     if (message.senderUserId === this.config.botUserId || message.senderLogin.toLowerCase() === this.config.botLogin.toLowerCase()) return [];
     if (message.broadcasterUserId !== this.config.broadcasterUserId) return [];
     if (!this.database.markEventProcessed(message.eventId, now)) return [];
+    this.community?.tick(now);
     const words = message.message.trim().split(/\s+/u);
     const rawCommand = words.shift();
-    if (!rawCommand?.startsWith('!')) return [];
+    if (!rawCommand?.startsWith('!')) { this.community?.observeActivity(message, now); return []; }
     const command = rawCommand.slice(1).toLowerCase();
     const args = words;
     const name = cleanName(message.senderDisplayName);
@@ -43,14 +46,20 @@ export class CommandHandler {
       case 'halloween': return reply(this.halloweenMessage());
       case 'starthalloween':
         if (!this.isAuthorizedModerator(message)) return reply('⛔ Nur Yannick oder autorisierte Mods dürfen das Event starten.');
-        return reply(this.game.start(now) ? '🎃 Halloween ist gestartet! !trickortreat für Kürbisse.' : '🎃 Halloween läuft bereits.');
+        if (this.community?.activeEventId() && this.community.activeEventId() !== 'halloween') return reply('🎃 Erst das aktuell laufende Saison-Event beenden.');
+        if (!this.game.start(now)) return reply('🎃 Halloween läuft bereits.');
+        this.community?.syncLegacyHalloween(now);
+        return reply('🎃 Halloween ist gestartet! !trickortreat für Kürbisse.');
       case 'endhalloween':
         if (!this.isAuthorizedModerator(message)) return reply('⛔ Nur Yannick oder autorisierte Mods dürfen das Event beenden.');
-        return reply(this.endMessage(now));
+        { const text = this.endMessage(now); this.community?.syncLegacyHalloween(now); return reply(text); }
       case 'resethalloween':
         if (message.senderUserId !== this.config.broadcasterUserId) return reply('⛔ Nur Yannick darf die Punkte zurücksetzen.');
         return reply(await this.resetMessage(message.senderUserId, args, now));
-      default: return [];
+      default: {
+        const response = await this.community?.handle(message, command, args, now);
+        return response || [];
+      }
     }
   }
 
@@ -61,6 +70,7 @@ export class CommandHandler {
       return `⏳ ${name}: Du kannst in ${durationText(result.remainingMs ?? 0)} wieder losziehen.`;
     }
     const { outcome } = result;
+    this.community?.syncLegacyHalloween(now);
     const template = this.templateFor(outcome.event);
     const points = Math.abs(outcome.delta);
     return `${eventMessage(template, { name, points, pumpkins: outcome.pumpkins })} Gesamt: ${outcome.pumpkins}.`;
@@ -95,6 +105,7 @@ export class CommandHandler {
     const backupPath = `backups/halloween-${new Date(now).toISOString().replace(/[:.]/gu, '-')}.sqlite`;
     await this.backup(backupPath);
     this.database.resetScores(now);
+    this.community?.syncLegacyHalloween(now);
     this.pendingReset.delete(userId);
     return '✅ Punkte zurückgesetzt; ein SQLite-Backup wurde vorher erstellt.';
   }

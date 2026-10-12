@@ -3,12 +3,53 @@ services:
     build: .
     restart: unless-stopped
     env_file: .env
+    environment:
+      OAUTH_HOST: 0.0.0.0
+      DASHBOARD_HOST: 0.0.0.0
     volumes:
       - halloween-data:/app/data
       - halloween-backups:/app/backups
     ports:
       - "127.0.0.1:3000:3000"
+      - "127.0.0.1:3001:3001"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/oauth/start',{redirect:'manual'}).then(r=>process.exit(r.status===302?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["https"]
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      BOT_DOMAIN: ${BOT_DOMAIN:-localhost}
+    depends_on:
+      halloween-bot:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   halloween-data:
   halloween-backups:
+  caddy-data:
+  caddy-config:
