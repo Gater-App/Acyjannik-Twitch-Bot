@@ -3,6 +3,7 @@ import { Database } from './database.js';
 import { formatCooldown, GameService } from './game.js';
 import { clampChatMessage, eventMessage } from './chat.js';
 import type { CommunityFeatures } from './community-features.js';
+import { helpReply } from './help.js';
 
 const RESET_CONFIRMATION = 'confirm';
 const RESET_CONFIRMATION_TTL_MS = 60_000;
@@ -42,6 +43,7 @@ export class CommandHandler {
     const args = words;
     const name = cleanName(message.senderDisplayName);
     switch (command) {
+      case 'help': return reply(helpReply(args, message));
       case 'trickortreat': return reply(this.trickOrTreat(name, message.senderUserId, now));
       case 'pumpkins': return reply(`🎃 ${name} hat ${this.game.pumpkins(message.senderUserId)} Kürbisse.`);
       case 'top': return reply(this.topMessage());

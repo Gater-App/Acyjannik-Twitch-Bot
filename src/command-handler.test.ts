@@ -82,3 +82,19 @@ test('Bot-Nachrichten und fremde Channels werden ignoriert', async () => {
   assert.deepEqual(await handler.handle(message(config, '!top', 'viewer-1', { broadcasterUserId: 'other-channel' })), []);
   database.close();
 });
+
+test('!help bietet kurze Themenhilfe und schützt die Admin-Übersicht', async () => {
+  const { config, database, handler } = setup({ appChatMessageLength: 450 });
+  const menu = await handler.handle(message(config, '!help', 'viewer-1'), 1_000);
+  assert.match(menu[0]?.message || '', /!help games/u);
+  assert.ok((menu[0]?.message.length || 0) <= config.appChatMessageLength);
+  const topic = await handler.handle(message(config, '!help detective', 'viewer-1'), 2_000);
+  assert.match(topic[0]?.message || '', /!savequote TEXT/u);
+  const denied = await handler.handle(message(config, '!help mods', 'viewer-1'), 3_000);
+  assert.match(denied[0]?.message || '', /nur für Jannik/u);
+  const mod = await handler.handle(message(config, '!help mods', 'mod-1', { isModerator: true }), 4_000);
+  assert.match(mod[0]?.message || '', /!startimposter/u);
+  const owner = await handler.handle(message(config, '!help admin'), 5_000);
+  assert.match(owner[0]?.message || '', /!resethalloween CONFIRM/u);
+  database.close();
+});
