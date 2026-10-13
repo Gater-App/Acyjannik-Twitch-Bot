@@ -95,6 +95,22 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     const sessionCookie = cookies.find((value) => value.startsWith('community_admin='))?.split(';')[0] || '';
     assert.match(cookies.find((value) => value.startsWith('community_admin=')) || '', /HttpOnly; Secure; SameSite=Lax/u);
 
+    const protectedStreamer=await fetch(`${base}/streamer`,{redirect:'manual'});
+    assert.equal(protectedStreamer.status,302,'Streamer-Modus ist ohne Admin-Sitzung nicht öffentlich');
+    const streamer=await fetch(`${base}/streamer`,{headers:{Cookie:sessionCookie}});
+    assert.equal(streamer.status,200);
+    const streamerHtml=await streamer.text();
+    assert.match(streamerHtml,/Streamer-Steuerung/u);
+    assert.match(streamerHtml,/start-drop/u);
+    assert.match(streamerHtml,/start-imposter/u);
+    assert.match(streamerHtml,/start-detective/u);
+    assert.match(streamerHtml,/Jetzt drehen/u);
+    assert.match(streamerHtml,/!startguess/u,'Zahlenraten wird als bestehender Chatstart dargestellt, nicht als erfundener API-Start');
+    assert.match(streamer.headers.get('cache-control')||'',/no-store/u);
+    assert.match(streamer.headers.get('content-security-policy')||'',/frame-ancestors 'none'/u);
+    const streamerWrite=await fetch(`${base}/streamer`,{method:'POST',headers:{Cookie:sessionCookie},redirect:'manual'});
+    assert.equal(streamerWrite.status,405);
+
     const page = await fetch(`${base}/dashboard`, { headers: { Cookie: sessionCookie } });
     assert.equal(page.status, 200);
     const html = await page.text();
@@ -108,6 +124,7 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.match(html,/Begrüßung neuer Chatter/u);
     assert.match(html,/Community-Aktionen/u);
     assert.match(html,/OBS: Widgets für den Stream/u);
+    assert.match(html,/streamerEntry\.href='\/streamer'/u,'Normales Dashboard bietet einen sichtbaren Einstieg in den Streamer-Modus');
     assert.match(html,/Schritt für Schritt in OBS einrichten/u);
     assert.match(html,/Teilnehmer-Link:/u);
     assert.match(html,/Twitch-Anmeldung für Mitspieler öffnen/u);
