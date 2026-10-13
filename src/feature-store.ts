@@ -929,6 +929,11 @@ export class FeatureStore {
       AND (expires_at IS NULL OR expires_at>?)`).get(type, tokenHash, now));
   }
 
+  widgetTokenConfigured(type: WidgetType, now: number): boolean {
+    return Boolean(this.db.prepare(`SELECT 1 FROM widget_tokens WHERE widget_type=? AND revoked_at IS NULL
+      AND (expires_at IS NULL OR expires_at>?) LIMIT 1`).get(type, now));
+  }
+
   widgetSnapshot(type: WidgetType, now: number): Record<string, unknown> {
     if (type === 'imposter') {
       const row = this.db.prepare("SELECT id,phase,phase_ends_at,result_json,updated_at FROM imposter_rounds WHERE phase IN ('registration','role_distribution','playing','voting','results','finished') ORDER BY updated_at DESC LIMIT 1").get() as {id:string;phase:string;phase_ends_at:number|null;result_json:string|null;updated_at:number}|undefined;

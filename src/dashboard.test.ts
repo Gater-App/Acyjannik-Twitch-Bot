@@ -83,10 +83,18 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.match(html,/Begrüßung neuer Chatter/u);
     assert.match(html,/Community-Aktionen/u);
     assert.match(html,/OBS: Widgets für den Stream/u);
-    assert.match(html,/So fügst du es in OBS ein/u);
-    assert.match(html,/privaten Link/u);
+    assert.match(html,/Schritt für Schritt in OBS einrichten/u);
+    for (const label of ['Übersicht','Spiele starten','Community','OBS-Widgets','Chatbefehle','Einstellungen']) assert.match(html,new RegExp(label,'u'));
+    assert.match(html,/Privater OBS-Link/u);
     assert.match(html,/Erweiterte Einstellungen/u);
     assert.match(html,/Für Fortgeschrittene: Erkennung einstellen/u);
+    const runtimeStatus=await fetch(`${base}/dashboard/api/status`,{headers:{Cookie:sessionCookie}});
+    const runtimeData=await runtimeStatus.json() as {dashboardResponding:boolean;chatReceive:string;botChatSend:string};
+    assert.equal(runtimeData.dashboardResponding,true);
+    assert.equal(runtimeData.chatReceive,'unknown','eine offene Verbindung darf nicht als Chat-Empfangsnachweis erscheinen');
+    assert.equal(runtimeData.botChatSend,'unknown','Senden muss separat gemessen sein');
+    const emptyWidgetStatus=await fetch(`${base}/dashboard/api/widgets/status`,{headers:{Cookie:sessionCookie}});
+    assert.equal((await emptyWidgetStatus.json() as {widgets:Record<string,boolean>}).widgets.quest,false);
     const welcomeBefore=await fetch(`${base}/dashboard/api/welcome`,{headers:{Cookie:sessionCookie}});
     assert.equal((await welcomeBefore.json() as {enabled:boolean}).enabled,false);
     const welcomeSave=await fetch(`${base}/dashboard/api/welcome`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({enabled:true,message:'Willkommen, {user}!'})});
@@ -142,12 +150,16 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
       body: JSON.stringify({ type: 'quest', action: 'rotate' }),
     });
     assert.equal(tokenResponse.status, 201);
+    const configuredWidgetStatus=await fetch(`${base}/dashboard/api/widgets/status`,{headers:{Cookie:sessionCookie}});
+    assert.equal((await configuredWidgetStatus.json() as {widgets:Record<string,boolean>}).widgets.quest,true);
     const tokenData = await tokenResponse.json() as { url: string };
     const widgetToken = new URL(tokenData.url).searchParams.get('token') || '';
     assert.ok(widgetToken.length >= 40);
     const widgetBase = `${base}/widgets`;
     const widgetPage = await fetch(`${widgetBase}/quest?token=${widgetToken}`);
     assert.equal(widgetPage.status, 200);
+    await fetch(`${base}/dashboard`, { headers: { Cookie: sessionCookie } });
+    assert.equal((await fetch(`${widgetBase}/quest?token=${widgetToken}`)).status, 200, 'Dashboard-Aufruf darf einen bestehenden OBS-Link nicht widerrufen');
     assert.match(widgetPage.headers.get('content-security-policy') || '', /connect-src 'self'/u);
     const widgetHtml = await widgetPage.text();
     assert.match(widgetHtml, /LIVE-QUEST/u);
