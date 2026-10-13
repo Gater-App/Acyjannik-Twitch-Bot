@@ -563,6 +563,16 @@ export class FeatureStore {
         this.db.prepare('INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (16, ?)').run(Date.now());
       })();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 17) {
+      if (currentVersion > 0) this.backupBeforeMigration(17);
+      this.db.transaction(() => {
+        const now=Date.now();
+        this.db.prepare("UPDATE chaos_wheel_challenges SET active=0 WHERE action_type='manual_challenge'").run();
+        this.db.prepare("UPDATE chaos_wheel_spins SET status='canceled',resolved_at=COALESCE(resolved_at,?) WHERE status IN ('spinning','active') AND action_type='manual_challenge'").run(now);
+        this.db.prepare('INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (17, ?)').run(now);
+      })();
+    }
   }
 
   private backupBeforeMigration(version: number): void {

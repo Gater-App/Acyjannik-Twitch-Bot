@@ -116,8 +116,8 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.match(html,/!joinimposter/u);
     assert.match(html,/!sus @Name/u);
     assert.match(html,/!savequote Mein Zitat/u);
-    assert.match(html,/Auto-Pilot ein\/aus/u);assert.match(html,/Auto-Pilot stoppen/u);assert.match(html,/Wahrscheinlichkeiten/u);
-    assert.match(html,/Jannick spielt selbst/u);assert.doesNotMatch(html,/Jannik entscheidet/u,'nach dem Dreh gibt es keine zusätzliche Genehmigung');
+    assert.match(html,/Automatik pausieren/u);assert.match(html,/automatisch alle 30 Minuten/u);assert.match(html,/Abstand speichern/u);
+    assert.doesNotMatch(html,/Jannick spielt selbst|Erfolg wird nicht automatisch geprüft/u);assert.doesNotMatch(html,/Jannik entscheidet/u,'nach dem Dreh gibt es keine zusätzliche Genehmigung');
     assert.match(html,/So funktioniert’s/u);assert.doesNotMatch(html,/Einfach erklärt/u,'lange Hilfetexte sind nicht mehr standardmäßig eingeblendet');
     assert.match(html,/mini-overlay-status/u);assert.match(html,/arcade-widget-status/u);assert.match(html,/mini-participant-link/u);assert.match(html,/data-drop-status/u);
     assert.match(html,/b\.hidden=!visible/u,'Spielaktionen werden nach der aktuellen Phase ein- und ausgeblendet');
@@ -187,6 +187,11 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     const invalidInterval=await fetch(`${base}/dashboard/api/automatic-messages`,{method:'POST',headers:autoHeaders,body:JSON.stringify({action:'save',title:'Zu oft',message:'Nein',intervalMinutes:1})});
     assert.equal(invalidInterval.status,400,'Mindestabstand kann nicht unterschritten werden');
 
+    const dashboardPage=await fetch(`${base}/dashboard`,{headers:{Cookie:sessionCookie}}).then(response=>response.text());
+    assert.match(dashboardPage,/automatisch alle 30 Minuten/u);
+    assert.doesNotMatch(dashboardPage,/<form id="arcade-challenge"/u,'normale Bedienung enthält keinen manuellen Challenge-Editor');
+    assert.doesNotMatch(dashboardPage,/Jannick spielt sie selbst/u);
+
     const wheelState=await fetch(`${base}/dashboard/api/arcade`,{headers:{Cookie:sessionCookie}});
     const wheelData=await wheelState.json() as {wheel:{canSpin:boolean;entries:Array<{id:string;probability:number}>}};
     assert.equal(wheelData.wheel.canSpin,true);assert.ok(wheelData.wheel.entries.length>=2);
@@ -194,7 +199,12 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     const wheelSpin=await fetch(`${base}/dashboard/api/arcade`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({action:'spin'})});
     assert.equal(wheelSpin.status,200);assert.match((await wheelSpin.json() as {message:string}).message,/Ergebnis:/u);assert.equal(sentChat.length,1,'Dreh-Ergebnis wird automatisch im Chat angekündigt');
     const wheelAfter=await fetch(`${base}/dashboard/api/arcade`,{headers:{Cookie:sessionCookie}});
-    assert.equal(((await wheelAfter.json() as {wheel:{canSpin:boolean;activeAction:unknown}}).wheel).canSpin,false,'aktive Challenge blockiert einen parallelen Spin');
+    const afterWheel=(await wheelAfter.json() as {wheel:{canSpin:boolean;activeAction:unknown;entries:Array<{actionType:string}>}}).wheel;
+    assert.equal(afterWheel.canSpin,false,'Cooldown blockiert einen unmittelbaren weiteren Spin');
+    assert.equal(afterWheel.activeAction,null,'automatische Aktion wartet nicht auf eine manuelle Auflösung');
+    assert.ok(afterWheel.entries.every(entry=>entry.actionType!=='manual_challenge'));
+    const manualWheelAction=await fetch(`${base}/dashboard/api/arcade`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({action:'challenge',title:'Manuell',weight:1,actionType:'manual_challenge'})});
+    assert.equal(manualWheelAction.status,400,'Dashboard-API lehnt manuelle Radfelder ab');
 
     store.setConfig('spark_settings',{enabled:false,paused:false,minParticipants:3});
     const sparkResponse = await fetch(`${base}/dashboard/api/spark`, { headers: { Cookie: sessionCookie } });

@@ -147,6 +147,8 @@ async function runLiveMode(): Promise<void> {
   let dashboard:DashboardServer|undefined;
   let lastTipLiveCheckAt = 0;
   let checkingLive = false;
+  let lastWheelLiveCheckAt = 0;
+  let checkingWheelLive = false;
   const featureTicker = setInterval(() => {
     void (async () => {
       try {
@@ -164,6 +166,24 @@ async function runLiveMode(): Promise<void> {
         const profile = chatPolicy.snapshot().profile, availability = community.helpAvailability();
         const dueMessage=automaticChatMessages.hasDue(now,communityTips.eligibleActivityMessages,busy);
         const wantsTip=communityTips.shouldEvaluate(profile,availability,busy,now)&&automaticChatMessages.canReserveGlobalSlot(now);
+        const wheelReady=community.arcade.wheelStatus(now) as {enabled:boolean;autoPilotEnabled:boolean;canSpin:boolean;autoSpinDue:boolean};
+        if(wheelReady.enabled&&wheelReady.autoPilotEnabled&&wheelReady.canSpin&&wheelReady.autoSpinDue
+          &&!checkingWheelLive&&now-lastWheelLiveCheckAt>=15_000){
+          checkingWheelLive=true;lastWheelLiveCheckAt=now;
+          try{
+            const stream=await api.getStreamStatus(config.broadcasterUserId);
+            if(stream){
+              const result=community.arcade.autoSpinIfDue(Date.now());
+              if(result){
+                lastSpecialAnnouncementAt=Date.now();
+                try{await queue.enqueue(result,undefined,'wheel');}
+                catch(error){logger.warn('Automatisches Glücksrad-Ergebnis konnte nicht in den Chat gestellt werden; die Aktion bleibt gespeichert und wird nicht erneut ausgeführt.',{error:error instanceof Error?error.message:'unbekannt'});}
+                return;
+              }
+            }
+          }catch(error){logger.warn('Automatischer Glücksrad-Dreh wegen unbekanntem Live-Status oder Twitch-Fehler zurückgestellt.',{error:error instanceof Error?error.message:'unbekannt'});}
+          finally{checkingWheelLive=false;}
+        }
         if (!checkingLive && now - lastTipLiveCheckAt >= 15_000 && (Boolean(dueMessage)||wantsTip)) {
           checkingLive = true;
           try {

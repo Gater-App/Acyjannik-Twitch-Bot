@@ -38,7 +38,7 @@ test('Versionierte Elio-Migration ersetzt nur den alten Standardnamen und erhäl
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'elio-pet-migration-'));const sub=path.join(directory,'data');fs.mkdirSync(sub);
   const legacyPath=path.join(sub,'legacy.sqlite');let store=new FeatureStore(legacyPath);new CommunityArcade(store,'broadcaster');
   store.setConfig('8ball_answers', LEGACY_DEFAULT_8BALL_ANSWERS);
-  store.miniGameTransaction(db=>{db.prepare("UPDATE community_pet SET name='Fünkchen',level=2,xp=125 WHERE id=1").run();db.prepare("UPDATE chaos_wheel_challenges SET id='legacy-generated-id',title='Der Drache bekommt einen Energieschub!',action_type='boost_pet' WHERE id='builtin:pet-energy'").run();db.prepare('DELETE FROM schema_migrations WHERE version IN (13,14,15,16)').run()});store.close();
+  store.miniGameTransaction(db=>{db.prepare("UPDATE community_pet SET name='Fünkchen',level=2,xp=125 WHERE id=1").run();db.prepare("UPDATE chaos_wheel_challenges SET id='legacy-generated-id',title='Der Drache bekommt einen Energieschub!',action_type='boost_pet' WHERE id='builtin:pet-energy'").run();db.prepare('DELETE FROM schema_migrations WHERE version IN (13,14,15,16,17,18)').run()});store.close();
   store=new FeatureStore(legacyPath);assert.equal(new CommunityArcade(store,'broadcaster').pet().name,'Elio');assert.equal(new CommunityArcade(store,'broadcaster').pet().level,2);assert.equal(new CommunityArcade(store,'broadcaster').pet().xp,125);
   assert.deepEqual(store.config('8ball_answers', []), DEFAULT_8BALL_ANSWERS, 'alter Standardpool wird beim Upgrade ersetzt');
   assert.equal(new CommunityArcade(store,'broadcaster').manageChallenges().find(x=>x.id==='legacy-generated-id')?.title,'Elio bekommt einen Energieschub!');store.close();
@@ -104,25 +104,25 @@ test('Abgelaufene Teilnehmerdetails werden gemäß Aufbewahrungsfrist bereinigt'
   assert.equal(remaining,0);store.close();
 });
 
-test('Chaos Wheel verlangt zwei Segmente und persistiert das vom Server gezogene Ergebnis',()=>{
-  const {store,arcade}=setup(()=>0);arcade.updateSettings({...arcade.settings(),wheelEnabled:true});
-  arcade.configureChallenge('Test A',1,true);arcade.configureChallenge('Test B',3,true);
-  assert.match(arcade.spinAdmin('broadcaster',5000),/Challenge startet jetzt/u);
-  const snap=arcade.snapshot('wheel',5001) as {visible:boolean;wheel:{title:string;status:string;endsAt:number}};
-  assert.equal(snap.visible,true);assert.ok(arcade.manageChallenges().some(x=>x.title===snap.wheel.title));assert.equal(snap.wheel.status,'active');assert.equal(snap.wheel.endsAt,305_000);
-  assert.match(arcade.spinAdmin('broadcaster',5002),/Rad-Aktion läuft bereits/u);
-  assert.match(arcade.tick(305_000)[0]||'',/Erfolg nicht überprüft/u);
-  assert.equal(arcade.tick(305_001).length,0,'Challenge wird nur einmal abgeschlossen');
-  assert.match(arcade.spinAdmin('broadcaster',305_001),/Ergebnis:/u,'nach Ablauf des konfigurierten Cooldowns kann eine neue Challenge starten');
+test('Chaos Wheel enthält nur automatisch ausführbare Segmente und führt das Ergebnis sofort aus',()=>{
+  const {store,arcade}=setup(()=>0);arcade.updateSettings({...arcade.settings(),wheelEnabled:true,petEnabled:true,dropsEnabled:true,wheelCooldownMs:1_000});
+  const status=arcade.wheelStatus(5_000) as {entries:Array<{actionType:string}>;canSpin:boolean};
+  assert.equal(status.canSpin,true);assert.equal(status.entries.length,2);assert.ok(status.entries.every(x=>x.actionType!=='manual_challenge'));
+  assert.throws(()=>arcade.configureChallenge('Manuell',1,true,'manual-test','manual_challenge'),/nicht mehr zulässig/u);
+  const before=arcade.pet();assert.match(arcade.spinAdmin('broadcaster',5_000),/automatisch \+10 Energie/u);
+  assert.equal(arcade.pet().energy,Math.min(100,before.energy+10));
+  const snap=arcade.snapshot('wheel',5_001) as {visible:boolean;wheel:{status:string;endsAt:number|null;actionType:string}};
+  assert.equal(snap.visible,true);assert.equal(snap.wheel.status,'completed');assert.equal(snap.wheel.endsAt,null);assert.equal(snap.wheel.actionType,'boost_pet');
+  assert.equal(arcade.tick(400_000).length,0,'keine manuelle Challenge wartet auf eine Folgeaktion');
   store.close();
 });
 
 test('Wheel-Aktionszuordnung startet genau einen konfigurierten Mystery Drop, claims und XP laufen über den bestehenden Pfad',()=>{
-  const {store,arcade}=setup(()=>1);arcade.updateSettings({...arcade.settings(),dropsEnabled:true,wheelEnabled:true,dropDurationMs:10_000,wheelCooldownMs:5_000});
+  const {store,arcade}=setup(()=>0);arcade.updateSettings({...arcade.settings(),dropsEnabled:true,wheelEnabled:true,dropDurationMs:10_000,wheelCooldownMs:5_000});
   for(const challenge of arcade.manageChallenges())arcade.configureChallenge(challenge.title,challenge.weight,false,challenge.id,challenge.actionType);
-  arcade.configureChallenge('Manuelle Challenge',1,true,'test-manual','manual_challenge');
-  arcade.configureChallenge('Automatischer Drop',1,true,'test-drop','start_mystery_drop');
-  assert.equal(arcade.manageChallenges().find(x=>x.id==='test-drop')?.actionType,'start_mystery_drop');
+  arcade.configureChallenge('Automatischer Drop A',1,true,'test-drop-a','start_mystery_drop');
+  arcade.configureChallenge('Automatischer Drop B',1,true,'test-drop-b','start_mystery_drop');
+  assert.equal(arcade.manageChallenges().find(x=>x.id==='test-drop-a')?.actionType,'start_mystery_drop');
   const result=arcade.spinAdmin('broadcaster',1_000);
   assert.match(result,/Ein Mystery Drop startet/u);assert.match(result,/10 Sekunden/u);assert.match(result,/!claim/u);
   assert.doesNotMatch(result,/common|rare|epic|legendary/iu);
@@ -145,7 +145,6 @@ test('Wheel-Aktionszuordnung startet genau einen konfigurierten Mystery Drop, cl
 test('Auto-Pilot startet keine zweite Aktion während ein Drop aktiv ist',()=>{
   const {store,arcade}=setup(()=>1);arcade.updateSettings({...arcade.settings(),dropsEnabled:true,wheelEnabled:true,wheelCooldownMs:1_000});
   for(const challenge of arcade.manageChallenges())arcade.configureChallenge(challenge.title,challenge.weight,false,challenge.id,challenge.actionType);
-  arcade.configureChallenge('Manuelle Challenge',1,true,'manual-1','manual_challenge');
   arcade.configureChallenge('Automatischer Drop',1,true,'drop-1','start_mystery_drop');
   arcade.startDropAdmin('broadcaster','rare',1_000);
   assert.match(arcade.spinAdmin('broadcaster',2_000),/läuft bereits/u);
@@ -153,35 +152,48 @@ test('Auto-Pilot startet keine zweite Aktion während ein Drop aktiv ist',()=>{
   store.close();
 });
 
-test('normale Glücksrad-Challenge startet keinen Drop und Default-Einträge tragen Aktions-IDs',()=>{
-  const {store,arcade}=setup(()=>0);arcade.updateSettings({...arcade.settings(),dropsEnabled:true,wheelEnabled:true});
+test('Alte manuelle Rad-Felder bleiben gespeichert, sind aber nicht auswählbar',()=>{
+  const {store,arcade}=setup(()=>0);arcade.updateSettings({...arcade.settings(),dropsEnabled:true,petEnabled:true,wheelEnabled:true});
   assert.equal(arcade.manageChallenges().find(x=>x.id==='builtin:mystery-drop')?.actionType,'start_mystery_drop');
-  for(const challenge of arcade.manageChallenges())arcade.configureChallenge(challenge.title,challenge.weight,false,challenge.id,challenge.actionType);
-  arcade.configureChallenge('Manuell A',1,true,'manual-a','manual_challenge');arcade.configureChallenge('Manuell B',1,true,'manual-b','manual_challenge');
-  assert.match(arcade.spinAdmin('broadcaster',1_000),/Jannick spielt sie selbst/u);
+  store.miniGameQuery(db=>db.prepare("INSERT INTO chaos_wheel_challenges(id,title,weight,active,action_type) VALUES('legacy-manual','Eine Runde ohne Springen',1,1,'manual_challenge')").run());
+  assert.equal(arcade.activeChallenges().some(x=>x.id==='legacy-manual'),false);
+  assert.equal(arcade.manageChallenges().some(x=>x.id==='legacy-manual'),true,'Altbestand bleibt erhalten');
+  assert.match(arcade.spinAdmin('broadcaster',1_000),/Energie/u);
   assert.equal(store.miniGameQuery(db=>db.prepare('SELECT COUNT(*) n FROM mystery_drops').get() as {n:number}).n,0);
-  assert.equal((store.miniGameQuery(db=>db.prepare("SELECT status FROM chaos_wheel_spins ORDER BY created_at DESC LIMIT 1").get() as {status:string})).status,'active');
+  assert.equal((store.miniGameQuery(db=>db.prepare("SELECT status FROM chaos_wheel_spins ORDER BY created_at DESC LIMIT 1").get() as {status:string})).status,'completed');
   store.close();
+});
+
+test('Migration deaktiviert alte manuelle Felder und schließt laufende manuelle Spins ohne Daten zu löschen',()=>{
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'wheel-manual-migration-')),database=path.join(directory,'state','bot.sqlite');fs.mkdirSync(path.dirname(database));
+  let store=new FeatureStore(database);
+  store.miniGameQuery(db=>{
+    db.prepare("INSERT INTO chaos_wheel_challenges(id,title,weight,active,action_type) VALUES('old-manual','Fünf Minuten nur Pistolen',2,1,'manual_challenge')").run();
+    db.prepare("INSERT INTO chaos_wheel_spins(id,challenge_id,title,status,created_by,created_at,action_type) VALUES('old-spin','old-manual','Fünf Minuten nur Pistolen','active','mod',10,'manual_challenge')").run();
+    db.prepare('DELETE FROM schema_migrations WHERE version=17').run();
+  });store.close();
+  store=new FeatureStore(database);
+  assert.equal(store.miniGameQuery(db=>db.prepare("SELECT active FROM chaos_wheel_challenges WHERE id='old-manual'").get() as {active:number}).active,0);
+  assert.equal(store.miniGameQuery(db=>db.prepare("SELECT status FROM chaos_wheel_spins WHERE id='old-spin'").get() as {status:string}).status,'canceled');
+  assert.equal(store.miniGameQuery(db=>db.prepare("SELECT COUNT(*) n FROM chaos_wheel_spins WHERE id='old-spin'").get() as {n:number}).n,1);
+  store.close();fs.rmSync(directory,{recursive:true,force:true});
 });
 
 test('nicht verfügbare Aktionen werden ausgeschlossen, Pet-Bonus löst genau einmal aus und Not-Stopp beendet die Challenge',()=>{
   let selection=1;const {store,arcade}=setup(()=>selection);arcade.updateSettings({...arcade.settings(),wheelEnabled:true,petEnabled:false,dropsEnabled:false});
   for(const x of arcade.manageChallenges())arcade.configureChallenge(x.title,x.weight,false,x.id,x.actionType);
-  arcade.configureChallenge('Nur Challenge',1,true,'manual-only','manual_challenge');
-  arcade.configureChallenge('Pet Bonus',1,true,'pet-action','boost_pet');
-  arcade.configureChallenge('Drop',1,true,'drop-action','start_mystery_drop');
-  const unavailable=arcade.wheelStatus(10_000) as {entries:Array<{id:string}>;canSpin:boolean};
-  assert.equal(unavailable.canSpin,false);assert.deepEqual(unavailable.entries.map(x=>x.id),['manual-only']);
+  arcade.configureChallenge('Nur Challenge',1,false,'manual-only','manual_challenge');
+  arcade.configureChallenge('Pet Bonus A',1,true,'pet-action-a','boost_pet');
+  arcade.configureChallenge('Pet Bonus B',1,true,'pet-action-b','boost_pet');
+  const unavailable=arcade.wheelStatus(10_000) as {entries:Array<{id:string}>;unavailable:Array<{reason:string}>;canSpin:boolean};
+  assert.equal(unavailable.canSpin,false);assert.deepEqual(unavailable.entries,[]);assert.ok(unavailable.unavailable.length>=2);
   arcade.updateSettings({...arcade.settings(),petEnabled:true});
   const before=arcade.pet();assert.match(arcade.spinAdmin('broadcaster',10_000),/automatisch \+10 Energie/u);
   assert.equal(arcade.pet().energy,Math.min(100,before.energy+10));
   assert.equal(arcade.spinAdmin('broadcaster',10_001).includes('Bonus'),false,'cooldown prevents reapplying the same action');
-  arcade.updateSettings({...arcade.settings(),wheelCooldownMs:1_000});
-  selection=0;
-  assert.match(arcade.spinAdmin('broadcaster',11_001),/Challenge startet jetzt/u);
   assert.match(arcade.emergencyStop(11_002),/Auto-Pilot gestoppt/u);
   assert.equal((arcade.wheelStatus(11_003) as {autoPilotEnabled:boolean;activeAction:unknown}).autoPilotEnabled,false);
-  assert.equal((store.miniGameQuery(db=>db.prepare("SELECT status FROM chaos_wheel_spins WHERE title='Nur Challenge'").get() as {status:string})).status,'canceled');
+  assert.equal(store.miniGameQuery(db=>db.prepare("SELECT COUNT(*) n FROM chaos_wheel_spins WHERE action_type='manual_challenge'").get() as {n:number}).n,0);
   store.close();
 });
 
@@ -194,20 +206,19 @@ test('laufende Community-Spielrunde blockiert den Wheel-Autopiloten ohne Zustand
   store.close();
 });
 
-test('aktive Wheel-Challenge wird nach echtem SQLite-Neustart fortgesetzt und genau einmal abgeschlossen',()=>{
+test('Auto-Dreh läuft frühestens alle 30 Minuten und Neustart erzeugt keine doppelte Aktion',()=>{
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'wheel-autopilot-')),database=path.join(directory,'bot.sqlite');
   let store=new FeatureStore(database),arcade=new CommunityArcade(store,'broadcaster',()=>0);
-  arcade.updateSettings({...arcade.settings(),wheelEnabled:true,wheelChallengeDurationMs:2_000});
-  for(const x of arcade.manageChallenges())arcade.configureChallenge(x.title,x.weight,false,x.id,x.actionType);
-  arcade.configureChallenge('Restart Challenge',1,true,'restart-manual','manual_challenge');
-  arcade.configureChallenge('Restart Challenge 2',1,true,'restart-manual-2','manual_challenge');
-  assert.match(arcade.spinAdmin('broadcaster',10_000),/Challenge startet jetzt/u);
+  arcade.updateSettings({...arcade.settings(),wheelEnabled:true,petEnabled:true,dropsEnabled:true,wheelCooldownMs:1_000});
+  assert.match(arcade.autoSpinIfDue(10_000)||'',/Ergebnis:/u);
+  assert.equal(store.miniGameQuery(db=>db.prepare('SELECT COUNT(*) n FROM chaos_wheel_spins').get() as {n:number}).n,1);
   store.close();
-  store=new FeatureStore(database);arcade=new CommunityArcade(store,'broadcaster');
-  const resumed=arcade.wheelStatus(11_000) as {activeAction:{title:string;endsAt:number}|null};
-  assert.equal(resumed.activeAction?.title,'Restart Challenge');assert.equal(resumed.activeAction?.endsAt,12_000);
-  assert.match(arcade.tick(12_000)[0]||'',/Erfolg nicht überprüft/u);
-  assert.equal(arcade.tick(12_001).length,0);
+  store=new FeatureStore(database);arcade=new CommunityArcade(store,'broadcaster',()=>0);
+  const status=arcade.wheelStatus(11_000) as {nextAutoSpinAt:number;autoSpinDue:boolean};
+  assert.equal(status.nextAutoSpinAt,10_000+30*60_000);assert.equal(status.autoSpinDue,false);
+  assert.equal(arcade.autoSpinIfDue(status.nextAutoSpinAt-1),undefined);
+  assert.match(arcade.autoSpinIfDue(status.nextAutoSpinAt)||'',/Ergebnis:/u);
+  assert.equal(store.miniGameQuery(db=>db.prepare('SELECT COUNT(*) n FROM chaos_wheel_spins').get() as {n:number}).n,2);
   store.close();fs.rmSync(directory,{recursive:true,force:true});
 });
 
