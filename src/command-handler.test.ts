@@ -87,16 +87,19 @@ test('Bot-Nachrichten und fremde Channels werden ignoriert', async () => {
 test('!help bietet kurze Themenhilfe und schützt die Admin-Übersicht', async () => {
   const { config, database, handler } = setup({ appChatMessageLength: 450 });
   const menu = await handler.handle(message(config, '!help', 'viewer-1'), 1_000);
-  assert.match(menu[0]?.message || '', /!help games/u);
+  assert.match(menu[0]?.message || '', /!help spiele/u);
+  assert.equal(menu[0]?.category,'help');
   assert.ok((menu[0]?.message.length || 0) <= config.appChatMessageLength);
-  const topic = await handler.handle(message(config, '!help detective', 'viewer-1'), 2_000);
-  assert.match(topic[0]?.message || '', /!savequote TEXT/u);
-  const denied = await handler.handle(message(config, '!help mods', 'viewer-1'), 3_000);
-  assert.match(denied[0]?.message || '', /nur für Jannik/u);
-  const mod = await handler.handle(message(config, '!help mods', 'mod-1', { isModerator: true }), 4_000);
+  assert.deepEqual(await handler.handle(message(config, '!help games', 'viewer-1'),1_100),[],'kurzer Cooldown bremst wiederholte Hilfe');
+  const topic = await handler.handle(message(config, '!help detective', 'viewer-1'), 7_000);
+  assert.match(topic[0]?.message || '', /derzeit deaktiviert/u);
+  const denied = await handler.handle(message(config, '!help mods', 'viewer-1'), 13_000);
+  assert.match(denied[0]?.message || '', /nur für Jannick/u);
+  const mod = await handler.handle(message(config, '!help mods spiele', 'mod-1', { isModerator: true }), 14_000);
   assert.match(mod[0]?.message || '', /!startimposter/u);
-  const owner = await handler.handle(message(config, '!help admin'), 5_000);
-  assert.match(owner[0]?.message || '', /!resethalloween CONFIRM/u);
+  const owner = await handler.handle(message(config, '!help admin'), 19_000);
+  assert.match(owner[0]?.message || '', /Dashboard/u);
+  assert.ok((owner[0]?.message.length||0)<200);
   database.close();
 });
 
@@ -123,7 +126,7 @@ test('echter verschachtelter Twitch-EventSub-Frame erreicht !help und wird dedup
   assert.equal(parsed.senderUserId, 'viewer-live');
   const replies = await handler.handle(parsed, 1_000);
   assert.equal(replies.length, 1);
-  assert.match(replies[0]?.message || '', /!help games/u);
+  assert.match(replies[0]?.message || '', /!help spiele/u);
   assert.deepEqual(await handler.handle(parsed, 1_001), [], 'redelivery of the same Twitch event is ignored');
   database.close();
 });

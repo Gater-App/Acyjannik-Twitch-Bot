@@ -8,6 +8,7 @@ import { MiniGames } from './mini-games.js';
 import { CommunityArcade } from './community-arcade.js';
 import { categoryForCommand, type ChatCategory } from './chat-message-format.js';
 import type { OutboundChatMessage } from './chat-message-format.js';
+import type { HelpAvailability } from './help.js';
 
 type UserLookup = (login: string) => Promise<{ id: string; login: string; displayName: string } | undefined>;
 type RandomInclusive = (min: number, max: number) => number;
@@ -60,6 +61,18 @@ export class CommunityFeatures {
   syncLegacyHalloween(now = Date.now()): void { this.store.syncLegacyHalloween(now); }
 
   activeEventId(): string | undefined { return this.store.activeEvent()?.id; }
+
+  helpAvailability(): HelpAvailability {
+    const modules=this.store.config<Record<string,boolean>>('modules',{}),active=this.store.activeEvent();
+    const eventSettings=this.store.config<{enabled?:boolean}>('quest_settings',{});
+    const mini=this.miniGames.settings(),arcade=this.arcade.settings(),spark=this.conversationSpark.config();
+    const events=this.store.events().map(event=>({id:event.id,name:event.name,command:event.command,active:event.active&&(event.id==='halloween'||modules.events!==false)}));
+    const activeEnabled=Boolean(active&&(active.id==='halloween'||modules.events!==false));
+    return {xp:modules.xp!==false,events:activeEnabled,...(activeEnabled&&active?{activeEventName:active.name,activeEventCommand:active.command}:{}),seasonalEvents:events,
+      pet:arcade.petEnabled,drops:arcade.dropsEnabled,wheel:arcade.wheelEnabled,imposter:mini.enabled,detective:mini.enabled,
+      quests:modules.quests!==false&&eventSettings.enabled!==false,spark:spark.enabled,
+      eightBall:modules.eightBall!==false,rps:modules.rps!==false,guess:modules.guess!==false,duels:modules.duels!==false};
+  }
 
   tick(now = Date.now(), advanceMiniGames = true): string[] { return this.tickMessages(now, advanceMiniGames).map(item => item.message); }
   tickMessages(now = Date.now(), advanceMiniGames = true): OutboundChatMessage[] {

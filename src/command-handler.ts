@@ -3,7 +3,7 @@ import { Database } from './database.js';
 import { formatCooldown, GameService } from './game.js';
 import { clampChatMessage, eventMessage } from './chat.js';
 import type { CommunityFeatures } from './community-features.js';
-import { helpReply } from './help.js';
+import { DEFAULT_HELP_AVAILABILITY, helpReply } from './help.js';
 import type { ChatResponsePolicy } from './chat-response-policy.js';
 import { categoryForCommand, type ChatCategory } from './chat-message-format.js';
 
@@ -20,6 +20,7 @@ function durationText(remainingMs: number): string {
 
 export class CommandHandler {
   private readonly pendingReset = new Map<string, number>();
+  private readonly helpCooldowns = new Map<string, number>();
 
   constructor(
     private readonly database: Database,
@@ -48,7 +49,13 @@ export class CommandHandler {
     const reply = (text: string, category: ChatCategory = categoryForCommand(command)): CommandReply[] => [{ message: clampChatMessage(text, this.config.appChatMessageLength), category, ...(message.messageId ? { replyParentMessageId: message.messageId } : {}) }];
     const name = cleanName(message.senderDisplayName);
     switch (command) {
-      case 'help': return reply(helpReply(args, message));
+      case 'help': {
+        const until=this.helpCooldowns.get(message.senderUserId)||0;
+        if(now<until)return [];
+        this.helpCooldowns.set(message.senderUserId,now+5_000);
+        if(this.helpCooldowns.size>5000)for(const [id,expiry] of this.helpCooldowns)if(expiry<=now)this.helpCooldowns.delete(id);
+        return reply(helpReply(args,message,this.community?.helpAvailability()||DEFAULT_HELP_AVAILABILITY));
+      }
       case 'trickortreat': { const result = this.trickOrTreat(name, message.senderUserId, now); return reply(result.message, result.category); }
       case 'pumpkins': return reply(`🎃 ${name} hat ${this.game.pumpkins(message.senderUserId)} Kürbisse.`);
       case 'top': return reply(this.topMessage());

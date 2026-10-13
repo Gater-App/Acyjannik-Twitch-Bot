@@ -50,6 +50,21 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
   try {
     assert.equal(await dashboard.start(), true);
     const base = `http://127.0.0.1:${port}`;
+    const publicHelp=await fetch(`${base}/hilfe`);
+    assert.equal(publicHelp.status,200,'Hilfeseite ist ohne Twitch-Anmeldung lesbar');
+    const publicHtml=await publicHelp.text();
+    assert.match(publicHtml,/Mitspielen im Chat/u);
+    assert.match(publicHtml,/name="viewport"/u);
+    assert.match(publicHtml,/@media\(max-width:520px\)/u);
+    assert.match(publicHelp.headers.get('content-security-policy')||'',/style-src 'nonce-/u);
+    const searchHelp=await fetch(`${base}/hilfe?q=%21claim`);
+    const searchHtml=await searchHelp.text();
+    assert.match(searchHtml,/Mystery Drops/u);
+    assert.doesNotMatch(searchHtml,/XP &amp; Level/u,'Suchergebnis filtert nicht passende Karten');
+    const publicWrite=await fetch(`${base}/hilfe`,{method:'POST'});
+    assert.equal(publicWrite.status,405,'öffentliche Hilferoute ist ausschließlich lesend');
+    const privateDashboard=await fetch(`${base}/dashboard`,{redirect:'manual'});
+    assert.equal(privateDashboard.status,302,'Admin-Dashboard bleibt geschützt');
     const firstLogin = await fetch(`${base}/dashboard/login`, { redirect: 'manual' });
     const firstLocation = new URL(firstLogin.headers.get('location') || '');
     const firstState = firstLocation.searchParams.get('state') || '';

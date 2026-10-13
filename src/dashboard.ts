@@ -16,6 +16,8 @@ import { DEFAULT_SPARK_CONFIG, normalizeSparkConfig } from './conversation-spark
 import { DASHBOARD_UX_V3_SCRIPT } from './dashboard-ux.js';
 import { ChatResponsePolicy, DEFAULT_CHAT_RESPONSE_SETTINGS } from './chat-response-policy.js';
 import type { ChatCategory } from './chat-message-format.js';
+import { DEFAULT_HELP_AVAILABILITY, type HelpAvailability } from './help.js';
+import { renderPublicHelpPage } from './public-help.js';
 
 interface Session { userId: string; login: string; csrf: string; expiresAt: number; }
 interface RuntimeStatus { twitchConnected: boolean; channel: string; startedAt: number; lastError?: string; queued?: number; suppressed?: number; chatResponse?: { profile: string; suppressed: number; deferred: number }; }
@@ -122,6 +124,13 @@ export class DashboardServer {
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
     const clientIp = req.socket.remoteAddress || 'unknown';
     if (!this.rateLimit(clientIp)) { this.json(res, 429, { error: 'Zu viele Anfragen. Bitte kurz warten.' }); return; }
+    if (url.pathname === '/hilfe') {
+      if(req.method!=='GET'){res.statusCode=405;res.setHeader('Allow','GET');res.setHeader('Content-Type','text/plain; charset=utf-8');res.end('Nur lesender Aufruf erlaubt.');return;}
+      const nonce=randomBytes(18).toString('base64');
+      res.setHeader('Content-Security-Policy',`default-src 'none'; style-src 'nonce-${nonce}'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`);
+      res.statusCode=200;res.setHeader('Content-Type','text/html; charset=utf-8');
+      res.end(renderPublicHelpPage(this.publicHelpAvailability(),url.searchParams.get('q')||'',nonce));return;
+    }
     if (url.pathname === '/dashboard/login' && req.method === 'GET') { this.login(res); return; }
     if (url.pathname === '/dashboard/oauth/callback' && req.method === 'GET') { await this.callback(url, req, res); return; }
     if (url.pathname === '/games/imposter/login' && req.method === 'GET') { this.participantLogin(res); return; }
@@ -704,6 +713,21 @@ export class DashboardServer {
     res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Referrer-Policy', 'no-referrer'); res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'none'; style-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
+  }
+
+  private publicHelpAvailability():HelpAvailability {
+    const modules=this.store.config<Record<string,boolean>>('modules',{}),active=this.store.activeEvent();
+    const arcade=this.arcade?.settings(),mini=this.miniGames?.settings();
+    const quest=this.store.config<{enabled?:boolean}>('quest_settings',{});
+    const spark=normalizeSparkConfig(this.store.config<unknown>('spark_settings',DEFAULT_SPARK_CONFIG));
+    const seasonalEvents=this.store.events().map(event=>({id:event.id,name:event.name,command:event.command,active:event.active&&(event.id==='halloween'||modules.events!==false)}));
+    const activeEnabled=Boolean(active&&(active.id==='halloween'||modules.events!==false));
+    const help:HelpAvailability={...DEFAULT_HELP_AVAILABILITY,xp:modules.xp!==false,events:activeEnabled,
+      pet:arcade?.petEnabled??false,drops:arcade?.dropsEnabled??false,wheel:arcade?.wheelEnabled??false,
+      imposter:mini?.enabled??false,detective:mini?.enabled??false,quests:modules.quests!==false&&quest.enabled!==false,spark:spark.enabled,
+      eightBall:modules.eightBall!==false,rps:modules.rps!==false,guess:modules.guess!==false,duels:modules.duels!==false,seasonalEvents};
+    if(activeEnabled&&active){help.activeEventName=active.name;help.activeEventCommand=active.command;}
+    return help;
   }
 
   private json(res: http.ServerResponse, status: number, payload: unknown): void {
