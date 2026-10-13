@@ -95,7 +95,14 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.doesNotMatch(html,/id="mini-config"/u,'normale Minispiel-Einstellungen dürfen kein JSON-Textfeld zeigen');
     assert.match(html,/Nächster Phasenwechsel in/u,'geführter Imposter-Status zeigt den Countdown');
     assert.match(html,/Mindestzahl von/u,'Rollenverteilung bleibt gesperrt bis genug Mitspielende angemeldet sind');
-    for (const label of ['Übersicht','Spiele starten','Community','OBS-Widgets','Chatbefehle','Einstellungen']) assert.match(html,new RegExp(label,'u'));
+    for (const label of ['Übersicht','Spiele','Community','OBS','Chatbefehle','Einstellungen']) assert.match(html,new RegExp(label,'u'));
+    assert.match(html,/<nav class="main-nav" aria-label="Hauptbereiche"><a href="#uebersicht">Übersicht<\/a><a href="#spiele">Spiele<\/a><a href="#community">Community<\/a><a href="#obs">OBS<\/a><\/nav>/u,'die Hauptnavigation bleibt auf vier Bereiche begrenzt');
+    assert.match(html,/<nav class="secondary-nav" aria-label="Weitere Werkzeuge">[\s\S]*Chatbefehle[\s\S]*Weitere Einstellungen/u,'Chatbefehle und Einstellungen sind sekundär erreichbar');
+    assert.match(html,/Community-Boss[\s\S]*hideCard\('Community-Boss'\)/u,'Boss-Feature wird in der normalen Oberfläche nur ausgeblendet');
+    assert.match(html,/Chat-Umfrage[\s\S]*hideCard\('Chat-Umfrage'\)/u,'allgemeine Umfrage wird in der normalen Oberfläche nur ausgeblendet');
+    assert.match(html,/Weitere Chatspiele[\s\S]*Experimentell[\s\S]*!8ball Frage[\s\S]*!duel @Name[\s\S]*!startguess[\s\S]*!rps schere/u,'experimentelle Chatspiele bleiben mit konkreten Befehlen auffindbar');
+    assert.match(html,/Gemeinsame Vorschläge[\s\S]*Community-Quests[\s\S]*Gesprächs-Funken/u,'Quest- und Funkenvorschläge sind nach Herkunft gekennzeichnet');
+    assert.match(html,/Saisonpunkte für Halloween, Weihnachten und Ostern sind davon getrennt/u,'Saisonpunkte werden klar von XP getrennt');
     assert.match(html,/Privater OBS-Link/u);
     assert.match(html,/Erweiterte Einstellungen/u);
     assert.match(html,/Für Fortgeschrittene: Erkennung einstellen/u);
@@ -104,6 +111,12 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.equal(runtimeData.dashboardResponding,true);
     assert.equal(runtimeData.chatReceive,'unknown','eine offene Verbindung darf nicht als Chat-Empfangsnachweis erscheinen');
     assert.equal(runtimeData.botChatSend,'unknown','Senden muss separat gemessen sein');
+    const optionalChannelPoints=await fetch(`${base}/dashboard/api/channel-points`,{headers:{Cookie:sessionCookie}});
+    assert.equal(optionalChannelPoints.status,200,'fehlende optionale Kanalpunkte-Integration soll keinen 405-Fehler erzeugen');
+    const optionalChannelPointsData=await optionalChannelPoints.json() as {available:boolean;connected:boolean;message:string};
+    assert.equal(optionalChannelPointsData.available,false);
+    assert.equal(optionalChannelPointsData.connected,false);
+    assert.match(optionalChannelPointsData.message,/nicht eingerichtet/u);
     const emptyWidgetStatus=await fetch(`${base}/dashboard/api/widgets/status`,{headers:{Cookie:sessionCookie}});
     assert.equal((await emptyWidgetStatus.json() as {widgets:Record<string,boolean>}).widgets.quest,false);
     const welcomeBefore=await fetch(`${base}/dashboard/api/welcome`,{headers:{Cookie:sessionCookie}});
