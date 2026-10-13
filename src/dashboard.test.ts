@@ -133,7 +133,7 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.match(html,/!joinimposter/u);
     assert.match(html,/!sus @Name/u);
     assert.match(html,/!savequote Mein Zitat/u);
-    assert.match(html,/Automatik pausieren/u);assert.match(html,/automatisch alle 30 Minuten/u);assert.match(html,/Abstand speichern/u);
+    assert.match(html,/Automatik pausieren/u);assert.match(html,/Auto-Pilot dreht alle 30 Minuten/u);assert.match(html,/Abstand speichern/u);
     assert.doesNotMatch(html,/Jannick spielt selbst|Erfolg wird nicht automatisch geprüft/u);assert.doesNotMatch(html,/Jannik entscheidet/u,'nach dem Dreh gibt es keine zusätzliche Genehmigung');
     assert.match(html,/So funktioniert’s/u);assert.doesNotMatch(html,/Einfach erklärt/u,'lange Hilfetexte sind nicht mehr standardmäßig eingeblendet');
     assert.match(html,/mini-overlay-status/u);assert.match(html,/arcade-widget-status/u);assert.match(html,/mini-participant-link/u);assert.match(html,/data-drop-status/u);
@@ -215,14 +215,16 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.equal(invalidInterval.status,400,'Mindestabstand kann nicht unterschritten werden');
 
     const dashboardPage=await fetch(`${base}/dashboard`,{headers:{Cookie:sessionCookie}}).then(response=>response.text());
-    assert.match(dashboardPage,/automatisch alle 30 Minuten/u);
+    assert.match(dashboardPage,/Auto-Pilot dreht alle 30 Minuten/u);
     assert.doesNotMatch(dashboardPage,/<form id="arcade-challenge"/u,'normale Bedienung enthält keinen manuellen Challenge-Editor');
     assert.doesNotMatch(dashboardPage,/Jannick spielt sie selbst/u);
 
     const wheelState=await fetch(`${base}/dashboard/api/arcade`,{headers:{Cookie:sessionCookie}});
-    const wheelData=await wheelState.json() as {wheel:{canSpin:boolean;entries:Array<{id:string;probability:number}>}};
+    const wheelData=await wheelState.json() as {wheel:{canSpin:boolean;entries:Array<{id:string;probability:number}>;wheelFields:Array<{title:string;description:string;probability:number;kind:string;active:boolean}>}};
     assert.equal(wheelData.wheel.canSpin,true);assert.ok(wheelData.wheel.entries.length>=2);
     assert.ok(Math.abs(wheelData.wheel.entries.reduce((sum,x)=>sum+x.probability,0)-100)<1,'Rad-Wahrscheinlichkeiten ergeben 100 Prozent');
+    assert.ok(wheelData.wheel.wheelFields.some(x=>x.title==='Eine Runde ohne Springen'&&x.kind==='streamer-task'&&x.active));
+    assert.ok(wheelData.wheel.wheelFields.some(x=>x.title==='Elio bekommt einen Energieschub!'&&x.kind==='automatic'&&x.probability>0));
     const wheelSpin=await fetch(`${base}/dashboard/api/arcade`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({action:'spin'})});
     assert.equal(wheelSpin.status,200);assert.match((await wheelSpin.json() as {message:string}).message,/Ergebnis:/u);assert.equal(sentChat.length,1,'Dreh-Ergebnis wird automatisch im Chat angekündigt');
     const wheelAfter=await fetch(`${base}/dashboard/api/arcade`,{headers:{Cookie:sessionCookie}});

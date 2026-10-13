@@ -38,7 +38,7 @@ test('Versionierte Elio-Migration ersetzt nur den alten Standardnamen und erhäl
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'elio-pet-migration-'));const sub=path.join(directory,'data');fs.mkdirSync(sub);
   const legacyPath=path.join(sub,'legacy.sqlite');let store=new FeatureStore(legacyPath);new CommunityArcade(store,'broadcaster');
   store.setConfig('8ball_answers', LEGACY_DEFAULT_8BALL_ANSWERS);
-  store.miniGameTransaction(db=>{db.prepare("UPDATE community_pet SET name='Fünkchen',level=2,xp=125 WHERE id=1").run();db.prepare("UPDATE chaos_wheel_challenges SET id='legacy-generated-id',title='Der Drache bekommt einen Energieschub!',action_type='boost_pet' WHERE id='builtin:pet-energy'").run();db.prepare('DELETE FROM schema_migrations WHERE version IN (13,14,15,16,17,18,19)').run()});store.close();
+  store.miniGameTransaction(db=>{db.prepare("UPDATE community_pet SET name='Fünkchen',level=2,xp=125 WHERE id=1").run();db.prepare("UPDATE chaos_wheel_challenges SET id='legacy-generated-id',title='Der Drache bekommt einen Energieschub!',action_type='boost_pet' WHERE id='builtin:pet-energy'").run();db.prepare('DELETE FROM schema_migrations WHERE version IN (13,14,15,16,17,18,19,20)').run()});store.close();
   store=new FeatureStore(legacyPath);assert.equal(new CommunityArcade(store,'broadcaster').pet().name,'Elio');assert.equal(new CommunityArcade(store,'broadcaster').pet().level,2);assert.equal(new CommunityArcade(store,'broadcaster').pet().xp,125);
   assert.deepEqual(store.config('8ball_answers', []), DEFAULT_8BALL_ANSWERS, 'alter Standardpool wird beim Upgrade ersetzt');
   assert.equal(new CommunityArcade(store,'broadcaster').manageChallenges().find(x=>x.id==='legacy-generated-id')?.title,'Elio bekommt einen Energieschub!');store.close();
@@ -170,7 +170,7 @@ test('Migration deaktiviert alte manuelle Felder und schließt laufende manuelle
   store.miniGameQuery(db=>{
     db.prepare("INSERT INTO chaos_wheel_challenges(id,title,weight,active,action_type) VALUES('old-manual','Fünf Minuten nur Pistolen',2,1,'manual_challenge')").run();
     db.prepare("INSERT INTO chaos_wheel_spins(id,challenge_id,title,status,created_by,created_at,action_type) VALUES('old-spin','old-manual','Fünf Minuten nur Pistolen','active','mod',10,'manual_challenge')").run();
-    db.prepare('DELETE FROM schema_migrations WHERE version IN (17,18,19)').run();
+    db.prepare('DELETE FROM schema_migrations WHERE version IN (17,18,19,20)').run();
   });store.close();
   store=new FeatureStore(database);
   assert.equal(store.miniGameQuery(db=>db.prepare("SELECT active FROM chaos_wheel_challenges WHERE id='old-manual'").get() as {active:number}).active,0);
@@ -232,4 +232,47 @@ test('Features sind standardmäßig aus und Pet/Admin-Befehle sind autorisiert',
   assert.match(arcade.handle(message('viewer','n2','!setpetname Evil'),'setpetname',['Evil'],1000)||'',/Nur Jannik/u);
   assert.match(arcade.handle(message('broadcaster','n3','!setpetname Glut'),'setpetname',['Glut'],1001)||'',/heißt jetzt Glut/u);
   store.close();
+});
+
+test('Rad-Migration hält Quiz-Historie, deaktiviert Quiz und trennt Aufgaben vom Auto-Pilot',()=>{
+  const {store,arcade}=setup();const fields=arcade.manageChallenges();
+  const quiz=fields.find(x=>x.wheelKey==='gaming_quiz');assert.ok(quiz);assert.equal(quiz.active,false);
+  assert.ok(fields.some(x=>x.wheelKey==='no_jumping'&&x.active&&x.kind==='streamer-task'));
+  assert.ok(fields.some(x=>x.wheelKey==='pistols_timer'&&x.active));assert.ok(fields.some(x=>x.wheelKey==='quest_vote'&&x.active));
+  arcade.updateSettings({...arcade.settings(),wheelEnabled:true});
+  const status=arcade.wheelStatus(1000) as {entries:Array<{actionType:string}>;taskEntries:Array<{wheelKey:string}>};
+  assert.ok(status.entries.every(x=>x.actionType!=='manual_challenge'));assert.ok(status.taskEntries.every(x=>x.wheelKey!=='gaming_quiz'));
+  assert.equal(store.miniGameQuery(db=>(db.prepare("SELECT COUNT(*) n FROM chaos_wheel_challenges WHERE wheel_key='gaming_quiz'").get() as {n:number}).n),1);
+  store.close();
+});
+
+test('Quest-Raddreh startet Chatabstimmung und beginnt eindeutige Gewinnerquest nur einmal',()=>{
+  const {store,arcade}=setup(()=>0);arcade.updateSettings({...arcade.settings(),wheelEnabled:true});
+  const policy={maxLength:180,queueLimit:20,maxOpenPerUser:2,cooldownMs:60_000,activeDurationMs:0,completionXp:25},ids:string[]=[];
+  for(const title of ['Quest Alpha','Quest Beta']){const saved=store.submitQuest({submitterUserId:title,displayName:title,title,source:'dashboard'},policy,1000);assert.equal(saved.ok,true);if(saved.ok){ids.push(saved.quest.id);assert.equal(store.transitionQuest(saved.quest.id,'approved','broadcaster',1001,policy).ok,true)}}
+  const started=arcade.spinAdmin('broadcaster',2000);assert.match(started,/!vote 1 bis !vote 2/u);assert.match(started,/automatisch/u);
+  const spin=store.miniGameQuery(db=>db.prepare("SELECT id,task_ref,status FROM chaos_wheel_spins WHERE wheel_key='quest_vote'").get() as {id:string;task_ref:string;status:string});
+  assert.equal(spin.status,'active');const poll=store.poll(spin.task_ref);assert.equal(poll?.type,'quest');assert.equal(poll?.options.length,2);
+  assert.equal(store.vote(poll!.id,'v1','V1',1,'evt-1',3000).ok,true);assert.equal(store.vote(poll!.id,'v2','V2',1,'evt-2',3001).ok,true);
+  assert.match(communityWidgetHtml('poll','nonce',34,'graphite'),/!vote 1/);
+  assert.match(arcade.tick(poll!.endsAt+1).join(' '),/Quest Alpha.*läuft jetzt/u);assert.equal(store.activeQuest()?.id,ids[0]);
+  assert.equal(store.miniGameQuery(db=>db.prepare("SELECT status FROM chaos_wheel_spins WHERE id=?").get(spin.id) as {status:string}).status,'completed');
+  assert.equal(arcade.tick(poll!.endsAt+2).length,0);store.close();
+});
+
+test('Pistolen-Countdown wird nach Neustart fortgesetzt und endet ohne Erfolgsbehauptung',()=>{
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'wheel-pistol-timer-')),database=path.join(directory,'state.sqlite');
+  let store=new FeatureStore(database),arcade=new CommunityArcade(store,'broadcaster',max=>max-1);arcade.updateSettings({...arcade.settings(),wheelEnabled:true});
+  assert.match(arcade.spinAdmin('broadcaster',10_000),/fünf Minuten nur Pistolen/iu);store.close();
+  store=new FeatureStore(database);arcade=new CommunityArcade(store,'broadcaster');
+  const active=arcade.wheelStatus(11_000) as {activeAction:{title:string;endsAt:number}};assert.equal(active.activeAction.title,'Fünf Minuten nur Pistolen');assert.equal(active.activeAction.endsAt,310_000);
+  assert.equal(arcade.tick(309_999).length,0);const ended=arcade.tick(310_000).join(' ');assert.match(ended,/abgelaufen/u);assert.match(ended,/bestätigt nicht/u);assert.equal(arcade.tick(310_001).length,0);
+  store.close();fs.rmSync(directory,{recursive:true,force:true});
+});
+
+test('Ohne-Springen-Aufgabe erscheint in Chat und OBS ohne Erfolgsversprechen',()=>{
+  const {store,arcade}=setup(()=>0);arcade.updateSettings({...arcade.settings(),wheelEnabled:true});
+  const result=arcade.spinAdmin('broadcaster',5000);assert.match(result,/Eine Runde ohne Springen/u);assert.match(result,/nicht prüfen/u);
+  const view=arcade.snapshot('wheel',5001) as {visible:boolean;wheel:{title:string;status:string}};assert.equal(view.visible,true);assert.equal(view.wheel.title,'Eine Runde ohne Springen');assert.equal(view.wheel.status,'active');assert.match(arcade.finishCurrentTask(5002),/nicht bewertet/u);assert.equal((arcade.snapshot('wheel',5003) as {wheel:{status:string}}).wheel.status,'canceled');
+  assert.doesNotMatch(result,/geschafft|erfolgreich/u);store.close();
 });

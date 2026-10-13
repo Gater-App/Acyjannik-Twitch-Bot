@@ -8,7 +8,7 @@ import { SPARK_CARD, SPARK_SCRIPT } from './conversation-spark-ui.js';
 import { MINI_GAME_CARD, MINI_GAME_SCRIPT } from './mini-games-ui.js';
 import { CHANNEL_POINTS_CARD, CHANNEL_POINTS_SCRIPT } from './channel-points-ui.js';
 import type { MiniGames } from './mini-games.js';
-import type { ChaosWheelActionType, CommunityArcade } from './community-arcade.js';
+import type { CommunityArcade } from './community-arcade.js';
 import type { ChannelPointsService } from './channel-points.js';
 import { DEFAULT_CHANNEL_POINTS_SETTINGS } from './channel-points.js';
 import type { Logger } from './logger.js';
@@ -553,7 +553,8 @@ export class DashboardServer {
         if(action==='start-drop')message=this.arcade.startDropAdmin(session.userId,typeof body.rarity==='string'?body.rarity:undefined,now);
         else if(action==='spin')message=this.arcade.spinAdmin(session.userId,now);
         else if(action==='emergency-stop')message=this.arcade.emergencyStop(now);
-        else if(action==='challenge'){if(typeof body.title!=='string')throw new Error('Challenge-Titel fehlt.');const actionType=body.actionType;if(!['start_mystery_drop','boost_pet'].includes(String(actionType)))throw new Error('Nur vollständig automatische Glücksrad-Aktionen sind zulässig.');this.arcade.configureChallenge(body.title,boundedInt(body.weight,1,1,1000),true,undefined,actionType as ChaosWheelActionType);this.audit(session,'arcade-challenge','arcade',{},now);this.json(res,200,{ok:true});return;}
+        else if(action==='finish-task')message=this.arcade.finishCurrentTask(now);
+        else if(action==='wheel-field'){if(typeof body.id!=='string'||typeof body.active!=='boolean')throw new Error('Radfeld-Einstellung ungültig.');this.arcade.configureWheelField(body.id,body.active,boundedInt(body.weight,1,1,1000));this.audit(session,'arcade-field','arcade',{},now);this.json(res,200,{ok:true});return;}
         else {this.json(res,400,{error:'Arcade-Aktion ungültig.'});return;}
         if(message)await this.sendToChat?.(message,action==='start-drop'?'drop':action==='spin'&&this.arcade.spinActionTypeAt(now)==='boost_pet'?'pet':'wheel');this.audit(session,'arcade-action',action,{},now);this.json(res,200,{ok:true,message});return;
       }catch(error){this.json(res,400,{error:error instanceof Error?error.message:'Arcade-Aktion fehlgeschlagen.'});return;}

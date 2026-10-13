@@ -599,6 +599,34 @@ export class FeatureStore {
         this.db.prepare('INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (19, ?)').run(Date.now());
       })();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 20) {
+      if (currentVersion > 0) this.backupBeforeMigration(20);
+      this.db.transaction(() => {
+        const challengeColumns=new Set((this.db.prepare('PRAGMA table_info(chaos_wheel_challenges)').all() as Array<{name:string}>).map(x=>x.name));
+        const spinColumns=new Set((this.db.prepare('PRAGMA table_info(chaos_wheel_spins)').all() as Array<{name:string}>).map(x=>x.name));
+        if(!challengeColumns.has('wheel_key'))this.db.exec('ALTER TABLE chaos_wheel_challenges ADD COLUMN wheel_key TEXT');
+        if(!spinColumns.has('wheel_key'))this.db.exec('ALTER TABLE chaos_wheel_spins ADD COLUMN wheel_key TEXT');
+        if(!spinColumns.has('task_ref'))this.db.exec('ALTER TABLE chaos_wheel_spins ADD COLUMN task_ref TEXT');
+        const seeds=[
+          ['builtin:pet-energy','Elio bekommt einen Energieschub!',2,'boost_pet','boost_pet'],
+          ['builtin:mystery-drop','Mystery Drop für den Chat',2,'start_mystery_drop','start_mystery_drop'],
+          ['wheel:quest-vote','Chat wählt die nächste Quest',2,'quest_vote','manual_challenge'],
+          ['wheel:no-jumping','Eine Runde ohne Springen',1,'no_jumping','manual_challenge'],
+          ['wheel:pistols','Fünf Minuten nur Pistolen',1,'pistols_timer','manual_challenge'],
+          ['wheel:gaming-quiz','Gaming-Quiz',1,'gaming_quiz','manual_challenge'],
+        ] as const;
+        const insert=this.db.prepare('INSERT OR IGNORE INTO chaos_wheel_challenges(id,title,weight,active,action_type,wheel_key) VALUES(?,?,?,?,?,?)');
+        for(const [id,title,weight,key,actionType] of seeds){
+          const seededAction=this.db.prepare('SELECT 1 FROM chaos_wheel_challenges WHERE action_type=? LIMIT 1').get(actionType);
+          if((actionType==='boost_pet'||actionType==='start_mystery_drop')&&seededAction)continue;
+          insert.run(id,title,weight,key==='gaming_quiz'?0:1,actionType,key);
+        }
+        // Disable quiz fields regardless of legacy/generated ID, while retaining rows and history.
+        this.db.prepare("UPDATE chaos_wheel_challenges SET wheel_key='gaming_quiz',active=0 WHERE wheel_key='gaming_quiz' OR (wheel_key IS NULL AND lower(title) LIKE '%quiz%')").run();
+        this.db.prepare('INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (20, ?)').run(Date.now());
+      })();
+    }
   }
 
   private backupBeforeMigration(version: number): void {
