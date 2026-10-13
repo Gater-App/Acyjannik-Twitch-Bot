@@ -7,5 +7,6 @@ coverage/
 data/*.sqlite
 data/*.sqlite-*
 data/oauth-tokens.json
+data/*.oauth-state*
 backups/
 .DS_Store

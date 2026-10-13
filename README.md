@@ -235,7 +235,9 @@ OAuth genehmigen lassen. Redirect-URL:
 der Developer Console eintragen. Der geschützte Dashboard-Start erzeugt einen
 einmaligen OAuth-State; der Token wird mit restriktiven Dateirechten getrennt
 unter `TWITCH_REDEMPTION_TOKEN_FILE` gespeichert und nie im Dashboard oder Log
-angezeigt.
+angezeigt. Der kurzlebige State liegt separat neben der Token-Datei in einer
+Datei mit Endung `.oauth-state`, wird nach Callback einmalig verbraucht und
+überlebt dadurch einen Bot-Neustart während der Twitch-Anmeldung.
 
 Danach im Dashboard entweder einen **von dieser Twitch-App verwaltbaren**,
 aktivierten Reward mit verpflichtender Texteingabe und manueller

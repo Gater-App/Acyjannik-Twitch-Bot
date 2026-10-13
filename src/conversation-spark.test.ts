@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { FeatureStore } from './feature-store.js';
-import { ConversationSpark, DEFAULT_SPARK_CONFIG, RuleBasedTopicDetector } from './conversation-spark.js';
+import { ConversationSpark, DEFAULT_SPARK_CONFIG, normalizeSparkConfig, RuleBasedTopicDetector } from './conversation-spark.js';
 import type { ChatMessage } from './types.js';
 
 function message(id:string,user:string,text:string,channel='broadcaster-1'):ChatMessage {
@@ -14,6 +14,19 @@ function message(id:string,user:string,text:string,channel='broadcaster-1'):Chat
 function enabled(store:FeatureStore,extra:Record<string,unknown>={}) {
   store.setConfig('spark_settings',{...DEFAULT_SPARK_CONFIG,enabled:true,globalCooldownMs:20*60_000,topicCooldownMs:60*60_000,...extra});
 }
+
+test('alte oder beschädigte Spark-Konfigurationen erhalten sichere Einzel-Defaults für das Dashboard und die Engine',()=>{
+  const normalized=normalizeSparkConfig({enabled:true,windowMs:'kaputt',minParticipants:999,allowedActionTypes:['unsupported',null]});
+  assert.equal(normalized.enabled,true);
+  assert.equal(normalized.windowMs,DEFAULT_SPARK_CONFIG.windowMs);
+  assert.equal(normalized.minParticipants,DEFAULT_SPARK_CONFIG.minParticipants);
+  assert.deepEqual(normalized.allowedActionTypes,DEFAULT_SPARK_CONFIG.allowedActionTypes);
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'spark-old-config-'));
+  const store=new FeatureStore(path.join(directory,'features.sqlite'));
+  store.setConfig('spark_settings',{enabled:true,allowedActionTypes:[]});
+  assert.deepEqual(new ConversationSpark(store,'broadcaster-1').config().allowedActionTypes,DEFAULT_SPARK_CONFIG.allowedActionTypes);
+  store.close();fs.rmSync(directory,{recursive:true,force:true});
+});
 
 test('regelbasierte Topic-Erkennung normalisiert Schreibweise und verlangt Kontext bei mehrdeutigem Boss-Begriff',()=>{
   const detector=new RuleBasedTopicDetector();

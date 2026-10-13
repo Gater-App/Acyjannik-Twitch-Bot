@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
@@ -64,4 +65,52 @@ test('Broadcaster-Kanalpunkte erhalten separaten Scope und geschützten Reauthor
     const saved=JSON.parse(await fs.readFile(path.join(directory,'broadcaster.json'),'utf8')) as {scopes:string[]};
     assert.deepEqual(saved.scopes,['channel:manage:redemptions']);
   }finally{await server.stop();await fs.rm(directory,{recursive:true,force:true});}
+});
+
+test('Broadcaster OAuth überlebt Prozessneustart, konsumiert State einmalig und lässt Bot-OAuth unverändert',async()=>{
+  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'oauth-roundtrip-'));
+  const socket=net.createServer();await new Promise<void>((resolve,reject)=>socket.once('error',reject).listen(0,'127.0.0.1',resolve));
+  const port=(socket.address() as net.AddressInfo).port;await new Promise<void>((resolve)=>socket.close(()=>resolve()));
+  const botPath=path.join(directory,'bot-tokens.json'),broadcasterPath=path.join(directory,'broadcaster-tokens.json');
+  const botStore=new FileTokenStore(botPath),broadcasterStore=new FileTokenStore(broadcasterPath);
+  await botStore.save({accessToken:'synthetic-bot-access',refreshToken:'synthetic-bot-refresh',scopes:['user:read:chat','user:write:chat']});
+  let exchangedRedirect='';
+  const fetchMock:typeof fetch=async(input,init)=>{
+    if(String(input).endsWith('/oauth2/token')){
+      exchangedRedirect=new URLSearchParams(String(init?.body||'')).get('redirect_uri')||'';
+      return Response.json({access_token:'synthetic-broadcaster-access',refresh_token:'synthetic-broadcaster-refresh',expires_in:3600,
+        scope:['channel:manage:redemptions'],token_type:'bearer'});
+    }
+    throw new Error('Unexpected Twitch request in local roundtrip test.');
+  };
+  const chat=new TwitchOAuth('test-client','test-secret',`http://127.0.0.1:${port}/oauth/callback`,['user:read:chat','user:write:chat'],botStore,fetchMock);
+  await chat.initialize();
+  const broadcaster=new TwitchOAuth('test-client','test-secret',`https://twitch.gater-app.de/oauth/redemptions/callback`,['channel:manage:redemptions'],broadcasterStore,fetchMock);
+  const statePath=path.join(directory,'broadcaster.oauth-state');
+  const flow={name:'channel-points',oauth:broadcaster,callbackPath:'/oauth/redemptions/callback',stateFilePath:statePath};
+  const makeServer=()=>new OAuthCallbackServer('127.0.0.1',port,600_000,chat,undefined,[flow],path.join(directory,'bot.oauth-state'));
+  let server=makeServer();await server.start();
+  const authorization=new URL(server.startUrlFor('channel-points'));
+  const expectedRedirect='https://twitch.gater-app.de/oauth/redemptions/callback';
+  assert.equal(authorization.searchParams.get('redirect_uri'),expectedRedirect);
+  const state=authorization.searchParams.get('state');assert.ok(state);
+  await server.stop();
+  server=makeServer();await server.start();
+  try{
+    const callback=await fetch(`http://127.0.0.1:${port}/oauth/redemptions/callback?state=${state}&code=synthetic-code`);
+    assert.equal(callback.status,200,await callback.text());
+    assert.equal(exchangedRedirect,expectedRedirect,'token exchange nutzt dieselbe exakte Callback-URL wie die Autorisierung');
+    assert.deepEqual((await broadcasterStore.load())?.scopes,['channel:manage:redemptions']);
+    assert.equal((await botStore.load())?.accessToken,'synthetic-bot-access','Broadcaster-OAuth darf Bot-OAuth nicht überschreiben');
+    assert.equal((await fetch(`http://127.0.0.1:${port}/oauth/redemptions/callback?state=${state}&code=second-code`)).status,400,'ein State ist nach dem ersten Callback verbraucht');
+    assert.equal(fsSync.statSync(statePath).mode&0o077,0,'OAuth-State-Datei hat restriktive Dateirechte');
+  }finally{await server.stop();await fs.rm(directory,{recursive:true,force:true});}
+});
+
+test('OAuth-Start verwirft eine Redirect-URI mit abweichendem Callback-Pfad',async()=>{
+  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'oauth-redirect-check-'));
+  const oauth=new TwitchOAuth('client','secret','https://twitch.gater-app.de/oauth/redemptions/callback',[],new FileTokenStore(path.join(directory,'tokens.json')));
+  const server=new OAuthCallbackServer('127.0.0.1',0,600_000,oauth);
+  assert.throws(()=>server.startUrl,/muss exakt auf \/oauth\/callback zeigen/);
+  await fs.rm(directory,{recursive:true,force:true});
 });

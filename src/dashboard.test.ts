@@ -101,10 +101,13 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.equal(welcomeSave.status,200);
     assert.equal((await (await fetch(`${base}/dashboard/api/welcome`,{headers:{Cookie:sessionCookie}})).json() as {enabled:boolean}).enabled,true);
 
+    store.setConfig('spark_settings',{enabled:false,paused:false,minParticipants:3});
     const sparkResponse = await fetch(`${base}/dashboard/api/spark`, { headers: { Cookie: sessionCookie } });
     assert.equal(sparkResponse.status, 200);
-    const sparkData = await sparkResponse.json() as { settings: { enabled: boolean }; pending: number };
+    const sparkData = await sparkResponse.json() as { settings: { enabled: boolean; allowedActionTypes:string[]; windowMs:number }; pending: number };
     assert.equal(sparkData.settings.enabled, false, 'Conversation Spark must default to disabled');
+    assert.deepEqual(sparkData.settings.allowedActionTypes,['poll','quest','challenge'],'ältere SQLite-Einstellungen werden für die Oberfläche vervollständigt');
+    assert.equal(sparkData.settings.windowMs,600_000);
     const sparkProposal = store.createSparkProposal({ id: 'dashboard-spark-test', channelId: 'channel-id', topicId: 'fortnite',
       topicLabel: 'Fortnite', score: 15, participants: 3, messages: 5, actionType: 'poll', createdAt: Date.now(), expiresAt: Date.now() + 60_000 }, 5, 60_000, 120_000);
     assert.ok(sparkProposal);

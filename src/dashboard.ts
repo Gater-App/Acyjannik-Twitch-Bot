@@ -11,6 +11,7 @@ import type { MiniGames } from './mini-games.js';
 import type { ChaosWheelActionType, CommunityArcade } from './community-arcade.js';
 import type { ChannelPointsService } from './channel-points.js';
 import type { Logger } from './logger.js';
+import { DEFAULT_SPARK_CONFIG, normalizeSparkConfig } from './conversation-spark.js';
 
 interface Session { userId: string; login: string; csrf: string; expiresAt: number; }
 interface RuntimeStatus { twitchConnected: boolean; channel: string; startedAt: number; lastError?: string; }
@@ -287,7 +288,7 @@ export class DashboardServer {
     if (route === 'widgets/status' && req.method === 'GET') { const types: WidgetType[]=['quest','poll','imposter','detective','pet','drop','wheel'];this.json(res,200,{widgets:Object.fromEntries(types.map(type=>[type,this.store.widgetTokenConfigured(type,Date.now())]))});return; }
     if (route === 'welcome' && req.method === 'GET') { this.json(res,200,this.store.config('first_chat_welcome',{enabled:false,message:'Willkommen im Chat, {user}! 🎮 Schreib !help, wenn du die Community-Befehle sehen möchtest.'})); return; }
     if (route === 'spark' && req.method === 'GET') {
-      const settings = this.store.config<Record<string, unknown>>('spark_settings', { enabled:false, paused:false, windowMs:600000, minParticipants:3, minMessages:5, minScore:12, globalCooldownMs:1200000, topicCooldownMs:3600000, proposalTtlMs:1800000, maxPending:5, chatSuggestionsEnabled:false, pauseDuringPolls:true, metadataRetentionMs:604800000, allowedActionTypes:['poll','quest','challenge'] });
+      const settings = normalizeSparkConfig(this.store.config<unknown>('spark_settings',DEFAULT_SPARK_CONFIG));
       this.json(res, 200, { settings, topics: this.getSparkSnapshot?.() ?? [], pending: this.store.sparkProposals('pending_approval',100).length, proposals: this.store.sparkProposals('all',50), customTopics: this.store.config('spark_topics',[]), cooldowns: [] }); return;
     }
     if (route === 'minigames' && req.method === 'GET' && this.miniGames) { this.json(res, 200, { settings:this.miniGames.settings(), state:this.miniGames.snapshot(), quotes:this.miniGames.managedQuotes() }); return; }
@@ -326,7 +327,7 @@ export class DashboardServer {
     }
     if (route === 'spark/settings') {
       try {
-        const current = this.store.config<Record<string, unknown>>('spark_settings', {});
+        const current = normalizeSparkConfig(this.store.config<unknown>('spark_settings',DEFAULT_SPARK_CONFIG));
         const minutes = (key:string, old:number, min:number, max:number) => boundedInt(body[key], old, min, max) * 60_000;
         const allowed = Array.isArray(body.allowedActionTypes) ? body.allowedActionTypes : current.allowedActionTypes;
         if (!Array.isArray(allowed) || !allowed.length || allowed.some((x)=>!['poll','quest','challenge'].includes(String(x)))) throw new Error('Mindestens ein gültiger Aktionstyp ist erforderlich.');

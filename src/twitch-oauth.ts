@@ -12,7 +12,7 @@ export interface StoredTokens {
   scopes?: string[];
 }
 
-export interface OAuthFlow { name:string; oauth:TwitchOAuth; startPath?:string; callbackPath:string; }
+export interface OAuthFlow { name:string; oauth:TwitchOAuth; startPath?:string; callbackPath:string; stateFilePath?:string; }
 
 interface TwitchTokenResponse {
   access_token: string;
@@ -166,6 +166,7 @@ export class OAuthCallbackServer {
     private readonly oauth: TwitchOAuth,
     private readonly logger: Logger = consoleLogger,
     private readonly additionalFlows: OAuthFlow[] = [],
+    private readonly stateFilePath?: string,
   ) {}
 
   async start(): Promise<void> {
@@ -183,20 +184,26 @@ export class OAuthCallbackServer {
   }
 
   get startUrl(): string {
-    return this.makeStartUrl(this.oauth,this.pendingStates,'/oauth/callback');
+    return this.makeStartUrl(this.oauth,this.pendingStates,'/oauth/callback',this.stateFilePath);
   }
 
   startUrlFor(name:string):string {
     const flow=this.additionalFlows.find((item)=>item.name===name);
     if(!flow)throw new Error('Unbekannter OAuth-Freigabefluss.');
     let states=this.extraStates.get(name);if(!states){states=new Map();this.extraStates.set(name,states);}
-    return this.makeStartUrl(flow.oauth,states,flow.callbackPath);
+    return this.makeStartUrl(flow.oauth,states,flow.callbackPath,flow.stateFilePath);
   }
 
-  private makeStartUrl(oauth:TwitchOAuth,states:Map<string,number>,callbackPath:string):string {
-    const state=randomBytes(24).toString('hex');states.set(state,Date.now()+this.stateTtlMs);
-    const url=new URL(oauth.authorizationUrl);const redirect=url.searchParams.get('redirect_uri');
-    if(redirect){const callback=new URL(redirect);callback.pathname=callbackPath;callback.search='';callback.hash='';url.searchParams.set('redirect_uri',callback.toString());}
+  private makeStartUrl(oauth:TwitchOAuth,states:Map<string,number>,callbackPath:string,stateFilePath?:string):string {
+    const state=randomBytes(24).toString('hex'),expiresAt=Date.now()+this.stateTtlMs;
+    const url=new URL(oauth.authorizationUrl),redirect=url.searchParams.get('redirect_uri');
+    if(!redirect)throw new Error('OAuth-Redirect-URI fehlt.');
+    const callback=new URL(redirect);
+    if(callback.pathname!==callbackPath||callback.search||callback.hash)
+      throw new Error(`OAuth-Redirect-URI muss exakt auf ${callbackPath} zeigen.`);
+    if(callback.protocol!=='https:'&&callback.hostname!=='localhost'&&callback.hostname!=='127.0.0.1')
+      throw new Error('OAuth-Redirect-URI muss HTTPS verwenden (außer lokal).');
+    if(stateFilePath)writeOAuthState(stateFilePath,state,expiresAt);else states.set(state,expiresAt);
     url.searchParams.set('state',state);return url.toString();
   }
 
@@ -223,7 +230,8 @@ export class OAuthCallbackServer {
     }
     const activeOauth=flow?.oauth||this.oauth, states=flow?(this.extraStates.get(flow.name)||new Map<string,number>()):this.pendingStates;
     const state = url.searchParams.get('state') || '';
-    const expiresAt = states.get(state) || 0;
+    const stateFilePath=flow?flow.stateFilePath:this.stateFilePath;
+    const expiresAt = stateFilePath ? consumeOAuthState(stateFilePath,state) : (states.get(state)||0);
     states.delete(state);
     if (!state || expiresAt < Date.now()) {
       response.statusCode = 400;
@@ -247,6 +255,34 @@ export class OAuthCallbackServer {
     response.end('OAuth erfolgreich. Dieser Tab kann geschlossen werden.');
     this.logger.info('Twitch-OAuth erfolgreich abgeschlossen.');
   }
+}
+
+function readOAuthStates(filePath:string):Map<string,number>{
+  try{
+    const stat=fsSync.statSync(filePath);if((stat.mode&0o077)!==0)fsSync.chmodSync(filePath,0o600);
+    const parsed=JSON.parse(fsSync.readFileSync(filePath,'utf8')) as Record<string,unknown>;
+    return new Map(Object.entries(parsed).filter((entry):entry is [string,number]=>typeof entry[1]==='number'&&Number.isSafeInteger(entry[1])));
+  }catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return new Map();throw error;}
+}
+
+function writeOAuthState(filePath:string,state:string,expiresAt:number):void{
+  const states=readOAuthStates(filePath),now=Date.now();
+  for(const [key,expiry] of states)if(expiry<now)states.delete(key);
+  if(states.size>=1000)throw new Error('Zu viele offene OAuth-Anmeldungen; bitte kurz warten.');
+  states.set(state,expiresAt);
+  fsSync.mkdirSync(path.dirname(filePath),{recursive:true,mode:0o700});
+  const temporary=`${filePath}.tmp-${process.pid}`;
+  fsSync.writeFileSync(temporary,JSON.stringify(Object.fromEntries(states)),{encoding:'utf8',mode:0o600});
+  fsSync.renameSync(temporary,filePath);fsSync.chmodSync(filePath,0o600);
+}
+
+function consumeOAuthState(filePath:string,state:string):number{
+  if(!state)return 0;
+  const states=readOAuthStates(filePath),expiresAt=states.get(state)||0;
+  if(expiresAt){states.delete(state);const temporary=`${filePath}.tmp-${process.pid}`;
+    fsSync.writeFileSync(temporary,JSON.stringify(Object.fromEntries(states)),{encoding:'utf8',mode:0o600});
+    fsSync.renameSync(temporary,filePath);fsSync.chmodSync(filePath,0o600);}
+  return expiresAt;
 }
 
 async function parseJsonResponse<T>(response: Response): Promise<T> {

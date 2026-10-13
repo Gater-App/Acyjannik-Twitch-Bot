@@ -78,7 +78,8 @@ async function runLiveMode(): Promise<void> {
   const redemptionOauth = new TwitchOAuth(config.clientId,config.clientSecret,config.redemptionRedirectUri,['channel:manage:redemptions'],
     new FileTokenStore(config.redemptionTokenFile));
   const oauthServer = new OAuthCallbackServer(config.oauthHost, config.oauthPort, config.oauthStateTtlMs, oauth, logger,
-    [{name:'channel-points',oauth:redemptionOauth,callbackPath:'/oauth/redemptions/callback'}]);
+    [{name:'channel-points',oauth:redemptionOauth,callbackPath:'/oauth/redemptions/callback',stateFilePath:`${config.redemptionTokenFile}.oauth-state`}],
+    `${config.tokenFile}.oauth-state`);
   const game = new GameService(database, config);
   const handler = new CommandHandler(database, game, config, undefined, community);
   const queue = new SendQueue(

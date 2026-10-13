@@ -16,6 +16,32 @@ export const DEFAULT_SPARK_CONFIG: SparkConfig = {
   allowedActionTypes:['poll','quest','challenge'],
 };
 
+export function normalizeSparkConfig(value: unknown): SparkConfig {
+  const saved = value && typeof value === 'object' && !Array.isArray(value) ? value as Partial<SparkConfig> : {};
+  const bounded = (candidate: unknown, fallback: number, min: number, max: number): number =>
+    typeof candidate === 'number' && Number.isSafeInteger(candidate) && candidate >= min && candidate <= max ? candidate : fallback;
+  const boolean = (candidate: unknown, fallback: boolean): boolean => typeof candidate === 'boolean' ? candidate : fallback;
+  const knownActions: SparkActionType[] = ['poll','quest','challenge'];
+  const actions = Array.isArray(saved.allowedActionTypes)
+    ? [...new Set(saved.allowedActionTypes.filter((item): item is SparkActionType => knownActions.includes(item as SparkActionType)))]
+    : [];
+  return {
+    enabled: boolean(saved.enabled, DEFAULT_SPARK_CONFIG.enabled), paused: boolean(saved.paused, DEFAULT_SPARK_CONFIG.paused),
+    windowMs: bounded(saved.windowMs, DEFAULT_SPARK_CONFIG.windowMs, 60_000, 3_600_000),
+    minParticipants: bounded(saved.minParticipants, DEFAULT_SPARK_CONFIG.minParticipants, 2, 50),
+    minMessages: bounded(saved.minMessages, DEFAULT_SPARK_CONFIG.minMessages, 3, 200),
+    minScore: bounded(saved.minScore, DEFAULT_SPARK_CONFIG.minScore, 1, 1000),
+    globalCooldownMs: bounded(saved.globalCooldownMs, DEFAULT_SPARK_CONFIG.globalCooldownMs, 60_000, 86_400_000),
+    topicCooldownMs: bounded(saved.topicCooldownMs, DEFAULT_SPARK_CONFIG.topicCooldownMs, 60_000, 604_800_000),
+    proposalTtlMs: bounded(saved.proposalTtlMs, DEFAULT_SPARK_CONFIG.proposalTtlMs, 60_000, 86_400_000),
+    maxPending: bounded(saved.maxPending, DEFAULT_SPARK_CONFIG.maxPending, 1, 50),
+    chatSuggestionsEnabled: boolean(saved.chatSuggestionsEnabled, DEFAULT_SPARK_CONFIG.chatSuggestionsEnabled),
+    pauseDuringPolls: boolean(saved.pauseDuringPolls, DEFAULT_SPARK_CONFIG.pauseDuringPolls),
+    metadataRetentionMs: bounded(saved.metadataRetentionMs, DEFAULT_SPARK_CONFIG.metadataRetentionMs, 60_000, 31_536_000_000),
+    allowedActionTypes: actions.length ? actions : [...DEFAULT_SPARK_CONFIG.allowedActionTypes],
+  };
+}
+
 export const DEFAULT_SPARK_TOPICS: SparkTopic[] = [
   { id:'fortnite',label:'Fortnite / Spielmodus',actionType:'poll',terms:['fortnite','zero build','zero-build','battle royale','ranked','reload','build mode'] },
   { id:'minecraft',label:'Minecraft',actionType:'quest',terms:['minecraft','nether','enderdrache','ender dragon','redstone','creeper'] },
@@ -50,9 +76,7 @@ export class ConversationSpark {
     detector:TopicDetector = new RuleBasedTopicDetector()) { this.detector=detector; }
 
   config(): SparkConfig {
-    const saved=this.store.config<Partial<SparkConfig>>('spark_settings',{});
-    return { ...DEFAULT_SPARK_CONFIG,...saved,
-      allowedActionTypes:Array.isArray(saved.allowedActionTypes) ? saved.allowedActionTypes.filter((v):v is SparkActionType=>['poll','quest','challenge'].includes(v)) : DEFAULT_SPARK_CONFIG.allowedActionTypes };
+    return normalizeSparkConfig(this.store.config<unknown>('spark_settings',{}));
   }
 
   observe(message:ChatMessage,now=Date.now()): SparkProposal[] {
