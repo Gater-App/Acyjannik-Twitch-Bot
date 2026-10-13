@@ -23,6 +23,7 @@ import { AutomaticChatMessages } from './automatic-chat-messages.js';
 import type { SpotifySongRequests } from './song-requests.js';
 import { SONG_REQUESTS_CARD, SONG_REQUESTS_SCRIPT } from './song-requests-ui.js';
 import { formatPublicChatMessage } from './chat-message-format.js';
+import { ViewerCommunityPortal } from './community-portal.js';
 
 interface Session { userId: string; login: string; csrf: string; expiresAt: number; }
 interface RuntimeStatus { twitchConnected: boolean; channel: string; startedAt: number; lastError?: string; queued?: number; suppressed?: number; chatResponse?: { profile: string; suppressed: number; deferred: number }; }
@@ -142,6 +143,7 @@ export class DashboardServer {
     private readonly communityTips?: CommunityTips,
     private readonly automaticChatMessages?: AutomaticChatMessages,
     private readonly songRequests?: SpotifySongRequests,
+    private readonly viewerPortal?: ViewerCommunityPortal,
   ) { this.adminIds = new Set((process.env.DASHBOARD_ADMIN_IDS || '').split(/[ ,]+/u).filter(Boolean)); }
 
   async start(): Promise<boolean> {
@@ -166,6 +168,7 @@ export class DashboardServer {
   }
 
   async stop(): Promise<void> {
+    this.viewerPortal?.stop();
     if (!this.server) return;
     for (const [response, timer] of this.eventStreams) { clearInterval(timer); response.end(); }
     this.eventStreams.clear();
@@ -183,6 +186,7 @@ export class DashboardServer {
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
     const clientIp = req.socket.remoteAddress || 'unknown';
     if (!this.rateLimit(clientIp)) { this.json(res, 429, { error: 'Zu viele Anfragen. Bitte kurz warten.' }); return; }
+    if (this.viewerPortal?.handles(url.pathname)) { await this.viewerPortal.handle(req,res,url); return; }
     if (url.pathname === '/hilfe') {
       if(req.method!=='GET'){res.statusCode=405;res.setHeader('Allow','GET');res.setHeader('Content-Type','text/plain; charset=utf-8');res.end('Nur lesender Aufruf erlaubt.');return;}
       const nonce=randomBytes(18).toString('base64');
@@ -299,6 +303,7 @@ export class DashboardServer {
   }
 
   private async callback(url: URL, req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    if (this.viewerPortal && await this.viewerPortal.handleOAuthCallback(url,req,res)) return;
     const state = url.searchParams.get('state') || '', expires = this.states.get(state) || 0;
     this.states.delete(state);
     if (!state || expires < Date.now() || this.cookieValue('dashboard_oauth_state', req) !== state) {

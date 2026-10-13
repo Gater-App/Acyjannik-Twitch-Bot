@@ -1,0 +1,92 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import net from 'node:net';
+import test from 'node:test';
+import vm from 'node:vm';
+import { createHash } from 'node:crypto';
+import { CommunityFeatures } from './community-features.js';
+import { ViewerCommunityPortal, renderCommunityPage } from './community-portal.js';
+import { DashboardServer } from './dashboard.js';
+import { FeatureStore } from './feature-store.js';
+import { logger } from './logger.js';
+import { testConfig } from './test-config.js';
+
+async function port():Promise<number>{const s=net.createServer();await new Promise<void>((resolve,reject)=>s.once('error',reject).listen(0,'127.0.0.1',resolve));const n=(s.address() as net.AddressInfo).port;await new Promise<void>(resolve=>s.close(()=>resolve()));return n;}
+function chat(userId:string,login:string,name:string,text:string):import('./types.js').ChatMessage{return {eventId:`evt-${userId}-${Date.now()}-${Math.random()}`,messageId:`msg-${userId}`,broadcasterUserId:'broadcaster-1',senderUserId:userId,senderLogin:login,senderDisplayName:name,message:text,sentAt:Date.now(),isModerator:false};}
+function cookies(response:Response):string[]{const h=response.headers as Headers&{getSetCookie?:()=>string[]};return h.getSetCookie?.()||[response.headers.get('set-cookie')||''];}
+
+test('Community portal serves an independent mobile-first shell and keeps private APIs read-only without login',async()=>{
+  const html=renderCommunityPage('/community/imposter','test-nonce');
+  assert.match(html,/Chat-Imposter/);assert.match(html,/Jetzt mitspielen/);assert.match(html,/@media\(max-width:760px\)/);assert.match(html,/name="viewport"/);
+  assert.doesNotMatch(html,/dashboard\/api|community_admin|Twitch-ID/u);
+  const scripts=[...html.matchAll(/<script nonce="[^"]+">([\s\S]*?)<\/script>/gu)];assert.equal(scripts.length,1);for(const [,script] of scripts)new vm.Script(script||'');
+  const env={...process.env},directory=fs.mkdtempSync(path.join(os.tmpdir(),'community-public-')),database=path.join(directory,'state.sqlite'),db=new FeatureStore(database);
+  const p=await port();process.env.TWITCH_CLIENT_ID='portal-client';process.env.TWITCH_CLIENT_SECRET='portal-secret';process.env.DASHBOARD_REDIRECT_URI='https://bot.example.test/dashboard/oauth/callback';process.env.DASHBOARD_ADMIN_IDS='admin-only';process.env.DASHBOARD_HOST='127.0.0.1';process.env.DASHBOARD_PORT=String(p);
+  const cfg=testConfig({clientId:'portal-client',clientSecret:'portal-secret',redirectUri:'https://bot.example.test/dashboard/oauth/callback'}),features=new CommunityFeatures(db,cfg),portal=new ViewerCommunityPortal(db,features,cfg,fetch);
+  const dashboard=new DashboardServer(db,()=>({twitchConnected:false,channel:'acyjannik',startedAt:1}),logger,fetch,undefined,undefined,undefined,features.miniGames,features.arcade,undefined,undefined,undefined,undefined,undefined,portal);
+  try{assert.equal(await dashboard.start(),true);const base=`http://127.0.0.1:${p}`;
+    for(const page of ['/community','/community/imposter','/community/quests','/community/profile','/community/login','/community/datenschutz']){const r=await fetch(base+page);assert.equal(r.status,200,page);assert.equal(r.headers.get('cache-control'),'no-store');}
+    const pub=await fetch(base+'/community/api/state');assert.equal(pub.status,200);const publicState=await pub.json() as {authenticated:boolean;personal?:unknown;public:{leaderboard:Array<{name:string;rank:number}>}};assert.equal(publicState.authenticated,false);assert.equal(publicState.personal,null);
+    const denied=await fetch(base+'/community/api/imposter/join',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});assert.equal(denied.status,401);
+    const admin=await fetch(base+'/dashboard',{redirect:'manual'});assert.equal(admin.status,302,'viewer route does not grant admin access');
+  }finally{await dashboard.stop();db.close();process.env=env;fs.rmSync(directory,{recursive:true,force:true});}
+});
+
+test('Viewer OAuth is state-bound, session-backed and shares Imposter registration, role, vote and XP with Twitch chat',async()=>{
+  const env={...process.env},directory=fs.mkdtempSync(path.join(os.tmpdir(),'community-e2e-')),database=path.join(directory,'state.sqlite'),store=new FeatureStore(database),p=await port();
+  process.env.TWITCH_CLIENT_ID='portal-client';process.env.TWITCH_CLIENT_SECRET='portal-secret';process.env.DASHBOARD_REDIRECT_URI='https://bot.example.test/dashboard/oauth/callback';process.env.DASHBOARD_ADMIN_IDS='admin-only';process.env.DASHBOARD_HOST='127.0.0.1';process.env.DASHBOARD_PORT=String(p);
+  const cfg=testConfig({clientId:'portal-client',clientSecret:'portal-secret',redirectUri:'https://bot.example.test/dashboard/oauth/callback'}),features=new CommunityFeatures(store,cfg);
+  features.miniGames.updateSettings({...features.miniGames.settings(),enabled:true,imposter:{...features.miniGames.settings().imposter,minPlayers:3,maxPlayers:8,registrationMs:600_000,playMs:600_000,votingMs:300_000,cooldownMs:0}});
+  features.arcade.updateSettings({...features.arcade.settings(),petEnabled:true,dropsEnabled:true});
+  let validatedUser='viewer-secret-id';let tokenExchangeCalls=0;
+  const fetchImpl:typeof fetch=async(input,init)=>{const url=String(input);if(url.endsWith('/oauth2/token')){tokenExchangeCalls++;return Response.json({access_token:'short-lived-viewer-token'});}if(url.endsWith('/oauth2/validate')){assert.equal(new Headers(init?.headers).get('Authorization'),'OAuth short-lived-viewer-token');return Response.json({client_id:'portal-client',user_id:validatedUser});}if(url.endsWith('/helix/users'))return Response.json({data:[{id:validatedUser,login:'viewer_name',display_name:'Viewer Name',profile_image_url:'https://static-cdn.jtvnw.net/avatar.png'}]});throw new Error(`Unexpected Twitch endpoint ${url}`);};
+  const portal=new ViewerCommunityPortal(store,features,cfg,fetchImpl),dashboard=new DashboardServer(store,()=>({twitchConnected:false,channel:'acyjannik',startedAt:1}),logger,fetchImpl,undefined,undefined,undefined,features.miniGames,features.arcade,undefined,undefined,undefined,undefined,undefined,portal);
+  try{assert.equal(await dashboard.start(),true);const base=`http://127.0.0.1:${p}`;
+    features.miniGames.startImposter('broadcaster-1');
+    const login=await fetch(base+'/community/login/twitch',{redirect:'manual'});assert.equal(login.status,302);const auth=new URL(login.headers.get('location')||'');assert.equal(auth.searchParams.get('scope'),'');assert.equal(auth.searchParams.get('redirect_uri'),cfg.redirectUri);
+    const state=auth.searchParams.get('state')||'',stateCookie=cookies(login).find(x=>x.startsWith('community_oauth_state='))?.split(';')[0]||'';assert.ok(stateCookie);
+    const mismatch=await fetch(`${base}/dashboard/oauth/callback?code=fake&state=${state}`,{headers:{cookie:'community_oauth_state=wrong'},redirect:'manual'});assert.equal(mismatch.status,400);assert.equal(tokenExchangeCalls,0);
+    const login2=await fetch(base+'/community/login/twitch',{redirect:'manual'}),auth2=new URL(login2.headers.get('location')||''),state2=auth2.searchParams.get('state')||'',stateCookie2=cookies(login2).find(x=>x.startsWith('community_oauth_state='))?.split(';')[0]||'';
+    const callback=await fetch(`${base}/dashboard/oauth/callback?code=authorized&state=${state2}`,{headers:{cookie:stateCookie2},redirect:'manual'});assert.equal(callback.status,303);assert.equal(callback.headers.get('location'),'/community');
+    const viewerCookie=cookies(callback).find(x=>x.startsWith('community_viewer='))?.split(';')[0]||'';assert.ok(viewerCookie);assert.match(cookies(callback).find(x=>x.startsWith('community_viewer='))||'',/HttpOnly; SameSite=Lax; Max-Age=43200; Secure/u);
+    const stateResponse=await fetch(base+'/community/api/state',{headers:{cookie:viewerCookie}});const stateJson=await stateResponse.json() as any;assert.equal(stateJson.authenticated,true);assert.equal(stateJson.viewer.displayName,'Viewer Name');assert.equal(JSON.stringify(stateJson).includes('viewer-secret-id'),false);assert.equal(JSON.stringify(stateJson).includes('short-lived-viewer-token'),false);
+    const csrf=stateJson.viewer.csrfToken;
+    const badCsrf=await fetch(base+'/community/api/imposter/join',{method:'POST',headers:{cookie:viewerCookie,'Content-Type':'application/json','X-CSRF-Token':'bad'},body:'{}'});assert.equal(badCsrf.status,403);
+    const webJoin=await fetch(base+'/community/api/imposter/join',{method:'POST',headers:{cookie:viewerCookie,'Content-Type':'application/json','X-CSRF-Token':csrf},body:'{}'});assert.equal(webJoin.status,200);
+    assert.match(features.miniGames.handle(chat('chat-user-1','chat_one','Chat One','!joinimposter'),'joinimposter',[])||'',/ist dabei/u);
+    assert.match(features.miniGames.handle(chat('chat-user-2','chat_two','Chat Two','!joinimposter'),'joinimposter',[])||'',/ist dabei/u);
+    let snapshot=await (await fetch(base+'/community/api/state',{headers:{cookie:viewerCookie}})).json() as any;
+    assert.deepEqual(snapshot.public.imposter.players.map((x:any)=>x.displayName),['Viewer Name','Chat One','Chat Two']);
+    assert.doesNotMatch(JSON.stringify(snapshot.public.imposter),/viewer-secret-id|chat-user-/u);assert.equal(snapshot.public.imposter.role,null);
+    features.miniGames.startRoles('broadcaster-1');snapshot=await (await fetch(base+'/community/api/state',{headers:{cookie:viewerCookie}})).json() as any;
+    assert.ok(['imposter','player'].includes(snapshot.public.imposter.role.kind));assert.equal(snapshot.public.imposter.players.some((x:any)=>'role'in x),false);
+    const sessionRaw=viewerCookie.split('=')[1]||'',reopened=new FeatureStore(database);assert.equal(reopened.viewerSession(createHash('sha256').update(sessionRaw).digest('hex'),Date.now())?.userId,validatedUser,'viewer session survives opening the same SQLite database after a process restart');
+    const afterReload=await fetch(base+'/community/api/state',{headers:{cookie:viewerCookie}});const afterState=await afterReload.json() as any;assert.equal(afterState.authenticated,true);assert.equal(afterState.public.imposter.role.kind,snapshot.public.imposter.role.kind);
+    const mini=features.miniGames;mini.beginVote(Date.now());
+    const voting=await (await fetch(base+'/community/api/state',{headers:{cookie:viewerCookie}})).json() as any;assert.equal(voting.public.imposter.phase,'voting');assert.ok(voting.public.imposter.candidates.length>=1);
+    const target=voting.public.imposter.candidates[0];const vote=await fetch(base+'/community/api/imposter/vote',{method:'POST',headers:{cookie:viewerCookie,'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify({target})});assert.equal(vote.status,200);
+    const repeat=await fetch(base+'/community/api/imposter/vote',{method:'POST',headers:{cookie:viewerCookie,'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify({target})});assert.equal(repeat.status,200);assert.match((await repeat.json() as any).message,/bereits abgestimmt/u);
+    reopened.miniGameQuery(db=>db.prepare("UPDATE imposter_rounds SET phase_ends_at=? WHERE phase='voting'").run(Date.now()-1));mini.tick(Date.now()+1);reopened.close();
+    const results=await (await fetch(base+'/community/api/state',{headers:{cookie:viewerCookie}})).json() as any;assert.equal(results.public.imposter.phase,'results');assert.ok(results.public.imposter.result.xpAwarded>0);assert.ok(results.public.imposter.result.myXp>0);
+    const adminRoute=await fetch(base+'/dashboard/api/overview',{headers:{cookie:viewerCookie}});assert.equal(adminRoute.status,401);
+    const logout=await fetch(base+'/community/logout',{method:'POST',headers:{cookie:viewerCookie,'X-CSRF-Token':csrf}});assert.equal(logout.status,200);const loggedOut=await (await fetch(base+'/community/api/state',{headers:{cookie:viewerCookie}})).json() as any;assert.equal(loggedOut.authenticated,false);
+  }finally{await dashboard.stop();try{store.close()}catch{}process.env=env;fs.rmSync(directory,{recursive:true,force:true});}
+});
+
+test('Community web actions reuse quest, Elio and Mystery Drop eligibility/cooldowns and storage',async()=>{
+  const env={...process.env},directory=fs.mkdtempSync(path.join(os.tmpdir(),'community-actions-')),store=new FeatureStore(path.join(directory,'state.sqlite')),p=await port();
+  process.env.TWITCH_CLIENT_ID='portal-client';process.env.TWITCH_CLIENT_SECRET='portal-secret';process.env.DASHBOARD_REDIRECT_URI='https://bot.example.test/dashboard/oauth/callback';process.env.DASHBOARD_ADMIN_IDS='admin-only';process.env.DASHBOARD_HOST='127.0.0.1';process.env.DASHBOARD_PORT=String(p);
+  const cfg=testConfig({clientId:'portal-client',clientSecret:'portal-secret',redirectUri:'https://bot.example.test/dashboard/oauth/callback'}),features=new CommunityFeatures(store,cfg);
+  features.arcade.updateSettings({...features.arcade.settings(),petEnabled:true,dropsEnabled:true});
+  store.setConfig('quest_settings',{enabled:true,chatEnabled:true,maxLength:180,queueLimit:100,maxOpenPerUser:2,cooldownMs:300_000,activeDurationMs:0,completionXp:25,channelPointsEnabled:false,modsCanModerate:false,modsCanSkip:false,moderatorUserIds:[]});
+  const fetchImpl:typeof fetch=async input=>String(input).endsWith('/oauth2/token')?Response.json({access_token:'token'}):String(input).endsWith('/oauth2/validate')?Response.json({client_id:'portal-client',user_id:'viewer-id'}):String(input).endsWith('/helix/users')?Response.json({data:[{id:'viewer-id',login:'viewer',display_name:'Viewer'}]}):Response.error();
+  const portal=new ViewerCommunityPortal(store,features,cfg,fetchImpl),dashboard=new DashboardServer(store,()=>({twitchConnected:false,channel:'acyjannik',startedAt:1}),logger,fetchImpl,undefined,undefined,undefined,features.miniGames,features.arcade,undefined,undefined,undefined,undefined,undefined,portal);
+  try{await dashboard.start();const base=`http://127.0.0.1:${p}`,login=await fetch(base+'/community/login/twitch',{redirect:'manual'}),auth=new URL(login.headers.get('location')||''),sc=cookies(login).find(x=>x.startsWith('community_oauth_state='))?.split(';')[0]||'',cb=await fetch(`${base}/dashboard/oauth/callback?code=x&state=${auth.searchParams.get('state')}`,{headers:{cookie:sc},redirect:'manual'}),vc=cookies(cb).find(x=>x.startsWith('community_viewer='))?.split(';')[0]||'',s=await (await fetch(base+'/community/api/state',{headers:{cookie:vc}})).json() as any,csrf=s.viewer.csrfToken;
+    const post=(path:string,body:unknown)=>fetch(base+path,{method:'POST',headers:{cookie:vc,'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify(body)});
+    const quest=await post('/community/api/quest',{title:'Finde den geheimen Schatz'});assert.equal(quest.status,200);let state=await (await fetch(base+'/community/api/state',{headers:{cookie:vc}})).json() as any;assert.equal(state.personal.quests[0].status,'pending');assert.equal(state.public.approvedQuests.some((q:any)=>q.title==='Finde den geheimen Schatz'),false);
+    const feed=await post('/community/api/pet',{kind:'feed'});assert.equal(feed.status,200);assert.ok(features.arcade.pet().hunger>50);const repeatedFeed=await post('/community/api/pet',{kind:'feed'});assert.match((await repeatedFeed.json() as any).message,/warte|Cooldown|Sekunden|Minuten/u);
+    features.arcade.startDropAdmin('broadcaster-1',undefined);const claim=await post('/community/api/drop/claim',{});assert.equal(claim.status,200);const dropState=await (await fetch(base+'/community/api/state',{headers:{cookie:vc}})).json() as any;assert.equal(dropState.public.drop.participants,1);assert.equal(dropState.public.drop.participated,true);
+  }finally{await dashboard.stop();store.close();process.env=env;fs.rmSync(directory,{recursive:true,force:true});}
+});

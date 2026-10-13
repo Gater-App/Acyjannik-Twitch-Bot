@@ -627,6 +627,22 @@ export class FeatureStore {
         this.db.prepare('INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (20, ?)').run(Date.now());
       })();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 21) {
+      if (currentVersion > 0) this.backupBeforeMigration(21);
+      this.db.transaction(() => this.db.exec(`
+        CREATE TABLE IF NOT EXISTS community_viewer_oauth_states (
+          state_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS community_viewer_oauth_expiry ON community_viewer_oauth_states(expires_at);
+        CREATE TABLE IF NOT EXISTS community_viewer_sessions (
+          session_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, login TEXT NOT NULL, display_name TEXT NOT NULL,
+          profile_image_url TEXT, csrf_token TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS community_viewer_session_expiry ON community_viewer_sessions(expires_at);
+        INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (21, unixepoch()*1000);
+      `))();
+    }
   }
 
   private backupBeforeMigration(version: number): void {
@@ -642,6 +658,49 @@ export class FeatureStore {
   /** Shared connection for feature modules; all mutations must remain transactional. */
   miniGameTransaction<T>(operation: (db: BetterSqlite3.Database) => T): T { return this.db.transaction(() => operation(this.db))(); }
   miniGameQuery<T>(operation: (db: BetterSqlite3.Database) => T): T { return operation(this.db); }
+
+  createViewerOAuthState(stateHash:string,expiresAt:number,now:number):void {
+    this.db.prepare('DELETE FROM community_viewer_oauth_states WHERE expires_at<=?').run(now);
+    this.db.prepare('INSERT INTO community_viewer_oauth_states(state_hash,expires_at,created_at) VALUES(?,?,?)').run(stateHash,expiresAt,now);
+  }
+
+  viewerOAuthStateExists(stateHash:string):boolean {
+    return Boolean(this.db.prepare('SELECT 1 FROM community_viewer_oauth_states WHERE state_hash=?').get(stateHash));
+  }
+
+  consumeViewerOAuthState(stateHash:string,now:number):boolean {
+    return this.db.transaction(()=>{
+      const row=this.db.prepare('SELECT expires_at FROM community_viewer_oauth_states WHERE state_hash=?').get(stateHash) as {expires_at:number}|undefined;
+      this.db.prepare('DELETE FROM community_viewer_oauth_states WHERE state_hash=?').run(stateHash);
+      return Boolean(row&&row.expires_at>now);
+    })();
+  }
+
+  createViewerSession(input:{sessionHash:string;userId:string;login:string;displayName:string;profileImageUrl:string|null;csrfToken:string;createdAt:number;expiresAt:number}):void {
+    this.db.prepare('DELETE FROM community_viewer_sessions WHERE expires_at<=?').run(input.createdAt);
+    this.db.prepare(`INSERT INTO community_viewer_sessions(session_hash,user_id,login,display_name,profile_image_url,csrf_token,created_at,expires_at)
+      VALUES(@sessionHash,@userId,@login,@displayName,@profileImageUrl,@csrfToken,@createdAt,@expiresAt)`).run(input);
+  }
+
+  viewerSession(sessionHash:string,now:number):{userId:string;login:string;displayName:string;profileImageUrl:string|null;csrfToken:string;expiresAt:number}|undefined {
+    const row=this.db.prepare('SELECT user_id,login,display_name,profile_image_url,csrf_token,expires_at FROM community_viewer_sessions WHERE session_hash=?').get(sessionHash) as
+      {user_id:string;login:string;display_name:string;profile_image_url:string|null;csrf_token:string;expires_at:number}|undefined;
+    if(!row)return undefined;
+    if(row.expires_at<=now){this.db.prepare('DELETE FROM community_viewer_sessions WHERE session_hash=?').run(sessionHash);return undefined;}
+    return {userId:row.user_id,login:row.login,displayName:row.display_name,profileImageUrl:row.profile_image_url,csrfToken:row.csrf_token,expiresAt:row.expires_at};
+  }
+
+  deleteViewerSession(sessionHash:string):void { this.db.prepare('DELETE FROM community_viewer_sessions WHERE session_hash=?').run(sessionHash); }
+
+  deleteExpiredViewerData(now:number):void {
+    this.db.prepare('DELETE FROM community_viewer_sessions WHERE expires_at<=?').run(now);
+    this.db.prepare('DELETE FROM community_viewer_oauth_states WHERE expires_at<=?').run(now);
+  }
+
+  questsBySubmitter(userId:string,limit=20):QuestRecord[] {
+    const rows=this.db.prepare('SELECT * FROM quests WHERE submitter_user_id=? ORDER BY submitted_at DESC LIMIT ?').all(userId,Math.max(1,Math.min(50,limit))) as QuestRow[];
+    return rows.map(row=>this.toQuest(row));
+  }
 
   config<T>(key: string, fallback: T): T {
     const row = this.db.prepare('SELECT value FROM feature_config WHERE key=?').get(key) as { value: string } | undefined;

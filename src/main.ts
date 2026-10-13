@@ -19,6 +19,7 @@ import type { QuestPolicy } from './feature-store.js';
 import { CommunityTips } from './community-tips.js';
 import { AutomaticChatMessages } from './automatic-chat-messages.js';
 import { SpotifySongRequests } from './song-requests.js';
+import { ViewerCommunityPortal } from './community-portal.js';
 
 const isTestMode = process.argv.includes('--test') || process.env.TEST_MODE === 'true';
 
@@ -255,9 +256,10 @@ async function runLiveMode(): Promise<void> {
     const redemptionApi=new TwitchApi(config.clientId,redemptionOauth);
     songRequests=new SpotifySongRequests(features,redemptionApi,redemptionOauth,config.broadcasterUserId,logger);
     await songRequests.initialize();
+    const viewerPortal=new ViewerCommunityPortal(features,community,{...config,redirectUri:process.env.DASHBOARD_REDIRECT_URI?.trim()||config.redirectUri},fetch);
     dashboard = new DashboardServer(features, () => ({twitchConnected:eventsub.isConnected,channel:config.channelLogin,startedAt:botStartedAt,...queue.snapshot(),chatResponse:chatPolicy.snapshot()}),
       logger,fetch,()=>community.conversationSpark.snapshot(),channelPoints,()=>oauthServer.startUrlFor('channel-points'),community.miniGames,community.arcade,
-      async(message,category)=>{await queue.enqueue(message,undefined,category);},chatPolicy,communityTips,automaticChatMessages,songRequests);
+      async(message,category)=>{await queue.enqueue(message,undefined,category);},chatPolicy,communityTips,automaticChatMessages,songRequests,viewerPortal);
     logger.info('OAuth-Server erreichbar unter http://127.0.0.1:3000/oauth/start');
     await dashboard.start();
     eventsub.start();
