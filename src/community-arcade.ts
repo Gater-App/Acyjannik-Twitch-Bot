@@ -54,7 +54,7 @@ export class CommunityArcade {
         const d=db.prepare("SELECT * FROM mystery_drops WHERE status IN ('announced','claiming','resolving','completed') ORDER BY created_at DESC LIMIT 1").get() as {id:string;rarity:string;status:string;starts_at:number;ends_at:number;result_json:string|null;resolved_at:number|null}|undefined;
         if(!d||(['completed'].includes(d.status)&&now-(d.resolved_at||0)>12000))return {type,visible:false,capturedAt:now};
         const participants=(db.prepare('SELECT COUNT(*) n FROM mystery_claims WHERE drop_id=?').get(d.id) as {n:number}).n;
-        return {type,visible:this.settings().dropsEnabled,drop:{rarity:d.rarity,status:d.status,endsAt:d.ends_at,participants,result:d.result_json?JSON.parse(d.result_json):null},capturedAt:now};
+        return {type,visible:this.settings().dropsEnabled,drop:{rarityLabel:dropRarityLabel(d.rarity),status:d.status,endsAt:d.ends_at,participants,result:d.result_json?JSON.parse(d.result_json):null},capturedAt:now};
       }
       const w=db.prepare('SELECT * FROM chaos_wheel_spins ORDER BY created_at DESC LIMIT 1').get() as {id:string;title:string;status:string;created_at:number}|undefined;
       return {type,visible:this.settings().wheelEnabled&&!!w&&now-w.created_at<15_000,wheel:w?{id:w.id,title:w.title,status:w.status,createdAt:w.created_at}:null,capturedAt:now};
@@ -88,7 +88,7 @@ export class CommunityArcade {
       if(command==='drop'||command==='dropstats'){
         const d=this.store.miniGameQuery(db=>db.prepare("SELECT id,rarity,ends_at,status FROM mystery_drops WHERE status IN ('announced','claiming') ORDER BY created_at DESC LIMIT 1").get()) as {id:string;rarity:string;ends_at:number;status:string}|undefined;
         if(command==='dropstats')return `🎁 Deine Claims: ${this.store.miniGameQuery(db=> (db.prepare('SELECT COUNT(*) n FROM mystery_claims WHERE user_id=?').get(m.senderUserId) as {n:number}).n)}.`;
-        if(!d)return '🎁 Gerade ist keine Kiste offen.';return `🎁 ${d.rarity} Mystery Drop · ${Math.max(0,Math.ceil((d.ends_at-now)/1000))}s · !claim`;
+        if(!d)return '🎁 Gerade ist keine Kiste offen.';return `🎁 Ein Mystery Drop läuft noch ${Math.max(0,Math.ceil((d.ends_at-now)/1000))} Sekunden – mit !claim seid ihr dabei!`;
       }
       if(command==='claim')return this.claim(m,now);
       if(!mod)return '⛔ Nur Jannik oder Mods dürfen Drops verwalten.';
@@ -124,7 +124,12 @@ export class CommunityArcade {
       db.prepare("UPDATE community_pet SET animation='drop',happiness=MIN(100,happiness+?),xp=xp+?,updated_at=? WHERE id=1").run(claims.length?3:0,claims.length?2:0,now);
       return {claims:claims,rarity:d.rarity,id:d.id,amount};
     });
-    if(due){for(const c of due.claims)this.store.awardXp(`drop:${due.id}:${c.user_id}`,c.user_id,c.display_name,due.amount,'bonus:mystery-drop',now,50);out.push(`🎁 ${due.rarity} Drop geöffnet! ${due.claims.length} Teilnehmende erhalten je ${due.amount} XP${due.claims.length?' und der Drache freut sich!':'.'}`);}
+    if(due){
+      for(const c of due.claims)this.store.awardXp(`drop:${due.id}:${c.user_id}`,c.user_id,c.display_name,due.amount,'bonus:mystery-drop',now,50);
+      out.push(due.claims.length
+        ?`🎁 Der Mystery Drop ist geöffnet! ${due.claims.length} ${due.claims.length===1?'Person erhält':'Personen erhalten'} je ${due.amount} XP. Danke fürs Mitmachen – der Drache freut sich!`
+        :'🎁 Der Mystery Drop ist vorbei – diesmal hat niemand mitgemacht. Beim nächsten Mal mit !claim dabei sein!');
+    }
     this.store.miniGameTransaction(db=>{
       db.prepare("UPDATE community_pet SET hunger=MAX(20,hunger-MIN(5,MAX(0,CAST((?-updated_at)/86400000 AS INTEGER)))),energy=MIN(100,energy+MIN(5,MAX(0,CAST((?-updated_at)/86400000 AS INTEGER)))),updated_at=updated_at+MAX(0,CAST((?-updated_at)/86400000 AS INTEGER))*86400000 WHERE id=1 AND ?-updated_at>=86400000").run(now,now,now,now);
       db.prepare("UPDATE community_pet SET animation=CASE WHEN paused=1 THEN 'sleep' WHEN animation IN ('feed','play','care','happy','drop','levelup','evolution') AND updated_at<? THEN 'idle' ELSE animation END WHERE id=1").run(now-12000);
@@ -163,7 +168,7 @@ export class CommunityArcade {
     });
   }
   private startDrop(actor:string,now:number,rarityArg?:string):string {
-    const rarity=(rarityArg||'common').toLowerCase();if(!(rarity in LIMITS))return '🎁 Seltenheit: common, rare, epic, legendary oder community.';
+    const rarity=(rarityArg||'common').toLowerCase();if(!(rarity in LIMITS))return '🎁 Diese Seltenheitsstufe gibt es nicht.';
     try{return this.store.miniGameTransaction(db=>this.insertDrop(db,actor,now,rarity));}
     catch{return '🎁 Es läuft bereits ein Drop.';}
   }
@@ -203,9 +208,12 @@ export class CommunityArcade {
     const id=randomUUID(),duration=this.settings().dropDurationMs,ends=now+duration;
     db.prepare("INSERT INTO mystery_drops(id,rarity,status,starts_at,ends_at,created_by,created_at,source_spin_id) VALUES(?,?,'claiming',?,?,?,?,?)")
       .run(id,rarity,now,ends,actor,now,sourceSpinId??null);
-    return `🎁 MYSTERY DROP (${rarity})! Ihr habt ${Math.ceil(duration/1000)} Sekunden Zeit. Schreibt !claim!`;
+    return `🎁 Ein Mystery Drop startet! Schreibt innerhalb von ${Math.ceil(duration/1000)} Sekunden !claim, um mitzumachen!`;
   }
   private toPet(r:PetRow):PetState { return {name:r.name,level:r.level,xp:r.xp,hunger:r.hunger,happiness:r.happiness,energy:r.energy,stage:r.stage,paused:r.paused===1,animation:r.animation,updatedAt:r.updated_at}; }
+}
+function dropRarityLabel(rarity:string):string {
+  return ({common:'Gewöhnlicher Drop',rare:'Seltener Drop',epic:'Epischer Drop',legendary:'Legendärer Drop',community:'Community-Drop'} as Record<string,string>)[rarity]??'Mystery Drop';
 }
 function stageFor(level:number):PetState['stage'] { return level>=25?'legendary':level>=15?'adult':level>=8?'young':level>=3?'baby':'egg'; }
 function stageLabel(s:PetState['stage']):string { return ({egg:'Drachenei',baby:'Baby-Drache',young:'Jungdrache',adult:'Erwachsener Drache',legendary:'Legendärer Drache'})[s]; }
