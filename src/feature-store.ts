@@ -515,6 +515,15 @@ export class FeatureStore {
         this.db.exec("UPDATE community_pet_interactions SET announced_at=created_at WHERE announced_at IS NULL; INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (11, unixepoch()*1000);");
       })();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 12) {
+      if (currentVersion > 0) this.backupBeforeMigration(12);
+      const columns = new Set((this.db.prepare('PRAGMA table_info(chaos_wheel_spins)').all() as Array<{name:string}>).map(column=>column.name));
+      this.db.transaction(() => {
+        if (!columns.has('ends_at')) this.db.exec('ALTER TABLE chaos_wheel_spins ADD COLUMN ends_at INTEGER');
+        this.db.exec('INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (12, unixepoch()*1000);');
+      })();
+    }
   }
 
   private backupBeforeMigration(version: number): void {

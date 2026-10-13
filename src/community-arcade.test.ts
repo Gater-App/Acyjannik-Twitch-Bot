@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
 import { FeatureStore } from './feature-store.js';
 import { CommunityArcade } from './community-arcade.js';
 import { communityWidgetHtml } from './dashboard-community-ui.js';
@@ -78,12 +79,15 @@ test('Abgelaufene Teilnehmerdetails werden gemäß Aufbewahrungsfrist bereinigt'
 });
 
 test('Chaos Wheel verlangt zwei Segmente und persistiert das vom Server gezogene Ergebnis',()=>{
-  const {store,arcade}=setup();arcade.updateSettings({...arcade.settings(),wheelEnabled:true});
+  const {store,arcade}=setup(()=>0);arcade.updateSettings({...arcade.settings(),wheelEnabled:true});
   arcade.configureChallenge('Test A',1,true);arcade.configureChallenge('Test B',3,true);
-  assert.match(arcade.spinAdmin('broadcaster',5000),/landet auf/u);
-  const snap=arcade.snapshot('wheel',5001) as {visible:boolean;wheel:{title:string;status:string}};
-  assert.equal(snap.visible,true);assert.ok(arcade.manageChallenges().some(x=>x.title===snap.wheel.title));assert.equal(snap.wheel.status,'completed');
-  assert.match(arcade.spinAdmin('broadcaster',5002),/kurze Pause/u);
+  assert.match(arcade.spinAdmin('broadcaster',5000),/Challenge startet jetzt/u);
+  const snap=arcade.snapshot('wheel',5001) as {visible:boolean;wheel:{title:string;status:string;endsAt:number}};
+  assert.equal(snap.visible,true);assert.ok(arcade.manageChallenges().some(x=>x.title===snap.wheel.title));assert.equal(snap.wheel.status,'active');assert.equal(snap.wheel.endsAt,305_000);
+  assert.match(arcade.spinAdmin('broadcaster',5002),/Rad-Aktion läuft bereits/u);
+  assert.match(arcade.tick(305_000)[0]||'',/Erfolg nicht überprüft/u);
+  assert.equal(arcade.tick(305_001).length,0,'Challenge wird nur einmal abgeschlossen');
+  assert.match(arcade.spinAdmin('broadcaster',305_001),/Ergebnis:/u,'nach Ablauf des konfigurierten Cooldowns kann eine neue Challenge starten');
   store.close();
 });
 
@@ -104,7 +108,7 @@ test('Wheel-Aktionszuordnung startet genau einen konfigurierten Mystery Drop, cl
   assert.equal(widget.visible,true);assert.equal(widget.drop.participants,0);assert.equal(widget.drop.endsAt,11_000);assert.equal(widget.drop.rarityLabel,'Gewöhnlicher Drop');
   assert.match(arcade.handle(message('viewer-1','drop-claim-1','!claim'),'claim',[],2_000)||'',/dabei/u);
   assert.match(arcade.handle(message('viewer-2','drop-claim-2','!claim'),'claim',[],2_001)||'',/dabei/u);
-  assert.match(arcade.spinAdmin('broadcaster',2_002),/kurze Pause/u,'a repeated wheel action is blocked by its cooldown');
+  assert.match(arcade.spinAdmin('broadcaster',2_002),/Mystery Drop läuft bereits/u,'a repeated wheel action is blocked while its drop is active');
   assert.equal(store.miniGameQuery(db=>db.prepare("SELECT COUNT(*) n FROM mystery_drops WHERE status IN ('claiming','announced')").get() as {n:number}).n,1);
   assert.match(arcade.tick(11_001)[0]||'',/2 Personen erhalten je 5 XP/u);
   assert.equal(store.xp('viewer-1').xp,5);assert.equal(store.xp('viewer-2').xp,5);
@@ -112,7 +116,7 @@ test('Wheel-Aktionszuordnung startet genau einen konfigurierten Mystery Drop, cl
   store.close();
 });
 
-test('automatischer Wheel-Drop erstellt keinen zweiten Drop; manuelle Challenge bleibt nur eine Aufgabe',()=>{
+test('Auto-Pilot startet keine zweite Aktion während ein Drop aktiv ist',()=>{
   const {store,arcade}=setup(()=>1);arcade.updateSettings({...arcade.settings(),dropsEnabled:true,wheelEnabled:true,wheelCooldownMs:1_000});
   for(const challenge of arcade.manageChallenges())arcade.configureChallenge(challenge.title,challenge.weight,false,challenge.id,challenge.actionType);
   arcade.configureChallenge('Manuelle Challenge',1,true,'manual-1','manual_challenge');
@@ -128,9 +132,57 @@ test('normale Glücksrad-Challenge startet keinen Drop und Default-Einträge tra
   assert.equal(arcade.manageChallenges().find(x=>x.id==='builtin:mystery-drop')?.actionType,'start_mystery_drop');
   for(const challenge of arcade.manageChallenges())arcade.configureChallenge(challenge.title,challenge.weight,false,challenge.id,challenge.actionType);
   arcade.configureChallenge('Manuell A',1,true,'manual-a','manual_challenge');arcade.configureChallenge('Manuell B',1,true,'manual-b','manual_challenge');
-  assert.match(arcade.spinAdmin('broadcaster',1_000),/Jannik entscheidet/u);
+  assert.match(arcade.spinAdmin('broadcaster',1_000),/Jannick spielt sie selbst/u);
   assert.equal(store.miniGameQuery(db=>db.prepare('SELECT COUNT(*) n FROM mystery_drops').get() as {n:number}).n,0);
+  assert.equal((store.miniGameQuery(db=>db.prepare("SELECT status FROM chaos_wheel_spins ORDER BY created_at DESC LIMIT 1").get() as {status:string})).status,'active');
   store.close();
+});
+
+test('nicht verfügbare Aktionen werden ausgeschlossen, Pet-Bonus löst genau einmal aus und Not-Stopp beendet die Challenge',()=>{
+  let selection=1;const {store,arcade}=setup(()=>selection);arcade.updateSettings({...arcade.settings(),wheelEnabled:true,petEnabled:false,dropsEnabled:false});
+  for(const x of arcade.manageChallenges())arcade.configureChallenge(x.title,x.weight,false,x.id,x.actionType);
+  arcade.configureChallenge('Nur Challenge',1,true,'manual-only','manual_challenge');
+  arcade.configureChallenge('Pet Bonus',1,true,'pet-action','boost_pet');
+  arcade.configureChallenge('Drop',1,true,'drop-action','start_mystery_drop');
+  const unavailable=arcade.wheelStatus(10_000) as {entries:Array<{id:string}>;canSpin:boolean};
+  assert.equal(unavailable.canSpin,false);assert.deepEqual(unavailable.entries.map(x=>x.id),['manual-only']);
+  arcade.updateSettings({...arcade.settings(),petEnabled:true});
+  const before=arcade.pet();assert.match(arcade.spinAdmin('broadcaster',10_000),/automatisch \+10 Energie/u);
+  assert.equal(arcade.pet().energy,Math.min(100,before.energy+10));
+  assert.equal(arcade.spinAdmin('broadcaster',10_001).includes('Bonus'),false,'cooldown prevents reapplying the same action');
+  arcade.updateSettings({...arcade.settings(),wheelCooldownMs:1_000});
+  selection=0;
+  assert.match(arcade.spinAdmin('broadcaster',11_001),/Challenge startet jetzt/u);
+  assert.match(arcade.emergencyStop(11_002),/Auto-Pilot gestoppt/u);
+  assert.equal((arcade.wheelStatus(11_003) as {autoPilotEnabled:boolean;activeAction:unknown}).autoPilotEnabled,false);
+  assert.equal((store.miniGameQuery(db=>db.prepare("SELECT status FROM chaos_wheel_spins WHERE title='Nur Challenge'").get() as {status:string})).status,'canceled');
+  store.close();
+});
+
+test('laufende Community-Spielrunde blockiert den Wheel-Autopiloten ohne Zustand zu verändern',()=>{
+  const {store,arcade}=setup(()=>0);arcade.updateSettings({...arcade.settings(),wheelEnabled:true});
+  store.miniGameTransaction(db=>db.prepare("INSERT INTO imposter_rounds(id,phase,started_at,phase_ends_at,updated_at) VALUES('live-round','playing',100,5000,100)").run());
+  assert.match(arcade.spinAdmin('broadcaster',1_000),/Community-Spiel läuft bereits/u);
+  assert.equal(store.miniGameQuery(db=>(db.prepare('SELECT COUNT(*) n FROM chaos_wheel_spins').get() as {n:number}).n),0);
+  const status=arcade.wheelStatus(1_000) as {canSpin:boolean;reason:string};assert.equal(status.canSpin,false);assert.match(status.reason,/Community-Spiel/u);
+  store.close();
+});
+
+test('aktive Wheel-Challenge wird nach echtem SQLite-Neustart fortgesetzt und genau einmal abgeschlossen',()=>{
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'wheel-autopilot-')),database=path.join(directory,'bot.sqlite');
+  let store=new FeatureStore(database),arcade=new CommunityArcade(store,'broadcaster',()=>0);
+  arcade.updateSettings({...arcade.settings(),wheelEnabled:true,wheelChallengeDurationMs:2_000});
+  for(const x of arcade.manageChallenges())arcade.configureChallenge(x.title,x.weight,false,x.id,x.actionType);
+  arcade.configureChallenge('Restart Challenge',1,true,'restart-manual','manual_challenge');
+  arcade.configureChallenge('Restart Challenge 2',1,true,'restart-manual-2','manual_challenge');
+  assert.match(arcade.spinAdmin('broadcaster',10_000),/Challenge startet jetzt/u);
+  store.close();
+  store=new FeatureStore(database);arcade=new CommunityArcade(store,'broadcaster');
+  const resumed=arcade.wheelStatus(11_000) as {activeAction:{title:string;endsAt:number}|null};
+  assert.equal(resumed.activeAction?.title,'Restart Challenge');assert.equal(resumed.activeAction?.endsAt,12_000);
+  assert.match(arcade.tick(12_000)[0]||'',/Erfolg nicht überprüft/u);
+  assert.equal(arcade.tick(12_001).length,0);
+  store.close();fs.rmSync(directory,{recursive:true,force:true});
 });
 
 test('Features sind standardmäßig aus und Pet/Admin-Befehle sind autorisiert',()=>{

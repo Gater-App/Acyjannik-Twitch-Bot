@@ -7,6 +7,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 import { DashboardServer } from './dashboard.js';
 import { FeatureStore } from './feature-store.js';
+import { CommunityArcade } from './community-arcade.js';
 import { logger } from './logger.js';
 
 async function freePort(): Promise<number> {
@@ -42,7 +43,10 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     if (url.endsWith('/helix/users')) return Response.json({ data: [{ id: verifiedUserId, login: 'admin', display_name: 'Admin' }] });
     throw new Error(`Unerwarteter externer Aufruf: ${url}`);
   };
-  const dashboard = new DashboardServer(store, () => ({ twitchConnected: true, channel: 'acyjannik', startedAt: 1 }), logger, fetchImpl);
+  const arcade = new CommunityArcade(store,'admin-id',()=>0);
+  arcade.updateSettings({...arcade.settings(),wheelEnabled:true,petEnabled:true,dropsEnabled:true});
+  const sentChat:string[]=[];
+  const dashboard = new DashboardServer(store, () => ({ twitchConnected: true, channel: 'acyjannik', startedAt: 1 }), logger, fetchImpl,undefined,undefined,undefined,undefined,arcade,async message=>{sentChat.push(message)});
   try {
     assert.equal(await dashboard.start(), true);
     const base = `http://127.0.0.1:${port}`;
@@ -89,6 +93,8 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.match(html,/!joinimposter/u);
     assert.match(html,/!sus @Name/u);
     assert.match(html,/!savequote Mein Zitat/u);
+    assert.match(html,/Auto-Pilot ein\/aus/u);assert.match(html,/Not-Stopp/u);assert.match(html,/Wahrscheinlichkeiten/u);
+    assert.match(html,/Jannick spielt selbst/u);assert.doesNotMatch(html,/Jannik entscheidet/u,'nach dem Dreh gibt es keine zusätzliche Genehmigung');
     assert.match(html,/Mindestteilnehmer für Imposter/u);
     assert.match(html,/Diskussion \(Minuten\)/u);
     assert.match(html,/Geheime Regeln für Mitspieler/u);
@@ -132,6 +138,15 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.deepEqual(store.config('chat_response_settings',{}),{profile:'calm',welcomeBots:['streamelements','nightbot']});
     const invalidChatSettings=await fetch(`${base}/dashboard/api/chat-messages`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({profile:'quiet',welcomeBots:[]})});
     assert.equal(invalidChatSettings.status,400,'unbekanntes Profil wird abgewiesen');
+
+    const wheelState=await fetch(`${base}/dashboard/api/arcade`,{headers:{Cookie:sessionCookie}});
+    const wheelData=await wheelState.json() as {wheel:{canSpin:boolean;entries:Array<{id:string;probability:number}>}};
+    assert.equal(wheelData.wheel.canSpin,true);assert.ok(wheelData.wheel.entries.length>=2);
+    assert.ok(Math.abs(wheelData.wheel.entries.reduce((sum,x)=>sum+x.probability,0)-100)<1,'Rad-Wahrscheinlichkeiten ergeben 100 Prozent');
+    const wheelSpin=await fetch(`${base}/dashboard/api/arcade`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({action:'spin'})});
+    assert.equal(wheelSpin.status,200);assert.match((await wheelSpin.json() as {message:string}).message,/Ergebnis:/u);assert.equal(sentChat.length,1,'Dreh-Ergebnis wird automatisch im Chat angekündigt');
+    const wheelAfter=await fetch(`${base}/dashboard/api/arcade`,{headers:{Cookie:sessionCookie}});
+    assert.equal(((await wheelAfter.json() as {wheel:{canSpin:boolean;activeAction:unknown}}).wheel).canSpin,false,'aktive Challenge blockiert einen parallelen Spin');
 
     store.setConfig('spark_settings',{enabled:false,paused:false,minParticipants:3});
     const sparkResponse = await fetch(`${base}/dashboard/api/spark`, { headers: { Cookie: sessionCookie } });

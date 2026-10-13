@@ -6,20 +6,20 @@ import { FeatureStore } from './feature-store.js';
 export type ChaosWheelActionType = 'manual_challenge'|'start_mystery_drop'|'boost_pet';
 
 export interface ArcadeSettings {
-  petEnabled: boolean; dropsEnabled: boolean; wheelEnabled: boolean; autoDrops: boolean;
+  petEnabled: boolean; dropsEnabled: boolean; wheelEnabled: boolean; wheelAutoPilotEnabled: boolean; autoDrops: boolean;
   petCooldownMs: number; dropDurationMs: number; wheelCooldownMs: number; allowChatSpin: boolean;
-  activityRetentionDays: number;
+  activityRetentionDays: number; wheelChallengeDurationMs: number;
 }
 export interface PetState {
   name: string; level: number; xp: number; hunger: number; happiness: number; energy: number;
   stage: 'egg'|'baby'|'young'|'adult'|'legendary'; paused: boolean; animation: string; updatedAt: number;
 }
 interface PetRow {name:string;level:number;xp:number;hunger:number;happiness:number;energy:number;stage:PetState['stage'];paused:number;animation:string;updated_at:number}
-const DEFAULT_SETTINGS: ArcadeSettings = { petEnabled:false,dropsEnabled:false,wheelEnabled:false,autoDrops:false,petCooldownMs:120_000,dropDurationMs:60_000,wheelCooldownMs:300_000,allowChatSpin:false,activityRetentionDays:90 };
+const DEFAULT_SETTINGS: ArcadeSettings = { petEnabled:false,dropsEnabled:false,wheelEnabled:false,wheelAutoPilotEnabled:true,autoDrops:false,petCooldownMs:120_000,dropDurationMs:60_000,wheelCooldownMs:300_000,allowChatSpin:false,activityRetentionDays:90,wheelChallengeDurationMs:300_000 };
 const DEFAULT_CHALLENGES:ReadonlyArray<{id:string;title:string;actionType:ChaosWheelActionType}> = [
   {id:'builtin:no-jumping',title:'Eine Runde ohne Springen',actionType:'manual_challenge'},
   {id:'builtin:pistols',title:'Fünf Minuten nur Pistolen',actionType:'manual_challenge'},
-  {id:'builtin:next-quest',title:'Chat wählt die nächste Quest',actionType:'manual_challenge'},
+  {id:'builtin:next-quest',title:'Jannick wählt eine Community-Quest',actionType:'manual_challenge'},
   {id:'builtin:gaming-quiz',title:'Zeit für ein Gaming-Quiz',actionType:'manual_challenge'},
   {id:'builtin:pet-energy',title:'Der Drache bekommt einen Energieschub!',actionType:'boost_pet'},
   {id:'builtin:mystery-drop',title:'Mystery Drop für den Chat',actionType:'start_mystery_drop'},
@@ -38,8 +38,8 @@ export class CommunityArcade {
   }
   settings():ArcadeSettings { return {...DEFAULT_SETTINGS,...this.store.config<Partial<ArcadeSettings>>('arcade_settings',{})}; }
   updateSettings(next:ArcadeSettings):void {
-    for(const k of ['petEnabled','dropsEnabled','wheelEnabled','autoDrops','allowChatSpin'] as const)if(typeof next[k]!=='boolean')throw new Error(`Ungültige Arcade-Einstellung: ${k}`);
-    for(const k of ['petCooldownMs','dropDurationMs','wheelCooldownMs'] as const)if(!Number.isInteger(next[k])||next[k]<1000||next[k]>86_400_000)throw new Error(`Ungültige Arcade-Einstellung: ${k}`);
+    for(const k of ['petEnabled','dropsEnabled','wheelEnabled','wheelAutoPilotEnabled','autoDrops','allowChatSpin'] as const)if(typeof next[k]!=='boolean')throw new Error(`Ungültige Arcade-Einstellung: ${k}`);
+    for(const k of ['petCooldownMs','dropDurationMs','wheelCooldownMs','wheelChallengeDurationMs'] as const)if(!Number.isInteger(next[k])||next[k]<1000||next[k]>86_400_000)throw new Error(`Ungültige Arcade-Einstellung: ${k}`);
     if(!Number.isInteger(next.activityRetentionDays)||next.activityRetentionDays<1||next.activityRetentionDays>3650)throw new Error('activityRetentionDays muss zwischen 1 und 3650 liegen.');
     this.store.setConfig('arcade_settings',next);
   }
@@ -56,8 +56,9 @@ export class CommunityArcade {
         const participants=(db.prepare('SELECT COUNT(*) n FROM mystery_claims WHERE drop_id=?').get(d.id) as {n:number}).n;
         return {type,visible:this.settings().dropsEnabled,drop:{rarityLabel:dropRarityLabel(d.rarity),status:d.status,endsAt:d.ends_at,participants,result:d.result_json?JSON.parse(d.result_json):null},capturedAt:now};
       }
-      const w=db.prepare('SELECT * FROM chaos_wheel_spins ORDER BY created_at DESC LIMIT 1').get() as {id:string;title:string;status:string;created_at:number}|undefined;
-      return {type,visible:this.settings().wheelEnabled&&!!w&&now-w.created_at<15_000,wheel:w?{id:w.id,title:w.title,status:w.status,createdAt:w.created_at}:null,capturedAt:now};
+      const w=db.prepare("SELECT * FROM chaos_wheel_spins WHERE status IN ('active','completed','canceled') ORDER BY created_at DESC LIMIT 1").get() as {id:string;title:string;status:string;created_at:number;resolved_at:number|null;ends_at:number|null;action_type:string}|undefined;
+      const visible=!!w&&this.settings().wheelEnabled&&(w.status==='active'||now-(w.resolved_at??w.created_at)<15_000);
+      return {type,visible,wheel:w?{id:w.id,title:w.title,status:w.status,actionType:w.action_type,createdAt:w.created_at,endsAt:w.ends_at}:null,capturedAt:now};
     });
   }
   handle(m:ChatMessage,command:string,args:string[],now=Date.now()):string|undefined {
@@ -105,7 +106,7 @@ export class CommunityArcade {
       }
       if(command==='cancelwheel'){
         if(!mod)return '⛔ Nur Jannik oder Mods dürfen den Dreh abbrechen.';
-        this.store.miniGameTransaction(db=>db.prepare("UPDATE chaos_wheel_spins SET status='canceled',resolved_at=? WHERE status='spinning'").run(now));return '🎡 Der Dreh wurde abgebrochen.';
+        const canceled=this.store.miniGameTransaction(db=>db.prepare("UPDATE chaos_wheel_spins SET status='canceled',resolved_at=? WHERE status IN ('spinning','active')").run(now).changes>0);return canceled?'🎡 Die laufende Rad-Challenge wurde beendet.':'🎡 Gerade läuft keine Rad-Challenge.';
       }
       if(!mod&&!(command==='spin'&&s.allowChatSpin))return '⛔ Der Dreh muss von Jannik oder einem Mod gestartet werden.';
       return this.spin(m.senderUserId,now);
@@ -114,6 +115,13 @@ export class CommunityArcade {
   }
   tick(now=Date.now()):string[] {
     const out:string[]=[];
+    const completedChallenge=this.store.miniGameTransaction(db=>{
+      const active=db.prepare("SELECT id,title FROM chaos_wheel_spins WHERE status='active' AND ends_at<=? ORDER BY created_at DESC LIMIT 1").get(now) as {id:string;title:string}|undefined;
+      if(!active)return undefined;
+      db.prepare("UPDATE chaos_wheel_spins SET status='completed',resolved_at=? WHERE id=? AND status='active'").run(now,active.id);
+      return active.title;
+    });
+    if(completedChallenge)out.push(`⏱️ Die Laufzeit der Community-Challenge „${clean(completedChallenge,80)}“ ist vorbei. Jannick kann das Ergebnis bestätigen; der Bot hat den Erfolg nicht überprüft.`);
     const due=this.store.miniGameTransaction(db=>{
       const d=db.prepare("SELECT id,rarity FROM mystery_drops WHERE status IN ('announced','claiming') AND ends_at<=?").get(now) as {id:string;rarity:string}|undefined;
       if(!d)return undefined;
@@ -161,8 +169,40 @@ export class CommunityArcade {
   }
   activeChallenges():Array<{id:string;title:string;weight:number;actionType:ChaosWheelActionType}> { return this.store.miniGameQuery(db=>db.prepare('SELECT id,title,weight,action_type actionType FROM chaos_wheel_challenges WHERE active=1 ORDER BY title').all() as Array<{id:string;title:string;weight:number;actionType:ChaosWheelActionType}>); }
   manageChallenges():Array<{id:string;title:string;weight:number;active:boolean;actionType:ChaosWheelActionType}> { return this.store.miniGameQuery(db=>(db.prepare('SELECT id,title,weight,active,action_type actionType FROM chaos_wheel_challenges ORDER BY title').all() as Array<{id:string;title:string;weight:number;active:number;actionType:ChaosWheelActionType}>).map(x=>({...x,active:x.active===1}))); }
+  wheelStatus(now=Date.now()):Record<string,unknown>{
+    const settings=this.settings();
+    const active=this.store.miniGameQuery(db=>db.prepare("SELECT id,title,action_type actionType,created_at createdAt,ends_at endsAt FROM chaos_wheel_spins WHERE status='active' ORDER BY created_at DESC LIMIT 1").get() as {id:string;title:string;actionType:ChaosWheelActionType;createdAt:number;endsAt:number}|undefined);
+    const latest=this.store.miniGameQuery(db=>db.prepare("SELECT created_at createdAt FROM chaos_wheel_spins WHERE status IN ('active','completed','canceled') ORDER BY created_at DESC LIMIT 1").get() as {createdAt:number}|undefined);
+    const activeDrop=this.store.miniGameQuery(db=>db.prepare("SELECT d.ends_at endsAt,d.source_spin_id sourceSpinId FROM mystery_drops d WHERE d.status IN ('announced','claiming','resolving') ORDER BY d.created_at DESC LIMIT 1").get() as {endsAt:number;sourceSpinId:string|null}|undefined);
+    const gameRunning=this.hasBlockingCommunityGame();
+    const dropActive=!!this.store.miniGameQuery(db=>db.prepare("SELECT 1 FROM mystery_drops WHERE status IN ('announced','claiming','resolving')").get());
+    const available=this.activeChallenges().filter(x=>x.actionType==='manual_challenge'||(x.actionType==='boost_pet'&&settings.petEnabled)||(x.actionType==='start_mystery_drop'&&settings.dropsEnabled&&!dropActive));
+    const total=available.reduce((n,x)=>n+x.weight,0);
+    const nextSpinAt=latest?latest.createdAt+settings.wheelCooldownMs:0;
+    let reason='Bereit für den nächsten Dreh.';
+    if(!settings.wheelEnabled)reason='Das Glücksrad ist ausgeschaltet.';
+    else if(!settings.wheelAutoPilotEnabled||this.store.config('arcade_wheel_paused',false))reason='Der Auto-Pilot ist pausiert.';
+    else if(active)reason='Eine Challenge läuft bereits.';
+    else if(activeDrop)reason='Ein Mystery Drop läuft gerade; das Rad wartet, damit niemand seine Teilnahme verliert.';
+    else if(gameRunning)reason='Ein Community-Spiel läuft gerade; das Rad wartet, damit es nicht dazwischenfunkt.';
+    else if(now<nextSpinAt)reason=`Nächster Dreh ab ${new Date(nextSpinAt).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'})}.`;
+    else if(available.length<2||total<=0)reason='Es werden mindestens zwei aktuell verfügbare Rad-Felder benötigt.';
+    return {enabled:settings.wheelEnabled,autoPilotEnabled:settings.wheelAutoPilotEnabled&&!this.store.config('arcade_wheel_paused',false),canSpin:reason==='Bereit für den nächsten Dreh.',reason,nextSpinAt,activeAction:active??(activeDrop?{actionType:'start_mystery_drop',title:activeDrop.sourceSpinId?'Mystery Drop vom Glücksrad':'Mystery Drop',endsAt:activeDrop.endsAt}:null),entries:available.map(x=>({...x,probability:total?Math.round(x.weight/total*1000)/10:0,automation:x.actionType==='manual_challenge'?'Jannick spielt die Aufgabe selbst; der Bot prüft keinen Erfolg.':'Wird vom Bot automatisch ausgeführt.'}))};
+  }
+  emergencyStop(now=Date.now()):string{
+    const active=this.store.miniGameTransaction(db=>{
+      const row=db.prepare("SELECT id FROM chaos_wheel_spins WHERE status='active' ORDER BY created_at DESC LIMIT 1").get() as {id:string}|undefined;
+      if(row)db.prepare("UPDATE chaos_wheel_spins SET status='canceled',resolved_at=? WHERE id=? AND status='active'").run(now,row.id);
+      return Boolean(row);
+    });
+    this.store.setConfig('arcade_wheel_paused',true);
+    this.store.setConfig('arcade_settings',{...this.settings(),wheelAutoPilotEnabled:false});
+    return active?'🛑 Auto-Pilot gestoppt und laufende Challenge beendet. Ein bereits gestarteter Mystery Drop läuft sicher bis zum Ende und wird normal ausgewertet.':'🛑 Auto-Pilot gestoppt. Ein bereits gestarteter Mystery Drop läuft sicher bis zum Ende und wird normal ausgewertet.';
+  }
+  resumeAutoPilot():void{this.store.setConfig('arcade_wheel_paused',false);}
   startDropAdmin(actor:string,rarity:string|undefined,now=Date.now()):string { if(!this.settings().dropsEnabled)return '🎁 Mystery Drops sind deaktiviert.';return this.startDrop(actor,now,rarity); }
   spinAdmin(actor:string,now=Date.now()):string { if(!this.settings().wheelEnabled)return '🎡 Das Chaos Wheel ist deaktiviert.';return this.spin(actor,now); }
+  private hasBlockingCommunityGame():boolean{return this.store.miniGameQuery(db=>Boolean(db.prepare("SELECT 1 FROM imposter_rounds WHERE phase IN ('registration','role_distribution','playing','voting') LIMIT 1").get()||db.prepare("SELECT 1 FROM detective_rounds WHERE phase='playing' LIMIT 1").get()));}
   private interact(m:ChatMessage,kind:'feed'|'play'|'care',s:ArcadeSettings,now:number):string {
     return this.store.miniGameTransaction(db=>{
       const p=db.prepare('SELECT * FROM community_pet WHERE id=1').get() as PetRow;
@@ -197,25 +237,32 @@ export class CommunityArcade {
   private cancelDrop(now:number):boolean {return this.store.miniGameTransaction(db=>db.prepare("UPDATE mystery_drops SET status='canceled',resolved_at=? WHERE status IN ('announced','claiming')").run(now).changes>0);}
   private spin(actor:string,now:number):string {
     if(this.store.config('arcade_wheel_paused',false))return '🎡 Das Rad ist pausiert.';
+    if(!this.settings().wheelAutoPilotEnabled)return '🎡 Der Auto-Pilot ist ausgeschaltet.';
+    if(this.hasBlockingCommunityGame())return '🎡 Ein Community-Spiel läuft bereits. Das Rad wartet, damit es nicht dazwischenfunkt.';
     return this.store.miniGameTransaction(db=>{
-      const open=db.prepare("SELECT 1 FROM chaos_wheel_spins WHERE status='spinning'").get();if(open)return '🎡 Ein Dreh läuft bereits.';
-      const recent=db.prepare("SELECT created_at FROM chaos_wheel_spins WHERE status='completed' ORDER BY created_at DESC LIMIT 1").get() as {created_at:number}|undefined;
+      const open=db.prepare("SELECT 1 FROM chaos_wheel_spins WHERE status IN ('spinning','active')").get();if(open)return '🎡 Eine Rad-Aktion läuft bereits.';
+      if(db.prepare("SELECT 1 FROM mystery_drops WHERE status IN ('announced','claiming','resolving') LIMIT 1").get())return '🎡 Ein Mystery Drop läuft bereits. Das Rad wartet, damit die Runde nicht gestört wird.';
+      const recent=db.prepare("SELECT created_at FROM chaos_wheel_spins WHERE status IN ('active','completed','canceled') ORDER BY created_at DESC LIMIT 1").get() as {created_at:number}|undefined;
       if(recent&&now-recent.created_at<this.settings().wheelCooldownMs)return '🎡 Das Rad braucht noch eine kurze Pause.';
       const options=db.prepare('SELECT id,title,weight,action_type FROM chaos_wheel_challenges WHERE active=1').all() as Array<{id:string;title:string;weight:number;action_type:ChaosWheelActionType}>;
-      const total=options.reduce((a,x)=>a+x.weight,0);if(options.length<2||total<=0)return '🎡 Es müssen mindestens zwei aktive Challenges vorhanden sein.';
+      const settings=this.settings();
+      const available=options.filter(x=>x.action_type==='manual_challenge'||(x.action_type==='boost_pet'&&settings.petEnabled)||(x.action_type==='start_mystery_drop'&&settings.dropsEnabled));
+      const total=available.reduce((a,x)=>a+x.weight,0);if(available.length<2||total<=0)return '🎡 Es müssen mindestens zwei derzeit ausführbare Rad-Felder aktiv sein.';
       let point=this.chooseIndex(total);if(!Number.isInteger(point)||point<0||point>=total)throw new Error('Wheel-Auswahl außerhalb des gültigen Bereichs.');
-      const selected=options.find(x=>(point-=x.weight)<0)!;
-      const id=randomUUID();db.prepare("INSERT INTO chaos_wheel_spins(id,challenge_id,title,status,created_by,created_at,action_type) VALUES(?,?,?,'spinning',?,?,?)").run(id,selected.id,selected.title,actor,now,selected.action_type);
-      db.prepare("UPDATE chaos_wheel_spins SET status='completed',resolved_at=? WHERE id=?").run(now,id);
-      if(selected.action_type==='boost_pet')db.prepare("UPDATE community_pet SET energy=MIN(100,energy+10),happiness=MIN(100,happiness+5),animation='happy',updated_at=? WHERE id=1").run(now);
-      if(selected.action_type==='start_mystery_drop'){
-        if(!this.settings().dropsEnabled)return `🎡 Das Chaos Wheel landet auf: ${selected.title}! Der Mystery Drop ist deaktiviert; aktiviere Drops zuerst im Dashboard.`;
-        const active=db.prepare("SELECT 1 FROM mystery_drops WHERE status IN ('announced','claiming','resolving')").get();
-        if(active)return `🎡 Das Chaos Wheel landet auf: ${selected.title}! Ein Mystery Drop läuft bereits – es wurde kein zweiter gestartet.`;
-        const announcement=this.insertDrop(db,`wheel:${id}`,now,'common',id);
-        return `🎡 Das Chaos Wheel landet auf: ${selected.title}! ${announcement}`;
+      const selected=available.find(x=>(point-=x.weight)<0)!;
+      const id=randomUUID(),isManual=selected.action_type==='manual_challenge',endsAt=isManual?now+settings.wheelChallengeDurationMs:null;
+      db.prepare("INSERT INTO chaos_wheel_spins(id,challenge_id,title,status,created_by,created_at,action_type,ends_at) VALUES(?,?,?, ?,?,?,?,?)").run(id,selected.id,selected.title,isManual?'active':'completed',actor,now,selected.action_type,endsAt);
+      if(selected.action_type==='boost_pet'){
+        db.prepare("UPDATE community_pet SET energy=MIN(100,energy+10),happiness=MIN(100,happiness+5),animation='happy',updated_at=? WHERE id=1").run(now);
+        db.prepare("UPDATE chaos_wheel_spins SET resolved_at=? WHERE id=?").run(now,id);
+        return `🎡 Ergebnis: ${selected.title}! Der Drache erhält automatisch +10 Energie und +5 Freude.`;
       }
-      return `🎡 Das Chaos Wheel landet auf: ${selected.title}! Jannik entscheidet, ob die Challenge gespielt wird.`;
+      if(selected.action_type==='start_mystery_drop'){
+        const announcement=this.insertDrop(db,`wheel:${id}`,now,'common',id);
+        db.prepare("UPDATE chaos_wheel_spins SET resolved_at=? WHERE id=?").run(now,id);
+        return `🎡 Ergebnis: ${selected.title}! ${announcement}`;
+      }
+      return `🎡 Ergebnis: ${selected.title}! Die Challenge startet jetzt für ${Math.ceil(settings.wheelChallengeDurationMs/60_000)} Minuten. Jannick spielt sie selbst; der Bot kann den Erfolg nicht überprüfen.`;
     });
   }
   private insertDrop(db:BetterSqlite3.Database,actor:string,now:number,rarity:string,sourceSpinId?:string):string {

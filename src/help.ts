@@ -11,7 +11,7 @@ const PUBLIC_HELP: Record<string, string> = {
   detective: '🕵️ !detektiv zeigt die Runde · !wer @Name tippt den Autor · !quote zeigt das Zitat erneut. Eigenes Zitat bewusst einreichen: !savequote TEXT; !myquotes / !deletequote ID verwalten.',
   pet: '🐉 Wenn das Pet aktiviert ist: !pet · !petcare · !feed · !play · !petstats · !petname · !petevolution. !pethelp zeigt die Kurz-Hilfe.',
   drops: '🎁 Wenn Drops aktiviert sind: !drop zeigt den laufenden Drop · !claim nimmt teil · !dropstats zeigt deine Claims · !drops erklärt das Feature.',
-  wheel: '🎡 Wenn aktiviert: !wheel / !wheelstatus zeigt das Chaos Wheel. Ein Chat-Dreh ist nur möglich, wenn Jannik ihn freigegeben hat: !spin.',
+  wheel: '🎡 Wenn aktiviert: !wheel / !wheelstatus zeigt das Chaos Wheel. !spin startet direkt das nächste verfügbare Rad-Feld; Mods können es auch über das Dashboard drehen. Automatische Felder laufen selbst, Challenges spielt Jannick innerhalb des Timers selbst.',
 };
 
 const MOD_HELP = '🛡️ Mod/Jannik: !starthalloween / !endhalloween · !startevent ID / !endevent ID · !startguess · !startboss / !endboss · !questqueue / !approvequest ID / !rejectquest ID (Mod-Rechte je nach Einstellung) · !sparkapprove ID / !sparkreject ID · !startimposter / !closeimposter / !cancelimposter · !startdetektiv / !skipdetektiv / !enddetektiv · !startdrop / !canceldrop · !startwheel / !cancelwheel.';

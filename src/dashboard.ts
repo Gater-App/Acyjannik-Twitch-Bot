@@ -305,7 +305,7 @@ export class DashboardServer {
     if (route === 'channel-points' && req.method === 'GET') { this.json(res, 200, this.channelPoints
       ? { available:true, settings:this.channelPoints.settings(), connected:this.channelPoints.connected(), message:this.channelPoints.oauthStatusMessage, redemptions:this.store.channelRedemptions(100) }
       : { available:false, settings:DEFAULT_CHANNEL_POINTS_SETTINGS, connected:false, message:'Diese optionale Twitch-Kanalpunkte-Verbindung ist hier nicht eingerichtet.', redemptions:[] }); return; }
-    if (route === 'arcade' && req.method === 'GET' && this.arcade) { this.json(res,200,{settings:this.arcade.settings(),pet:this.arcade.pet(),challenges:this.arcade.manageChallenges()});return; }
+    if (route === 'arcade' && req.method === 'GET' && this.arcade) { this.json(res,200,{settings:this.arcade.settings(),pet:this.arcade.pet(),challenges:this.arcade.manageChallenges(),wheel:this.arcade.wheelStatus()});return; }
     if (route === 'events' && req.method === 'GET') { this.json(res, 200, { events: this.store.events() }); return; }
     if (route === 'settings' && req.method === 'GET') {
       this.json(res, 200, { xp_settings: this.store.config('xp_settings', {}), game_settings: this.store.config('game_settings', {}),
@@ -414,10 +414,11 @@ export class DashboardServer {
     }
     if(route==='arcade'&&this.arcade){
       try{
-        if(body.settings!==undefined){if(!isRecord(body.settings))throw new Error('Arcade-Einstellungen ungültig.');this.arcade.updateSettings(body.settings as never);this.audit(session,'arcade-settings','arcade',{},now);this.json(res,200,{ok:true});return;}
+        if(body.settings!==undefined){if(!isRecord(body.settings))throw new Error('Arcade-Einstellungen ungültig.');this.arcade.updateSettings(body.settings as never);if(body.settings.wheelAutoPilotEnabled===true)this.arcade.resumeAutoPilot();this.audit(session,'arcade-settings','arcade',{},now);this.json(res,200,{ok:true});return;}
         const action=String(body.action||'');let message='';
         if(action==='start-drop')message=this.arcade.startDropAdmin(session.userId,typeof body.rarity==='string'?body.rarity:undefined,now);
         else if(action==='spin')message=this.arcade.spinAdmin(session.userId,now);
+        else if(action==='emergency-stop')message=this.arcade.emergencyStop(now);
         else if(action==='challenge'){if(typeof body.title!=='string')throw new Error('Challenge-Titel fehlt.');const actionType=body.actionType??'manual_challenge';if(!['manual_challenge','start_mystery_drop','boost_pet'].includes(String(actionType)))throw new Error('Wheel-Aktion ist ungültig.');this.arcade.configureChallenge(body.title,boundedInt(body.weight,1,1,1000),true,undefined,actionType as ChaosWheelActionType);this.audit(session,'arcade-challenge','arcade',{},now);this.json(res,200,{ok:true});return;}
         else {this.json(res,400,{error:'Arcade-Aktion ungültig.'});return;}
         if(message)await this.sendToChat?.(message);this.audit(session,'arcade-action',action,{},now);this.json(res,200,{ok:true,message});return;
