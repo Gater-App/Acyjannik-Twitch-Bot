@@ -1,0 +1,27 @@
+twitch.gater-app.de {
+	header {
+		Strict-Transport-Security "max-age=31536000"
+	}
+
+	@oauth path /oauth/*
+	handle @oauth {
+		reverse_proxy 127.0.0.1:3000
+	}
+
+	@dashboard path /dashboard*
+	handle @dashboard {
+		reverse_proxy 127.0.0.1:3001
+	}
+
+	@widgets path /widgets/*
+	handle @widgets {
+		reverse_proxy 127.0.0.1:3001
+	}
+
+	@games path /games/*
+	handle @games {
+		reverse_proxy 127.0.0.1:3001
+	}
+
+	respond "Not found" 404
+}
