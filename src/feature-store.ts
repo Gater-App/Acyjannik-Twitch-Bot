@@ -536,6 +536,17 @@ export class FeatureStore {
         INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (13, unixepoch()*1000);
       `))();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 14) {
+      if (currentVersion > 0) this.backupBeforeMigration(14);
+      this.db.transaction(() => this.db.exec(`
+        -- Existing installations may have a generated ID for this seeded action.
+        -- Match only its exact legacy label and action type; preserve the row ID.
+        UPDATE chaos_wheel_challenges SET title='Elio bekommt einen Energieschub!'
+          WHERE title='Der Drache bekommt einen Energieschub!' AND action_type='boost_pet';
+        INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (14, unixepoch()*1000);
+      `))();
+    }
   }
 
   private backupBeforeMigration(version: number): void {
