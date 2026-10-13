@@ -6,6 +6,7 @@ export interface TwitchUser {
   login: string;
   display_name: string;
 }
+export interface TwitchStream { id: string; user_id: string; type: 'live' | ''; }
 
 export interface SendChatResult {
   messageId: string;
@@ -41,6 +42,13 @@ export class TwitchApi {
     const query = logins.map((login) => `login=${encodeURIComponent(login)}`).join('&');
     const response = await this.request<HelixResponse<TwitchUser>>(`/users?${query}`);
     return response.data;
+  }
+
+  /** Public stream state lookup. Get Streams accepts an existing user token and requests no additional scope. */
+  async getStreamStatus(broadcasterId: string): Promise<TwitchStream | undefined> {
+    const query = new URLSearchParams({ user_id: broadcasterId });
+    const response = await this.request<HelixResponse<TwitchStream>>(`/streams?${query}`);
+    return response.data.find(stream => stream.user_id === broadcasterId && stream.type === 'live');
   }
 
   async sendChatMessage(broadcasterId: string, senderId: string, message: string, replyParentMessageId?: string): Promise<SendChatResult> {

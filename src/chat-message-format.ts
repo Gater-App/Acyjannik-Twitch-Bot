@@ -2,6 +2,7 @@ import { clampChatMessage } from './chat.js';
 
 export const CHAT_CATEGORIES = {
   community: { emoji: '🤖', label: 'COMMUNITY' },
+  tip: { emoji: '💡', label: 'COMMUNITY-TIPP' },
   attack: { emoji: '⚔️', label: 'ANGRIFF' },
   boss: { emoji: '👹', label: 'BOSS' },
   halloween: { emoji: '🎃', label: 'HALLOWEEN' },

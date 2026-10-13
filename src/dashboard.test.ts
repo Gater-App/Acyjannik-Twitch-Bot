@@ -9,6 +9,7 @@ import { DashboardServer } from './dashboard.js';
 import { FeatureStore } from './feature-store.js';
 import { CommunityArcade } from './community-arcade.js';
 import { logger } from './logger.js';
+import { CommunityTips } from './community-tips.js';
 
 async function freePort(): Promise<number> {
   const server = net.createServer();
@@ -46,7 +47,8 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
   const arcade = new CommunityArcade(store,'admin-id',()=>0);
   arcade.updateSettings({...arcade.settings(),wheelEnabled:true,petEnabled:true,dropsEnabled:true});
   const sentChat:string[]=[];
-  const dashboard = new DashboardServer(store, () => ({ twitchConnected: true, channel: 'acyjannik', startedAt: 1 }), logger, fetchImpl,undefined,undefined,undefined,undefined,arcade,async message=>{sentChat.push(message)});
+  const communityTips=new CommunityTips(store);
+  const dashboard = new DashboardServer(store, () => ({ twitchConnected: true, channel: 'acyjannik', startedAt: 1 }), logger, fetchImpl,undefined,undefined,undefined,undefined,arcade,async message=>{sentChat.push(message)},undefined,communityTips);
   try {
     assert.equal(await dashboard.start(), true);
     const base = `http://127.0.0.1:${port}`;
@@ -152,10 +154,13 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.equal(welcomeSave.status,200);
     assert.equal((await (await fetch(`${base}/dashboard/api/welcome`,{headers:{Cookie:sessionCookie}})).json() as {enabled:boolean}).enabled,true);
     const chatSettingsBefore=await fetch(`${base}/dashboard/api/chat-messages`,{headers:{Cookie:sessionCookie}});
-    assert.equal((await chatSettingsBefore.json() as {profile:string}).profile,'normal');
-    const chatSettingsSave=await fetch(`${base}/dashboard/api/chat-messages`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({profile:'calm',welcomeBots:['StreamElements','nightbot']})});
+    const initialChatSettings=await chatSettingsBefore.json() as {profile:string;communityTips:{enabled:boolean}};
+    assert.equal(initialChatSettings.profile,'normal');
+    assert.equal(initialChatSettings.communityTips.enabled,false,'old installations remain opted out');
+    const chatSettingsSave=await fetch(`${base}/dashboard/api/chat-messages`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({profile:'calm',welcomeBots:['StreamElements','nightbot'],communityTipsEnabled:true})});
     assert.equal(chatSettingsSave.status,200,await chatSettingsSave.clone().text());
     assert.deepEqual(store.config('chat_response_settings',{}),{profile:'calm',welcomeBots:['streamelements','nightbot']});
+    assert.equal(communityTips.settings().enabled,true,'dashboard can opt in community tips');
     const invalidChatSettings=await fetch(`${base}/dashboard/api/chat-messages`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({profile:'quiet',welcomeBots:[]})});
     assert.equal(invalidChatSettings.status,400,'unbekanntes Profil wird abgewiesen');
 

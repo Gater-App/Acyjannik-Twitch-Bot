@@ -5,6 +5,7 @@ import { clampChatMessage, eventMessage } from './chat.js';
 import type { CommunityFeatures } from './community-features.js';
 import { DEFAULT_HELP_AVAILABILITY, helpReply } from './help.js';
 import type { ChatResponsePolicy } from './chat-response-policy.js';
+import type { CommunityTips } from './community-tips.js';
 import { categoryForCommand, type ChatCategory } from './chat-message-format.js';
 
 const RESET_CONFIRMATION = 'confirm';
@@ -29,12 +30,14 @@ export class CommandHandler {
     private readonly backup: (destination: string) => Promise<void> = (destination) => this.database.backup(destination),
     private readonly community?: CommunityFeatures,
     private readonly chatPolicy?: ChatResponsePolicy,
+    private readonly communityTips?: CommunityTips,
   ) {}
 
   async handle(message: ChatMessage, now = Date.now()): Promise<CommandReply[]> {
     if (message.senderUserId === this.config.botUserId || message.senderLogin.toLowerCase() === this.config.botLogin.toLowerCase()) return [];
     if (message.broadcasterUserId !== this.config.broadcasterUserId) return [];
     if (!this.database.markEventProcessed(message.eventId, now)) return [];
+    this.communityTips?.observe(message, now);
     this.community?.tick(now, false);
     const words = message.message.trim().split(/\s+/u);
     const rawCommand = words.shift();

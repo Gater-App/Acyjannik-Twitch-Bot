@@ -16,6 +16,7 @@ import { parseEventSubChatMessage } from './chat.js';
 import type { ChatMessage } from './types.js';
 import { ChannelPointsService } from './channel-points.js';
 import type { QuestPolicy } from './feature-store.js';
+import { CommunityTips } from './community-tips.js';
 
 const isTestMode = process.argv.includes('--test') || process.env.TEST_MODE === 'true';
 
@@ -83,7 +84,8 @@ async function runLiveMode(): Promise<void> {
     `${config.tokenFile}.oauth-state`);
   const game = new GameService(database, config);
   const chatPolicy = new ChatResponsePolicy(features.config('chat_response_settings', DEFAULT_CHAT_RESPONSE_SETTINGS));
-  const handler = new CommandHandler(database, game, config, undefined, community, chatPolicy);
+  const communityTips = new CommunityTips(features);
+  const handler = new CommandHandler(database, game, config, undefined, community, chatPolicy, communityTips);
   const queue = new SendQueue(
     async (message, replyParentMessageId) => {
       const result = await sendChatMessageWithRetry(api, config.broadcasterUserId, config.botUserId, message, replyParentMessageId);
@@ -95,6 +97,7 @@ async function runLiveMode(): Promise<void> {
     config.maxChatMessageLength,
   );
   let channelPoints:ChannelPointsService|undefined;
+  let lastSpecialAnnouncementAt = 0;
   const eventsub = new EventSubClient(
     async (sessionId) => {
       await api.ensureChatSubscription(sessionId, config.broadcasterUserId, config.botUserId);
@@ -131,6 +134,7 @@ async function runLiveMode(): Promise<void> {
       const command=chatMessage.message.trim().split(/\s+/u)[0]?.toLowerCase()||'';
       if(command.startsWith('!'))logger.info('Twitch-Chatbefehl verarbeitet.',{command:/^![a-z0-9_-]{1,32}$/u.test(command)?command:'!other',replyCount:replies.length});
       for (const reply of replies) {
+        if (['drop','wheel','imposter','detective','quest','poll','season','dragon','boss','attack'].includes(reply.category || '')) lastSpecialAnnouncementAt = Date.now();
         if (!chatPolicy.shouldSend({ command: command.startsWith('!') ? command : '', message: reply.message })) continue;
         try { await queue.enqueue(reply.message, reply.replyParentMessageId, reply.category); }
         catch { /* SendQueue logs the safe transport failure; EventSub stays connected. */ }
@@ -138,9 +142,40 @@ async function runLiveMode(): Promise<void> {
     },
   );
   let dashboard:DashboardServer|undefined;
+  let lastTipLiveCheckAt = 0;
+  let checkingLive = false;
   const featureTicker = setInterval(() => {
-    try { for(const message of community.tickMessages())void queue.enqueue(message.message, undefined, message.category); }
-    catch (error) { logger.error('Community-Spiel-Timer konnte nicht aktualisiert werden.', { error: error instanceof Error ? error.message : 'unbekannt' }); }
+    void (async () => {
+      try {
+        const announcements = community.tickMessages();
+        for (const message of announcements) void queue.enqueue(message.message, undefined, message.category);
+        if (announcements.length) return;
+        const now = Date.now();
+        const snapshots = community.miniGames.snapshot();
+        const arcade = community.arcade.snapshot('drop');
+        const wheel = community.arcade.wheelStatus();
+        const dropStatus = (arcade.drop as { status?: string } | undefined)?.status;
+        const busy = Boolean(snapshots.imposter || snapshots.detective || ['announced','claiming','resolving'].includes(dropStatus || '') || wheel.active
+          || queue.size > 0 || now - lastSpecialAnnouncementAt < 60_000);
+        const profile = chatPolicy.snapshot().profile, availability = community.helpAvailability();
+        if (!checkingLive && now - lastTipLiveCheckAt >= 15_000 && communityTips.shouldEvaluate(profile, availability, busy, now)) {
+          checkingLive = true;
+          try {
+            lastTipLiveCheckAt = Date.now();
+            const stream = await api.getStreamStatus(config.broadcasterUserId);
+            if (!stream) communityTips.maybeSend({ isLive: false, profile, availability, busy, now: Date.now() });
+            else {
+              const tip = communityTips.maybeSend({ isLive: true, streamId: stream.id, profile, availability, busy, now: Date.now(),
+                allowSend: candidate => chatPolicy.shouldSend({ message: candidate.text, now: Date.now() }) });
+              if (tip) void queue.enqueue(tip.text, undefined, 'tip').catch(error=>logger.warn('Community-Tipp konnte nicht in den Chat gestellt werden.',{error:error instanceof Error?error.message:'unbekannt'}));
+            }
+          }
+          catch (error) {
+            logger.warn('Community-Tipp wegen unbekanntem Twitch-Live-Status unterdrückt.', { error: error instanceof Error ? error.message : 'unbekannt' });
+          } finally { checkingLive = false; }
+        }
+      } catch (error) { logger.error('Community-Tipp- oder Spiel-Timer konnte nicht aktualisiert werden.', { error: error instanceof Error ? error.message : 'unbekannt' }); }
+    })();
   }, 1000);
   featureTicker.unref();
 
@@ -169,7 +204,7 @@ async function runLiveMode(): Promise<void> {
     },logger);
     dashboard = new DashboardServer(features, () => ({twitchConnected:eventsub.isConnected,channel:config.channelLogin,startedAt:botStartedAt,...queue.snapshot(),chatResponse:chatPolicy.snapshot()}),
       logger,fetch,()=>community.conversationSpark.snapshot(),channelPoints,()=>oauthServer.startUrlFor('channel-points'),community.miniGames,community.arcade,
-      async(message,category)=>{await queue.enqueue(message,undefined,category);},chatPolicy);
+      async(message,category)=>{await queue.enqueue(message,undefined,category);},chatPolicy,communityTips);
     logger.info('OAuth-Server erreichbar unter http://127.0.0.1:3000/oauth/start');
     await dashboard.start();
     eventsub.start();
