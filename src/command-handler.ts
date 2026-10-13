@@ -57,7 +57,7 @@ export class CommandHandler {
         if(now<until)return [];
         this.helpCooldowns.set(message.senderUserId,now+5_000);
         if(this.helpCooldowns.size>5000)for(const [id,expiry] of this.helpCooldowns)if(expiry<=now)this.helpCooldowns.delete(id);
-        return reply(helpReply(args,message,this.community?.helpAvailability()||DEFAULT_HELP_AVAILABILITY));
+        return reply(helpReply(args,message,this.community?.helpAvailability()||DEFAULT_HELP_AVAILABILITY),args[0]?.toLocaleLowerCase('de-DE')==='pet'?'pet':'help');
       }
       case 'trickortreat': { const result = this.trickOrTreat(name, message.senderUserId, now); return reply(result.message, result.category); }
       case 'pumpkins': return reply(`🎃 ${name} hat ${this.game.pumpkins(message.senderUserId)} Kürbisse.`);

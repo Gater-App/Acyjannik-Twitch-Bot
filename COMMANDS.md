@@ -21,7 +21,7 @@ Vollständige Übersicht der im aktuellen Bot-Code fest eingebauten Chatbefehle.
 | `!imposter`, `!imposterstatus`, `!joinimposter`, `!leaveimposter`, `!sus @Name` | Imposter-Runde ansehen, freiwillig anmelden/abmelden und abstimmen. |
 | `!quoteoptin`, `!quoteoptout`, `!savequote TEXT`, `!myquotes`, `!deletequote ID` | Detektiv-Zitateinstellungen und einzeln eingereichte eigene Zitate verwalten. Opt-in allein speichert keine Chatnachrichten. |
 | `!detektiv`, `!quote`, `!wer @Name` | Detektiv-Runde/Zitat ansehen und Autorentipp abgeben. |
-| `!pet`, `!feed`, `!play`, `!petcare`, `!petstats`, `!petname`, `!pethelp`, `!petevolution` | Community-Pet ansehen/interagieren, sofern aktiviert. |
+| `!pet`, `!feed`, `!play`, `!petcare`, `!petstats`, `!petname`, `!pethelp`, `!petevolution` | Elio 🐱 ansehen, mit Katzenfutter füttern, pflegen und mit Spielangel/Wollknäuel spielen; sofern aktiviert. |
 | `!drops`, `!drop`, `!claim`, `!dropstats` | Drop-Hilfe/-Status, teilnehmen und eigene Claims ansehen, sofern aktiviert. |
 | `!wheel`, `!wheelstatus`, `!spin` | Wheel-Status; `!spin` nur Mod/Jannik, sofern Chat-Dreh freigegeben. |
 

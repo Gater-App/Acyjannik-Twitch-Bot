@@ -308,17 +308,17 @@ konkrete Datenschutzerklärung diese Funktion abdeckt. Bis dahin Spark
 deaktiviert lassen. Streamer kann jederzeit `!sparkpause` und `!sparkresume`
 verwenden; der Dashboard-Schalter aktiviert/deaktiviert die Erkennung.
 
-## Community-Pet, Mystery Drops und Chaos Wheel
+## Elio 🐱, Mystery Drops und Chaos Wheel
 
-Die drei Community-Arcade-Module verwenden dieselbe SQLite-Datei, das vorhandene XP-Ledger und die geschützte Dashboard-/OBS-Token-Infrastruktur. Alle drei Funktionen sind standardmäßig ausgeschaltet; im Dashboard unter **Community-Pet · Mystery Drops · Chaos Wheel** einzeln aktivieren. Ein Drop startet nur manuell oder wenn ein Glücksrad-Feld ausdrücklich die Aktion `start_mystery_drop` trägt; dafür müssen sowohl Glücksrad als auch Mystery Drops eingeschaltet sein.
+Die drei Community-Arcade-Module verwenden dieselbe SQLite-Datei, das vorhandene XP-Ledger und die geschützte Dashboard-/OBS-Token-Infrastruktur. Alle drei Funktionen sind standardmäßig ausgeschaltet; im Dashboard unter **Elio 🐱 · Mystery Drops · Chaos Wheel** einzeln aktivieren. Ein Drop startet nur manuell oder wenn ein Glücksrad-Feld ausdrücklich die Aktion `start_mystery_drop` trägt; dafür müssen sowohl Glücksrad als auch Mystery Drops eingeschaltet sein.
 
-- Pet: `!pet`, `!feed`, `!play`, `!petcare`, `!petstats`, `!petname`, `!petevolution`, `!pethelp`. Nur Jannik kann mit `!setpetname NAME` umbenennen oder mit `!petpause` / `!petresume` pausieren.
+- Elio 🐱: `!pet` zeigt den Zustand, `!feed` füttert mit Katzenfutter/Leckerli, `!play` spielt mit Spielangel/Wollknäuel, `!petcare` pflegt, `!petstats` zeigt Werte; `!petname`, `!petevolution` und `!pethelp` bleiben kompatibel. Nur Jannik kann mit `!setpetname NAME` umbenennen oder mit `!petpause` / `!petresume` pausieren.
 - Mystery Drop: `!claim`, `!drop`, `!dropstats`, `!drops`; Jannik/Mods starten mit `!startdrop [common|rare|epic|legendary|community]` und brechen mit `!canceldrop` ab.
 - Chaos Wheel: `!wheel`, `!wheelstatus`; Jannik/Mods starten mit `!startwheel` (Alias `!spin`). Glücksrad-Felder haben eine gespeicherte Aktion: `manual_challenge` bleibt eine Aufgabe für Jannik, `start_mystery_drop` startet atomar einen Drop, `boost_pet` löst den Pet-Energieschub aus. Nur virtuelle XP, keine Sachpreise.
 
 Die drei OBS-Widgets werden wie die übrigen Lesewidgets im Dashboard über **OBS-Widgets → Pet/Drop/Wheel-URL erneuern** ausgegeben und können dort widerrufen werden. URLs verwenden `/widgets/pet?token=…`, `/widgets/drop?token=…` und `/widgets/wheel?token=…` mit einem im Dashboard erzeugten Token.
 
-Aktueller Implementierungsumfang: gemeinschaftlicher Drache mit begrenzten Pflegewerten, Level-/Evolutionsstufen und einfachen Animationen; manuell oder per Wheel gestartete, kostenlose Drops mit einmaligen Claims und XP; serverseitige gewichtete Wheel-Auswahl mit persistentem Ergebnis. Drop-Teilnahmedetails und Wheel-Historie werden standardmäßig nach 90 Tagen bereinigt. Volle Kosmetik-/Sammlungsverwaltung, Community-Meilenstein-Verteilung, vollständige Wheel-Historien-/Segmentverwaltung und Quest-Übergabe sind noch nicht Bestandteil dieser ersten Ausbaustufe. Für Production sind HTTPS/Domain, Tokens, Twitch-Berechtigungen und eine separate Deployment-Freigabe nötig.
+Aktueller Implementierungsumfang: Elio ist die virtuelle Community-Katze mit begrenzten Pflegewerten, erhaltenen Leveln/XP, fünf Katzen-Lebensphasen und einfachen Animationen. Manuell oder per Wheel gestartete kostenlose Drops haben einmalige Claims und XP; das Wheel speichert gewichtete Ergebnisse persistent. Drop-Teilnahmedetails und Wheel-Historie werden standardmäßig nach 90 Tagen bereinigt. Volle Kosmetik-/Sammlungsverwaltung, Community-Meilenstein-Verteilung, vollständige Wheel-Historien-/Segmentverwaltung und Quest-Übergabe sind noch nicht Bestandteil dieser ersten Ausbaustufe. Für Production sind HTTPS/Domain, Tokens und Twitch-Berechtigungen erforderlich.
 
 ## Befehle
 
@@ -344,7 +344,7 @@ Aktueller Implementierungsumfang: gemeinschaftlicher Drache mit begrenzten Pfleg
 | `!sparkapprove ID`, `!sparkreject ID` | Jannik oder Twitch-Moderatoren; Freigabe erstellt noch keine Umfrage/Quest |
 | `!sparkpause`, `!sparkresume` | Nur Jannik; pausiert bzw. setzt die Erkennung fort |
 | `!poll`, `!vote 1–5`, `!pollresults` | Botinterne Umfrage ansehen, abstimmen und Ergebnisse lesen; Erstellen/Beenden im Dashboard |
-| `!pet`, `!feed`, `!play`, `!petcare`, `!petstats`, `!petname`, `!petevolution`, `!pethelp` | Community-Drache ansehen und gemeinschaftlich pflegen; Cooldowns und begrenzte Werte |
+| `!pet`, `!feed`, `!play`, `!petcare`, `!petstats`, `!petname`, `!petevolution`, `!pethelp` | Elio 🐱 ansehen, füttern, pflegen und mit ihm spielen; Cooldowns und begrenzte Werte |
 | `!setpetname NAME`, `!petpause`, `!petresume` | Nur Jannik: Pet umbenennen, Pflege pausieren oder fortsetzen |
 | `!claim`, `!drop`, `!dropstats`, `!drops` | Kostenlos an einem laufenden Mystery Drop teilnehmen oder Regeln/Status ansehen |
 | `!startdrop [Seltenheit]`, `!canceldrop`, `!dropconfig` | Jannik/Mods: Drop manuell starten/abbrechen; Automatik bleibt aus |

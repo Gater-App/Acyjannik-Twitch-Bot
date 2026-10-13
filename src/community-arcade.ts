@@ -21,7 +21,7 @@ const DEFAULT_CHALLENGES:ReadonlyArray<{id:string;title:string;actionType:ChaosW
   {id:'builtin:pistols',title:'Fünf Minuten nur Pistolen',actionType:'manual_challenge'},
   {id:'builtin:next-quest',title:'Jannick wählt eine Community-Quest',actionType:'manual_challenge'},
   {id:'builtin:gaming-quiz',title:'Zeit für ein Gaming-Quiz',actionType:'manual_challenge'},
-  {id:'builtin:pet-energy',title:'Der Drache bekommt einen Energieschub!',actionType:'boost_pet'},
+  {id:'builtin:pet-energy',title:'Elio bekommt einen Energieschub!',actionType:'boost_pet'},
   {id:'builtin:mystery-drop',title:'Mystery Drop für den Chat',actionType:'start_mystery_drop'},
 ];
 const LIMITS: Record<string,number> = { common:5,rare:10,epic:20,legendary:35,community:10 };
@@ -48,7 +48,7 @@ export class CommunityArcade {
     return this.store.miniGameQuery(db=>{
       if(type==='pet'){
         const p=this.toPet(db.prepare('SELECT * FROM community_pet WHERE id=1').get() as PetRow);
-        return {type,visible:this.settings().petEnabled,pet:p,capturedAt:now};
+        return {type,visible:this.settings().petEnabled,pet:{...p,stageLabel:stageLabel(p.stage)},capturedAt:now};
       }
       if(type==='drop'){
         const d=db.prepare("SELECT * FROM mystery_drops WHERE status IN ('announced','claiming','resolving','completed') ORDER BY created_at DESC LIMIT 1").get() as {id:string;rarity:string;status:string;starts_at:number;ends_at:number;result_json:string|null;resolved_at:number|null}|undefined;
@@ -64,21 +64,21 @@ export class CommunityArcade {
   handle(m:ChatMessage,command:string,args:string[],now=Date.now()):string|undefined {
     const s=this.settings(), admin=m.senderUserId===this.broadcasterId, mod=admin||m.isModerator===true;
     if(['pet','feed','play','petcare','petstats','petname','pethelp','petevolution','setpetname','petpause','petresume'].includes(command)){
-      if(!s.petEnabled&&command!=='pethelp')return '🐉 Das Community-Pet ist derzeit pausiert.';
-      if(command==='pethelp')return '🐉 !pet · !feed · !play · !petcare · !petstats · !petevolution. Pflege-Cooldown: 2 Min.';
+      if(!s.petEnabled&&command!=='pethelp')return 'Elio macht gerade Pause; die Katzenpflege ist derzeit deaktiviert.';
+      if(command==='pethelp')return 'Elio 🐱: !pet Zustand · !feed Katzenfutter · !play Spielangel/Wollknäuel · !petcare Pflege · !petstats Werte. Auch !petname und !petevolution bleiben verfügbar. Cooldown: 2 Min.';
       if(command==='pet'||command==='petstats'||command==='petname'||command==='petevolution'){
-        const p=this.pet(); if(command==='petname')return `🐉 Unser Drache heißt ${p.name}.`;
-        if(command==='petevolution')return `🐉 ${p.name}: ${stageLabel(p.stage)} · Level ${p.level}. Nächste Stufe: ${nextStage(p.stage)}.`;
-        return `🐉 ${p.name} · ${stageLabel(p.stage)} · Level ${p.level} · Sättigung ${p.hunger}% · Freude ${p.happiness}% · Energie ${p.energy}%.`;
+        const p=this.pet(); if(command==='petname')return `Elio heißt aktuell ${p.name}.`;
+        if(command==='petevolution')return `${p.name}: ${stageLabel(p.stage)} · Level ${p.level}. Nächste Lebensphase: ${nextStage(p.stage)}.`;
+        return `${p.name} 🐱 · ${stageLabel(p.stage)} · Level ${p.level} · Sättigung ${p.hunger}% · Zufriedenheit ${p.happiness}% · Energie ${p.energy}%.`;
       }
       if(command==='setpetname'){
         if(!admin)return '⛔ Nur Jannik darf den Pet-Namen ändern.';
-        const name=clean(args.join(' '),24);if(name.length<2)return '🐉 Bitte einen Namen mit 2–24 Zeichen angeben.';
-        this.store.miniGameTransaction(db=>db.prepare("UPDATE community_pet SET name=?,animation='happy',updated_at=? WHERE id=1").run(name,now));return `🐉 Unser Drache heißt jetzt ${name}!`;
+        const name=clean(args.join(' '),24);if(name.length<2)return 'Bitte einen Namen mit 2–24 Zeichen angeben.';
+        this.store.miniGameTransaction(db=>db.prepare("UPDATE community_pet SET name=?,animation='happy',updated_at=? WHERE id=1").run(name,now));return `Elio 🐱 heißt jetzt ${name}!`;
       }
       if(command==='petpause'||command==='petresume'){
         if(!admin)return '⛔ Nur Jannik darf Pflege pausieren oder fortsetzen.';
-        this.store.miniGameTransaction(db=>db.prepare("UPDATE community_pet SET paused=?,animation='idle',updated_at=? WHERE id=1").run(command==='petpause'?1:0,now));return command==='petpause'?'🐉 Pet-Interaktionen pausiert.':'🐉 Pet-Interaktionen fortgesetzt.';
+        this.store.miniGameTransaction(db=>db.prepare("UPDATE community_pet SET paused=?,animation='idle',updated_at=? WHERE id=1").run(command==='petpause'?1:0,now));return command==='petpause'?'Elio 🐱 macht eine Pflegepause.':'Elio 🐱 ist wieder für Pflege und Spiel bereit.';
       }
       const kind=command==='feed'?'feed':command==='play'?'play':'care';
       return this.interact(m,kind,s,now);
@@ -114,8 +114,8 @@ export class CommunityArcade {
     return undefined;
   }
   tick(now=Date.now()):string[] { return this.tickMessages(now).map(item=>item.message); }
-  tickMessages(now=Date.now()):Array<{message:string;category:'wheel'|'drop'|'dragon'}> {
-    const out:Array<{message:string;category:'wheel'|'drop'|'dragon'}>=[];
+  tickMessages(now=Date.now()):Array<{message:string;category:'wheel'|'drop'|'pet'}> {
+    const out:Array<{message:string;category:'wheel'|'drop'|'pet'}>=[];
     const completedChallenge=this.store.miniGameTransaction(db=>{
       const active=db.prepare("SELECT id,title FROM chaos_wheel_spins WHERE status='active' AND ends_at<=? ORDER BY created_at DESC LIMIT 1").get(now) as {id:string;title:string}|undefined;
       if(!active)return undefined;
@@ -136,7 +136,7 @@ export class CommunityArcade {
     if(due){
       for(const c of due.claims)this.store.awardXp(`drop:${due.id}:${c.user_id}`,c.user_id,c.display_name,due.amount,'bonus:mystery-drop',now,50);
       out.push({message:due.claims.length
-        ?`🎁 Der Mystery Drop ist geöffnet! ${due.claims.length} ${due.claims.length===1?'Person erhält':'Personen erhalten'} je ${due.amount} XP. Danke fürs Mitmachen – der Drache freut sich!`
+        ?`🎁 Der Mystery Drop ist geöffnet! ${due.claims.length} ${due.claims.length===1?'Person erhält':'Personen erhalten'} je ${due.amount} XP. Danke fürs Mitmachen – Elio schnurrt schon!`
         :'🎁 Der Mystery Drop ist vorbei – diesmal hat niemand mitgemacht. Beim nächsten Mal mit !claim dabei sein!',category:'drop'});
     }
     const batch=this.store.miniGameTransaction(db=>{
@@ -152,7 +152,7 @@ export class CommunityArcade {
       db.prepare(`UPDATE community_pet_interactions SET announced_at=? WHERE event_id IN (${placeholders}) AND announced_at IS NULL`).run(now,...ids);
       return {participants:participants.size,actions:rows.length};
     });
-    if(batch){this.store.setConfig('pet_chat_batch_last_at',now);out.push({message:`🐉 Gemeinschafts-Power: ${batch.participants} Zuschauer haben in letzter Zeit ${batch.actions} Aktionen mit dem Community-Pet geteilt. Danke, dass ihr euch gemeinsam um den Drachen kümmert!`,category:'dragon'});}
+    if(batch){this.store.setConfig('pet_chat_batch_last_at',now);out.push({message:`Elio schnurrt: ${batch.participants} aus dem Chat haben ihn mit ${batch.actions} Aktionen gepflegt. Danke, dass ihr euch gemeinsam um die Katze kümmert!`,category:'pet'});}
     this.store.miniGameTransaction(db=>{
       db.prepare("UPDATE community_pet SET hunger=MAX(20,hunger-MIN(5,MAX(0,CAST((?-updated_at)/86400000 AS INTEGER)))),energy=MIN(100,energy+MIN(5,MAX(0,CAST((?-updated_at)/86400000 AS INTEGER)))),updated_at=updated_at+MAX(0,CAST((?-updated_at)/86400000 AS INTEGER))*86400000 WHERE id=1 AND ?-updated_at>=86400000").run(now,now,now,now);
       db.prepare("UPDATE community_pet SET animation=CASE WHEN paused=1 THEN 'sleep' WHEN animation IN ('feed','play','care','happy','drop','levelup','evolution') AND updated_at<? THEN 'idle' ELSE animation END WHERE id=1").run(now-12000);
@@ -190,6 +190,12 @@ export class CommunityArcade {
     else if(available.length<2||total<=0)reason='Es werden mindestens zwei aktuell verfügbare Rad-Felder benötigt.';
     return {enabled:settings.wheelEnabled,autoPilotEnabled:settings.wheelAutoPilotEnabled&&!this.store.config('arcade_wheel_paused',false),canSpin:reason==='Bereit für den nächsten Dreh.',reason,nextSpinAt,activeAction:active??(activeDrop?{actionType:'start_mystery_drop',title:activeDrop.sourceSpinId?'Mystery Drop vom Glücksrad':'Mystery Drop',endsAt:activeDrop.endsAt}:null),entries:available.map(x=>({...x,probability:total?Math.round(x.weight/total*1000)/10:0,automation:x.actionType==='manual_challenge'?'Jannick spielt die Aufgabe selbst; der Bot prüft keinen Erfolg.':'Wird vom Bot automatisch ausgeführt.'}))};
   }
+  spinActionTypeAt(now:number):ChaosWheelActionType|undefined {
+    return this.store.miniGameQuery(db=>{
+      const row=db.prepare('SELECT action_type FROM chaos_wheel_spins WHERE created_at=? ORDER BY rowid DESC LIMIT 1').get(now) as {action_type:ChaosWheelActionType}|undefined;
+      return row?.action_type;
+    });
+  }
   emergencyStop(now=Date.now()):string{
     const active=this.store.miniGameTransaction(db=>{
       const row=db.prepare("SELECT id FROM chaos_wheel_spins WHERE status='active' ORDER BY created_at DESC LIMIT 1").get() as {id:string}|undefined;
@@ -207,8 +213,8 @@ export class CommunityArcade {
   private interact(m:ChatMessage,kind:'feed'|'play'|'care',s:ArcadeSettings,now:number):string {
     return this.store.miniGameTransaction(db=>{
       const p=db.prepare('SELECT * FROM community_pet WHERE id=1').get() as PetRow;
-      if(p.paused)return '🐉 Das Pet macht gerade Pause.';
-      if(db.prepare('SELECT 1 FROM community_pet_interactions WHERE event_id=?').get(m.eventId))return '🐉 Diese Interaktion wurde bereits verarbeitet.';
+      if(p.paused)return 'Elio macht gerade Pause.';
+      if(db.prepare('SELECT 1 FROM community_pet_interactions WHERE event_id=?').get(m.eventId))return 'Diese Elio-Interaktion wurde bereits verarbeitet.';
       const previous=db.prepare('SELECT MAX(created_at) at FROM community_pet_interactions WHERE user_id=?').get(m.senderUserId) as {at:number|null};
       if(previous.at&&now-previous.at<s.petCooldownMs)return `⏳ Bitte noch ${Math.ceil((s.petCooldownMs-(now-previous.at))/1000)}s bis zur nächsten Pet-Aktion warten.`;
       const hunger=kind==='feed'?Math.min(100,p.hunger+8):p.hunger;
@@ -219,7 +225,7 @@ export class CommunityArcade {
       db.prepare('INSERT INTO community_pet_interactions(event_id,user_id,kind,created_at) VALUES(?,?,?,?)').run(m.eventId,m.senderUserId,kind,now);
       db.prepare('DELETE FROM community_pet_interactions WHERE created_at<?').run(now-7*86_400_000);
       db.prepare('UPDATE community_pet SET hunger=?,happiness=?,energy=?,xp=?,level=?,stage=?,animation=?,updated_at=? WHERE id=1').run(hunger,happiness,energy,xp,level,stage,animation,now);
-      return kind==='feed'?`🐉 @${clean(m.senderDisplayName,32)} füttert ${p.name}! Sättigung ${hunger}%, Freude ${happiness}%.`:kind==='play'?`✨ @${clean(m.senderDisplayName,32)} spielt mit ${p.name}! +5 Pet-XP (Level ${level}).`:`💚 @${clean(m.senderDisplayName,32)} pflegt ${p.name}. Freude ${happiness}%.`;
+      return kind==='feed'?`@${clean(m.senderDisplayName,32)} gibt ${p.name} Katzenfutter oder ein Leckerli. Sättigung ${hunger}%, Zufriedenheit ${happiness}%.`:kind==='play'?`@${clean(m.senderDisplayName,32)} spielt mit ${p.name} an der Spielangel oder mit dem Wollknäuel. +5 Elio-XP (Level ${level}).`:`@${clean(m.senderDisplayName,32)} kümmert sich um ${p.name}. Zufriedenheit ${happiness}%, Energie ${energy}%.`;
     });
   }
   private startDrop(actor:string,now:number,rarityArg?:string):string {
@@ -256,7 +262,7 @@ export class CommunityArcade {
       if(selected.action_type==='boost_pet'){
         db.prepare("UPDATE community_pet SET energy=MIN(100,energy+10),happiness=MIN(100,happiness+5),animation='happy',updated_at=? WHERE id=1").run(now);
         db.prepare("UPDATE chaos_wheel_spins SET resolved_at=? WHERE id=?").run(now,id);
-        return `🎡 Ergebnis: ${selected.title}! Der Drache erhält automatisch +10 Energie und +5 Freude.`;
+        return `Ergebnis: ${selected.title}! Elio erhält automatisch +10 Energie und +5 Zufriedenheit.`;
       }
       if(selected.action_type==='start_mystery_drop'){
         const announcement=this.insertDrop(db,`wheel:${id}`,now,'common',id);
@@ -278,5 +284,5 @@ function dropRarityLabel(rarity:string):string {
   return ({common:'Gewöhnlicher Drop',rare:'Seltener Drop',epic:'Epischer Drop',legendary:'Legendärer Drop',community:'Community-Drop'} as Record<string,string>)[rarity]??'Mystery Drop';
 }
 function stageFor(level:number):PetState['stage'] { return level>=25?'legendary':level>=15?'adult':level>=8?'young':level>=3?'baby':'egg'; }
-function stageLabel(s:PetState['stage']):string { return ({egg:'Drachenei',baby:'Baby-Drache',young:'Jungdrache',adult:'Erwachsener Drache',legendary:'Legendärer Drache'})[s]; }
-function nextStage(s:PetState['stage']):string { return ({egg:'Level 3 · Baby-Drache',baby:'Level 8 · Jungdrache',young:'Level 15 · Erwachsener Drache',adult:'Level 25 · Legendärer Drache',legendary:'Maximale Entwicklungsstufe erreicht'})[s]; }
+function stageLabel(s:PetState['stage']):string { return ({egg:'Kätzchen',baby:'Jungkatze',young:'Erwachsene Katze',adult:'Erfahrene Katze',legendary:'Legendäre Community-Katze'})[s]; }
+function nextStage(s:PetState['stage']):string { return ({egg:'Level 3 · Jungkatze',baby:'Level 8 · Erwachsene Katze',young:'Level 15 · Erfahrene Katze',adult:'Level 25 · Legendäre Community-Katze',legendary:'Höchste Lebensphase erreicht'})[s]; }

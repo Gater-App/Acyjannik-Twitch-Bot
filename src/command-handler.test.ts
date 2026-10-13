@@ -88,6 +88,8 @@ test('!help bietet kurze Themenhilfe und schützt die Admin-Übersicht', async (
   const { config, database, handler } = setup({ appChatMessageLength: 450 });
   const menu = await handler.handle(message(config, '!help', 'viewer-1'), 1_000);
   assert.match(menu[0]?.message || '', /!help spiele/u);
+  const pet = await handler.handle(message(config, '!help pet', 'viewer-2'), 1_001);
+  assert.equal(pet[0]?.category,'pet');
   assert.equal(menu[0]?.category,'help');
   assert.ok((menu[0]?.message.length || 0) <= config.appChatMessageLength);
   assert.deepEqual(await handler.handle(message(config, '!help games', 'viewer-1'),1_100),[],'kurzer Cooldown bremst wiederholte Hilfe');

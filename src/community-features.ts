@@ -91,7 +91,8 @@ export class CommunityFeatures {
     const miniGameResponse = this.miniGames.handle(message, command, args, now);
     if (miniGameResponse !== undefined) return say(miniGameResponse);
     const arcadeResponse = this.arcade.handle(message,command,args,now);
-    if (arcadeResponse !== undefined) return say(arcadeResponse);
+    if (arcadeResponse !== undefined) return say(arcadeResponse,
+      (command==='spin'||command==='startwheel')&&this.arcade.spinActionTypeAt(now)==='boost_pet'?'pet':undefined);
     const questPollResponse = this.questPoll.handle(message, command, args, now);
     if (questPollResponse !== undefined) return questPollResponse ? say(questPollResponse) : [];
 

@@ -134,7 +134,7 @@ async function runLiveMode(): Promise<void> {
       const command=chatMessage.message.trim().split(/\s+/u)[0]?.toLowerCase()||'';
       if(command.startsWith('!'))logger.info('Twitch-Chatbefehl verarbeitet.',{command:/^![a-z0-9_-]{1,32}$/u.test(command)?command:'!other',replyCount:replies.length});
       for (const reply of replies) {
-        if (['drop','wheel','imposter','detective','quest','poll','season','dragon','boss','attack'].includes(reply.category || '')) lastSpecialAnnouncementAt = Date.now();
+        if (['drop','wheel','imposter','detective','quest','poll','season','pet','boss','attack'].includes(reply.category || '')) lastSpecialAnnouncementAt = Date.now();
         if (!chatPolicy.shouldSend({ command: command.startsWith('!') ? command : '', message: reply.message })) continue;
         try { await queue.enqueue(reply.message, reply.replyParentMessageId, reply.category); }
         catch { /* SendQueue logs the safe transport failure; EventSub stays connected. */ }

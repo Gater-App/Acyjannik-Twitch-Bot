@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
+import BetterSqlite3 from 'better-sqlite3';
 import { FeatureStore } from './feature-store.js';
 import { CommunityArcade } from './community-arcade.js';
 import { communityWidgetHtml } from './dashboard-community-ui.js';
@@ -11,8 +12,9 @@ function message(user:string,event:string,text:string):ChatMessage{return {event
 
 test('Community-Pet bleibt gemeinschaftlich, begrenzt Werte und dedupliziert Events',()=>{
   const {store,arcade}=setup();arcade.updateSettings({...arcade.settings(),petEnabled:true});
-  const before=arcade.pet();assert.equal(before.stage,'egg');
-  assert.match(arcade.handle(message('u1','e1','!feed'),'feed',[],1000)||'',/füttert/u);
+  const before=arcade.pet();assert.equal(before.stage,'egg');assert.equal(before.name,'Elio');
+  assert.match(arcade.handle(message('viewer','status','!pet'),'pet',[],999)||'',/Elio 🐱 · Kätzchen/u);
+  assert.match(arcade.handle(message('u1','e1','!feed'),'feed',[],1000)||'',/Katzenfutter/u);
   assert.match(arcade.handle(message('u1','e1','!feed'),'feed',[],1001)||'',/bereits verarbeitet/u);
   assert.equal(arcade.pet().hunger,78);
   assert.match(arcade.handle(message('u1','e2','!play'),'play',[],2000)||'',/noch/u);
@@ -20,14 +22,35 @@ test('Community-Pet bleibt gemeinschaftlich, begrenzt Werte und dedupliziert Eve
   store.close();
 });
 
+test('Elio-Befehle, Katzen-Lebensphasen, Bonus und OBS zeigen keine Drachen-UI',()=>{
+  const {store,arcade}=setup(()=>0);arcade.updateSettings({...arcade.settings(),petEnabled:true,wheelEnabled:true});
+  assert.match(arcade.handle(message('u1','play','!play'),'play',[],1000)||'',/Spielangel oder mit dem Wollknäuel/u);
+  assert.match(arcade.handle(message('u2','care','!petcare'),'petcare',[],1000)||'',/kümmert sich um Elio/u);
+  assert.match(arcade.handle(message('u3','stats','!petstats'),'petstats',[],1000)||'',/Kätzchen.*Level 1/u);
+  const snap=arcade.snapshot('pet') as {pet:{stageLabel:string}};assert.equal(snap.pet.stageLabel,'Kätzchen');
+  const widget=communityWidgetHtml('pet','nonce',34,'graphite');assert.match(widget,/🐱/u);assert.match(widget,/stageLabel\|\|d\.stage/u);assert.doesNotMatch(widget,/🐉|Drachenei|Baby-Drache|Jungdrache|Erwachsener Drache/u);
+  const challenge=arcade.manageChallenges().find(x=>x.id==='builtin:pet-energy');assert.equal(challenge?.title,'Elio bekommt einen Energieschub!');
+  store.close();
+});
+
+test('Versionierte Elio-Migration ersetzt nur den alten Standardnamen und erhält Namen, Level und XP',()=>{
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'elio-pet-migration-'));const sub=path.join(directory,'data');fs.mkdirSync(sub);
+  const legacyPath=path.join(sub,'legacy.sqlite');let store=new FeatureStore(legacyPath);
+  store.miniGameTransaction(db=>{db.prepare("UPDATE community_pet SET name='Fünkchen',level=2,xp=125 WHERE id=1").run();db.prepare("UPDATE chaos_wheel_challenges SET title='Der Drache bekommt einen Energieschub!' WHERE id='builtin:pet-energy'").run();db.prepare('DELETE FROM schema_migrations WHERE version=13').run()});store.close();
+  store=new FeatureStore(legacyPath);assert.equal(new CommunityArcade(store,'broadcaster').pet().name,'Elio');assert.equal(new CommunityArcade(store,'broadcaster').pet().level,2);assert.equal(new CommunityArcade(store,'broadcaster').pet().xp,125);
+  assert.equal(new CommunityArcade(store,'broadcaster').manageChallenges().find(x=>x.id==='builtin:pet-energy')?.title,'Elio bekommt einen Energieschub!');store.close();
+  const customPath=path.join(sub,'custom.sqlite');store=new FeatureStore(customPath);store.miniGameTransaction(db=>{db.prepare("UPDATE community_pet SET name='Miez',level=17,xp=1650 WHERE id=1").run();db.prepare('DELETE FROM schema_migrations WHERE version=13').run()});store.close();
+  store=new FeatureStore(customPath);const preserved=new CommunityArcade(store,'broadcaster').pet();assert.equal(preserved.name,'Miez');assert.equal(preserved.level,17);assert.equal(preserved.xp,1650);store.close();fs.rmSync(directory,{recursive:true,force:true});
+});
+
 test('Community-Aktionen werden nur aus gespeicherten, deduplizierten Interaktionen gebündelt und nach Neustart nicht wiederholt',()=>{
   const {store,arcade}=setup();arcade.updateSettings({...arcade.settings(),petEnabled:true});
-  for(const user of ['u1','u2','u3'])assert.match(arcade.handle(message(user,`pet-${user}`,'!feed'),'feed',[],10_000)||'',/füttert/u);
-  const notice=arcade.tick(10_001).find(text=>text.includes('Gemeinschafts-Power'));
-  assert.match(notice||'',/3 Zuschauer.*3 Aktionen/u);
-  assert.equal(arcade.tick(10_002).some(text=>text.includes('Gemeinschafts-Power')),false);
+  for(const user of ['u1','u2','u3'])assert.match(arcade.handle(message(user,`pet-${user}`,'!feed'),'feed',[],10_000)||'',/Katzenfutter/u);
+  const notice=arcade.tick(10_001).find(text=>text.includes('Elio schnurrt'));
+  assert.match(notice||'',/3 aus dem Chat.*3 Aktionen/u);
+  assert.equal(arcade.tick(10_002).some(text=>text.includes('Elio schnurrt')),false);
   const afterRestart=new CommunityArcade(store,'broadcaster');
-  assert.equal(afterRestart.tick(10_003).some(text=>text.includes('Gemeinschafts-Power')),false);
+  assert.equal(afterRestart.tick(10_003).some(text=>text.includes('Elio schnurrt')),false);
   const rows=store.miniGameQuery(db=>(db.prepare('SELECT COUNT(*) n FROM community_pet_interactions WHERE announced_at IS NOT NULL').get() as {n:number}).n);
   assert.equal(rows,3);
   store.close();

@@ -11,7 +11,7 @@ Der lokale TypeScript-Build ist erfolgreich; `npm run check` besteht mit **61/61
 
 Das belegt lokale Logik und gemockte Integrationen – nicht, dass Twitch-OAuth, Chatversand, öffentliches HTTPS, OBS von einem externen Rechner oder Oracle live funktionieren. Es wurde nichts gepusht, kein Twitch-Kanal verändert und nichts auf Oracle deployed.
 
-**Wichtige Einschränkung:** Community-Pet, Mystery Drops und Chaos Wheel sind eine getestete MVP-Ausbaustufe, nicht der vollständige Funktionsumfang aus dem Auftrag. Bei Mystery-Drop-XP gibt es außerdem ein Crash-Fenster zwischen dem persistenten Abschluss des Drops und der separaten XP-Gutschrift. Bis das atomar gelöst und die unten genannten Arcade-Punkte entschieden sind, diese drei Features nicht live aktivieren.
+**Wichtige Einschränkung:** Elio 🐱, Mystery Drops und Chaos Wheel sind eine getestete MVP-Ausbaustufe, nicht der vollständige Funktionsumfang aus dem Auftrag. Bei Mystery-Drop-XP gibt es außerdem ein Crash-Fenster zwischen dem persistenten Abschluss des Drops und der separaten XP-Gutschrift. Bis das atomar gelöst und die unten genannten Arcade-Punkte entschieden sind, diese drei Features nicht live aktivieren.
 
 ## Prüfungsmethode und Umgebung
 
@@ -83,7 +83,7 @@ Das belegt lokale Logik und gemockte Integrationen – nicht, dass Twitch-OAuth,
 
 **Fehlt/vor Live nötig:** Jannik muss Teilnehmerhinweis/Datenschutzhinweis und öffentliche Wiedergabe freigeben. Aufbewahrungsfrist, Löschablauf und die tatsächliche öffentlich abrufbare HTTPS-Seite müssen vor Aktivierung geprüft werden. Kein pauschaler DSGVO-Konformitätsnachweis.
 
-### 11. Community-Pet, Mystery Drops und Chaos Wheel
+### 11. Elio 🐱, Mystery Drops und Chaos Wheel
 
 **Funktioniert/lokal belegt:**
 
@@ -97,10 +97,10 @@ Das belegt lokale Logik und gemockte Integrationen – nicht, dass Twitch-OAuth,
 1. **Drop-XP ist nicht atomar mit der Drop-Auflösung.** Der Drop wird zuerst als `completed` committed, anschließend werden XP-Einträge separat geschrieben. Ein Prozessabbruch dazwischen lässt den Drop abgeschlossen, aber die XP fehlen; beim Neustart wird er nicht erneut aufgelöst.
 2. **Pet-Fortschritt hat keinen globalen Zeitraumdeckel.** Es existiert ein per-User-Cooldown, aber keine globale Fortschrittsbegrenzung; viele Accounts können gemeinsam sehr schnell Pet-XP/Level farmen.
 3. **Wheel-Widget dreht technisch nicht sichtbar.** Der Spin wird sofort als `completed` gespeichert; die CSS-Drehanimation wird nur für `spinning` angewendet. Das Ergebnis ist da, die angeforderte synchronisierte Dreh-Animation nicht.
-4. **Nicht bestätigte Wheel-Auswahl kann bereits das Pet ändern.** Enthält ein Challenge-Titel den Text „Drache“, werden Energie/Zufriedenheit sofort geändert – noch bevor Jannik die Challenge annimmt und auch dann, wenn das Pet-Modul aus ist. Das widerspricht der angekündigten Bestätigung und muss in eine explizite, idempotente Bestätigungsaktion überführt werden.
+4. **Wheel-Bonusaktion prüfen:** Die Ausführung muss ausschließlich über den gespeicherten Aktionstyp `boost_pet` erfolgen, nie über Titeltext. Der Bonus heißt im sichtbaren Bereich Elio-Bonus und ist nur auswählbar, wenn das Pet-Modul verfügbar ist.
 5. Ein Drop mit Claims verändert ebenfalls Pet-XP/-Freude automatisch, unabhängig davon, ob das Pet aktiviert ist. Das braucht ein klares Feature-Flag/Opt-in und eine idempotente Cross-Feature-Aktion.
 6. `autoDrops` ist nur ein gespeicherter Schalter ohne Scheduler. Drop-Seltenheit ist eine manuelle Auswahl mit festen XP-Werten, keine gewichtete Seltenheitsauswahl. Community-Meilensteine, Kosmetik, Titel und andere Belohnungstypen fehlen.
-7. Pet-Kosmetik/-Sammlung, ein echtes individuelles SVG-Drachenmotiv, vollständige Evolutions-/Meilenstein-Konfiguration und Dashboard-Namens-/Kurvenverwaltung fehlen. Die Animationsdarstellung verwendet derzeit Emoji.
+7. Elio-Kosmetik/-Sammlung, eine individuelle Katzenillustration, konfigurierbare Lebensphasen/Meilensteine und Dashboard-Namens-/Kurvenverwaltung sind nicht Bestandteil des aktuellen Umfangs. Die Widget-Animation verwendet derzeit ein Katzen-Emoji.
 8. Wheel-Challenges lassen sich über den API-Upsert hinzufügen/ändern, aber das Dashboard bietet nur Hinzufügen und eine JSON-Anzeige; komfortables Bearbeiten, Archivieren/Entfernen, Historie und Freigabezustände fehlen. Eine Rad-Challenge startet weder Quest noch Drop als echte Aktion.
 9. Drop-Dashboard bietet keine vollständige Status-/Konfigurations-/Historienverwaltung; `!dropconfig` ist nur ein statischer Verweis. Automatik-, Wahrscheinlichkeits- und Belohnungswerte sind nicht im UI konfigurierbar.
 10. Es fehlen spezifische Tests für Absturz genau zwischen Dropstatus und XP, Wiederanlauf/Idempotenz von Wheel und Drop, gewichtete Verteilungsgrenzen, globale Anti-Farming-Limits, OBS-Neuverbindung/-Animation sowie neue Dashboard-API-/Widget-Endpunkte.

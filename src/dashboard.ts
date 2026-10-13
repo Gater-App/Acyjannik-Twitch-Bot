@@ -440,7 +440,7 @@ export class DashboardServer {
         else if(action==='emergency-stop')message=this.arcade.emergencyStop(now);
         else if(action==='challenge'){if(typeof body.title!=='string')throw new Error('Challenge-Titel fehlt.');const actionType=body.actionType??'manual_challenge';if(!['manual_challenge','start_mystery_drop','boost_pet'].includes(String(actionType)))throw new Error('Wheel-Aktion ist ungültig.');this.arcade.configureChallenge(body.title,boundedInt(body.weight,1,1,1000),true,undefined,actionType as ChaosWheelActionType);this.audit(session,'arcade-challenge','arcade',{},now);this.json(res,200,{ok:true});return;}
         else {this.json(res,400,{error:'Arcade-Aktion ungültig.'});return;}
-        if(message)await this.sendToChat?.(message,action==='start-drop'?'drop':'wheel');this.audit(session,'arcade-action',action,{},now);this.json(res,200,{ok:true,message});return;
+        if(message)await this.sendToChat?.(message,action==='start-drop'?'drop':action==='spin'&&this.arcade.spinActionTypeAt(now)==='boost_pet'?'pet':'wheel');this.audit(session,'arcade-action',action,{},now);this.json(res,200,{ok:true,message});return;
       }catch(error){this.json(res,400,{error:error instanceof Error?error.message:'Arcade-Aktion fehlgeschlagen.'});return;}
     }
     if (route === 'polls' || route === 'polls/quest-vote') {

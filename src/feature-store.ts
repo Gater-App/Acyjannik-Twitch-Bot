@@ -457,7 +457,7 @@ export class FeatureStore {
         CREATE TABLE IF NOT EXISTS chaos_wheel_spins(id TEXT PRIMARY KEY,challenge_id TEXT NOT NULL,title TEXT NOT NULL,status TEXT NOT NULL,created_by TEXT NOT NULL,created_at INTEGER NOT NULL,resolved_at INTEGER);
         INSERT OR IGNORE INTO feature_config(key,value) VALUES
           ('arcade_settings','{"petEnabled":false,"dropsEnabled":false,"wheelEnabled":false,"autoDrops":false,"petCooldownMs":120000,"dropDurationMs":60000,"wheelCooldownMs":300000}');
-        INSERT OR IGNORE INTO community_pet(id,name,updated_at) VALUES(1,'Fünkchen',unixepoch()*1000);
+        INSERT OR IGNORE INTO community_pet(id,name,updated_at) VALUES(1,'Elio',unixepoch()*1000);
         INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (7, unixepoch()*1000);
       `))();
     }
@@ -523,6 +523,18 @@ export class FeatureStore {
         if (!columns.has('ends_at')) this.db.exec('ALTER TABLE chaos_wheel_spins ADD COLUMN ends_at INTEGER');
         this.db.exec('INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (12, unixepoch()*1000);');
       })();
+    }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 13) {
+      if (currentVersion > 0) this.backupBeforeMigration(13);
+      this.db.transaction(() => this.db.exec(`
+        -- Change only the known seeded default; preserve any deliberately chosen community name.
+        UPDATE community_pet SET name='Elio' WHERE id=1 AND name='Fünkchen';
+        -- Keep the built-in bonus action and its ID, changing only its visible label.
+        UPDATE chaos_wheel_challenges SET title='Elio bekommt einen Energieschub!'
+          WHERE id='builtin:pet-energy' AND title='Der Drache bekommt einen Energieschub!' AND action_type='boost_pet';
+        INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (13, unixepoch()*1000);
+      `))();
     }
   }
 

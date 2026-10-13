@@ -21,7 +21,7 @@ const TIPS: CommunityTip[] = [
   { id: 'eightball', category: 'oracle', text: 'Du hast eine Frage? Stell sie dem Orakel mit !8ball FRAGE.' },
   { id: 'rps', category: 'rps', text: 'Lust auf eine schnelle Runde? Fordere das Bot-Orakel mit !rps stein heraus.' },
   { id: 'duel', category: 'duel', text: 'Fordere jemanden aus dem Chat heraus: !duel @Name.' },
-  { id: 'pet', category: 'dragon', text: 'Schau beim Community-Pet vorbei: !pet zeigt es, mit !feed kannst du es füttern.' },
+  { id: 'pet', category: 'pet', text: 'Lerne Elio kennen: !pet zeigt die Katze, !feed gibt Katzenfutter und !play startet ein Spiel.' },
   { id: 'quote', category: 'detective', text: 'Freiwillig ein Zitat einreichen? Erst !quoteoptin, dann !savequote TEXT.' },
   { id: 'quest', category: 'quest', text: 'Hast du eine Spielidee für alle? Schlage sie mit !quest TEXT vor.' },
   { id: 'xp', category: 'xp', text: 'Mit !level siehst du deinen Community-Fortschritt und deine XP.' },

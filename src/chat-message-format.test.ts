@@ -15,7 +15,8 @@ test('bekannte Chatbefehle erhalten ausdrücklich zugeordnete Kategorien', () =>
   const expected: Record<string, string> = {
     '!attack': 'attack', '!boss': 'boss', '!bosstop': 'boss', '!startboss': 'boss',
     '!trickortreat': 'halloween', '!gift': 'season', '!claim': 'drop', '!spin': 'wheel',
-    '!pet': 'dragon', '!imposter': 'imposter', '!wer': 'detective', '!quest': 'quest',
+    '!pet': 'pet', '!feed': 'pet', '!play': 'pet', '!petcare': 'pet', '!petstats': 'pet',
+    '!petname': 'pet', '!petevolution': 'pet', '!setpetname': 'pet', '!imposter': 'imposter', '!wer': 'detective', '!quest': 'quest',
     '!spark': 'ideas', '!poll': 'poll', '!8ball': 'oracle', '!duel': 'duel',
     '!guess': 'guess', '!rps': 'rps', '!level': 'xp', '!help': 'help',
     '!addcommand': 'custom',

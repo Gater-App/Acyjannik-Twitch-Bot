@@ -83,7 +83,7 @@ löschen, mit `!quoteoptout` ihre Zitate entfernen lassen.
 
 Diese drei Extras lassen sich getrennt einschalten:
 
-- **Pet:** Zuschauer pflegen gemeinsam ein Community-Pet; Chat-Hilfe: `!pethelp`.
+- **Elio 🐱:** Zuschauer versorgen die Community-Katze gemeinsam. `!pet` zeigt den Zustand, `!feed` füttert, `!play` startet ein Spiel mit der Spielangel oder dem Wollknäuel, `!petcare` pflegt und `!petstats` zeigt Werte und Fortschritt. `!pethelp` erklärt die Befehle.
 - **Überraschungs-Drop:** Jannik oder ein Moderator startet einen kostenlosen
   virtuellen Drop; Zuschauer nehmen während des Countdowns mit `!claim` teil.
 - **Glücksrad:** Jannik oder ein Moderator startet einen Dreh. Zuschauer können
