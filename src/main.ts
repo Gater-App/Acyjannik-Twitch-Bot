@@ -18,6 +18,7 @@ import { ChannelPointsService } from './channel-points.js';
 import type { QuestPolicy } from './feature-store.js';
 import { CommunityTips } from './community-tips.js';
 import { AutomaticChatMessages } from './automatic-chat-messages.js';
+import { SpotifySongRequests } from './song-requests.js';
 
 const isTestMode = process.argv.includes('--test') || process.env.TEST_MODE === 'true';
 
@@ -99,18 +100,26 @@ async function runLiveMode(): Promise<void> {
     config.maxChatMessageLength,
   );
   let channelPoints:ChannelPointsService|undefined;
+  let songRequests:SpotifySongRequests|undefined;
   let lastSpecialAnnouncementAt = 0;
   const eventsub = new EventSubClient(
     async (sessionId) => {
       await api.ensureChatSubscription(sessionId, config.broadcasterUserId, config.botUserId);
       if(channelPoints)try{await channelPoints.ensureSubscription(sessionId);}
       catch(error){logger.warn('Kanalpunkte-EventSub konnte nicht aktiviert werden; Chatbetrieb läuft weiter.',{error:error instanceof Error?error.message:'unbekannt'});}
+      if(songRequests)try{await songRequests.ensureSubscription(sessionId);}
+      catch(error){logger.warn('Song-Request-EventSub konnte nicht aktiviert werden; übriger Chatbetrieb läuft weiter.',{error:error instanceof Error?error.message:'unbekannt'});}
     },
     async (rawMessage) => {
       const payload=rawMessage.payload as Record<string,unknown>|undefined;
       const subscription=payload?.subscription as Record<string,unknown>|undefined;
       if(subscription?.type==='channel.channel_points_custom_reward_redemption.add'){
-        try{await channelPoints?.acceptEventSub(rawMessage);}
+        const payload=rawMessage.payload as Record<string,unknown>|undefined,event=payload?.event as Record<string,unknown>|undefined,reward=event?.reward as Record<string,unknown>|undefined;
+        const rewardId=String(reward?.id||'');
+        try{
+          if(songRequests?.settings().rewardId===rewardId)await songRequests.acceptEventSub(rawMessage);
+          else if(channelPoints?.settings().rewardId===rewardId)await channelPoints.acceptEventSub(rawMessage);
+        }
         catch(error){logger.error('Kanalpunkte-Einlösung konnte nicht verarbeitet werden.',{error:error instanceof Error?error.message:'unbekannt'});}
         return;
       }
@@ -243,9 +252,12 @@ async function runLiveMode(): Promise<void> {
       return {maxLength:settings.maxLength??180,queueLimit:settings.queueLimit??100,maxOpenPerUser:settings.maxOpenPerUser??2,
         cooldownMs:settings.cooldownMs??300_000,activeDurationMs:settings.activeDurationMs??0,completionXp:settings.completionXp??25};
     },logger);
+    const redemptionApi=new TwitchApi(config.clientId,redemptionOauth);
+    songRequests=new SpotifySongRequests(features,redemptionApi,redemptionOauth,config.broadcasterUserId,logger);
+    await songRequests.initialize();
     dashboard = new DashboardServer(features, () => ({twitchConnected:eventsub.isConnected,channel:config.channelLogin,startedAt:botStartedAt,...queue.snapshot(),chatResponse:chatPolicy.snapshot()}),
       logger,fetch,()=>community.conversationSpark.snapshot(),channelPoints,()=>oauthServer.startUrlFor('channel-points'),community.miniGames,community.arcade,
-      async(message,category)=>{await queue.enqueue(message,undefined,category);},chatPolicy,communityTips,automaticChatMessages);
+      async(message,category)=>{await queue.enqueue(message,undefined,category);},chatPolicy,communityTips,automaticChatMessages,songRequests);
     logger.info('OAuth-Server erreichbar unter http://127.0.0.1:3000/oauth/start');
     await dashboard.start();
     eventsub.start();

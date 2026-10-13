@@ -159,6 +159,10 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.match(html,/Privater OBS-Link/u);
     assert.match(html,/Erweiterte Einstellungen/u);
     assert.match(html,/Für Fortgeschrittene: Erkennung einstellen/u);
+    assert.match(html,/data-community-target="music"[^>]*>Song-Wünsche/u,'Song-Wünsche sind unter Community erreichbar');
+    assert.match(html,/Song wünschen“ für genau 1\.000 Kanalpunkte/u,'das feste Request-Entgelt wird verständlich angezeigt');
+    assert.match(html,/sr-connect[\s\S]*sr-playlists-load[\s\S]*sr-reward-create/u,'Spotify, Playlist und Reward lassen sich aus der Community-Ansicht einrichten');
+    assert.doesNotMatch(html,/sr-skip|sr-playback/u,'es gibt keine Wiedergabesteuerung');
     const runtimeStatus=await fetch(`${base}/dashboard/api/status`,{headers:{Cookie:sessionCookie}});
     const runtimeData=await runtimeStatus.json() as {dashboardResponding:boolean;chatReceive:string;botChatSend:string};
     assert.equal(runtimeData.dashboardResponding,true);
@@ -170,6 +174,9 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.equal(optionalChannelPointsData.available,false);
     assert.equal(optionalChannelPointsData.connected,false);
     assert.match(optionalChannelPointsData.message,/nicht eingerichtet/u);
+    const songRequests=await fetch(`${base}/dashboard/api/song-requests`,{headers:{Cookie:sessionCookie}});
+    assert.equal(songRequests.status,200);assert.equal((await songRequests.json() as {available:boolean}).available,false);
+    const privateSongRequests=await fetch(`${base}/dashboard/api/song-requests`);assert.equal(privateSongRequests.status,401,'Song-Request-Daten bleiben dashboardgeschützt');
     const emptyWidgetStatus=await fetch(`${base}/dashboard/api/widgets/status`,{headers:{Cookie:sessionCookie}});
     assert.equal((await emptyWidgetStatus.json() as {widgets:Record<string,boolean>}).widgets.quest,false);
     const welcomeBefore=await fetch(`${base}/dashboard/api/welcome`,{headers:{Cookie:sessionCookie}});

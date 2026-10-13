@@ -163,8 +163,8 @@ test('SQLite-Migration sichert die vorherige Datenbank und erhält Halloween-Pun
       DROP TABLE quest_cooldowns; DROP TABLE quests;
       DELETE FROM feature_config WHERE key IN ('quest_settings','poll_settings','widget_settings');
       UPDATE feature_config SET value='{"xp":true}' WHERE key='modules';
-      DROP TABLE channel_point_redemptions;
-      DELETE FROM feature_config WHERE key='channel_points_settings';
+      DROP TABLE channel_point_redemptions; DROP TABLE song_requests;
+      DELETE FROM feature_config WHERE key IN ('channel_points_settings','song_request_settings');
       DELETE FROM schema_migrations WHERE version>=4;`);
     raw.close();
     const before = fs.readdirSync(path.join(directory, 'backups')).length;
@@ -172,7 +172,7 @@ test('SQLite-Migration sichert die vorherige Datenbank und erhält Halloween-Pun
     assert.equal(store.score('halloween', 'viewer-1'), 7);
     store.close();
     const backups = fs.readdirSync(path.join(directory, 'backups'));
-    assert.equal(backups.length, before + 14, 'v4–v17 werden jeweils vor der Schemaänderung gesichert');
+    assert.equal(backups.length, before + 16, 'v4–v19 werden jeweils vor der Schemaänderung gesichert');
     const migrationV4 = backups.find((name) => name.includes('migration-v4-'))!;
     const newest = path.join(directory, 'backups', migrationV4);
     assert.equal(fs.statSync(newest).mode & 0o777, 0o600);

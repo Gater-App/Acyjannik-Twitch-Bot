@@ -132,6 +132,15 @@ zusätzliche Twitch-Freigabe von Jannik und eine passende Kanalpunkte-Belohnung.
 Eine Belohnung wird direkt in seinem Twitch-Kanal angelegt oder verknüpft. Lass
 das zunächst ausgeschaltet, bis Jannik das ausdrücklich möchte.
 
+Song-Wünsche sind eine getrennte optionale Funktion unter **Community → Song-Wünsche**.
+Jannik verbindet dort Spotify, wählt eine eigene Playlist und richtet eine
+Kanalpunkte-Belohnung für **1.000 Punkte** ein. Zuschauer geben Titel und Interpret
+oder einen Songlink ein. Der Bot ergänzt den Titel in der Playlist, steuert aber
+keine Wiedergabe und überspringt nichts. Spotify-Playlisten sind keine Erlaubnis,
+Spotify-Musik öffentlich im Stream abzuspielen; dafür ist eine separat zulässige
+Musikquelle erforderlich. Vor der Einrichtung müssen Spotify-App-Zugangsdaten
+und `https://DEINE-DOMAIN/dashboard/spotify/callback` registriert sein.
+
 ## Kurze Hilfe im Chat
 
 `!help` zeigt das Themenmenü. Nützlich sind außerdem `!help games`,

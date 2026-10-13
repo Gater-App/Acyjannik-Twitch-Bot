@@ -276,6 +276,33 @@ mit Testtext durchführen, private Dashboard-Annahme und Moderation prüfen,
 Fulfillment/Refund im Twitch-Dashboard gegenprüfen und erst danach den
 gewünschten Preis einstellen. Diese Anleitung löst keinen echten Test aus.
 
+## Song-Wünsche in Janniks Spotify-Playlist
+
+Die Funktion ist standardmäßig ausgeschaltet und benötigt Spotify-App-Zugangsdaten
+in `.env` (`SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`), den exakt registrierten
+Callback `https://DEINE-DOMAIN/dashboard/spotify/callback` sowie Janniks
+Spotify-OAuth. Redirect und OAuth-Token-Datei werden nicht in Git eingecheckt;
+das Token liegt getrennt mit Dateirechten 0600. Im Dashboard verbindet Jannik
+Spotify, wählt eine eigene Playlist und verknüpft/erstellt den Twitch-Kanalpunkte-
+Reward „🎵 Song wünschen“. Der Standardpreis beträgt 1.000 Kanalpunkte und die
+Einlösung verlangt Titel + Interpret oder einen Spotify-Songlink.
+
+Bei einer gültigen Einlösung löst der Bot den Song auf, fügt ihn einmalig der
+ausgewählten Playlist hinzu und schließt danach den Twitch-Reward ab. Ein
+unklarer Fehler nach einem Playlist-Schreibversuch wird nicht blind wiederholt;
+er erscheint zur Prüfung im Dashboard. Das System startet, steuert oder
+überspringt keine Wiedergabe. Eine Playlist-Ergänzung ist keine Freigabe für
+öffentliche Musikwiedergabe: Spotify weist in seinen [Developer Policies](https://developer.spotify.com/policy)
+die öffentliche Übertragung von Spotify-Inhalten zurück; Stream-Musik muss
+separat zulässig lizenziert sein. Details zur Playlist-API:
+[Add Items to Playlist](https://developer.spotify.com/documentation/web-api/reference/add-items-to-playlist).
+
+Die Funktion braucht Janniks Twitch-Broadcaster-OAuth mit dem vorhandenen Scope
+`channel:manage:redemptions`; es werden keine zusätzlichen Twitch-Scopes
+angefordert. Der Bot legt beim Verbinden keinen Reward an und aktiviert keine
+Musikwünsche automatisch. Einrichtung, Reward-Erstellung und Aktivierung sind
+separate Aktionen im Dashboard.
+
 ## Gesprächs-Funken (Conversation Spark)
 
 Der optionale Gesprächs-Funken wertet ausschließlich normale Nachrichten im

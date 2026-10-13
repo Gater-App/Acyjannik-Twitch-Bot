@@ -7,6 +7,7 @@ coverage/
 data/*.sqlite
 data/*.sqlite-*
 data/oauth-tokens.json
+data/spotify-tokens.json
 data/*.oauth-state*
 backups/
 .DS_Store

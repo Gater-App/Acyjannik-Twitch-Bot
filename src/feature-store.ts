@@ -573,6 +573,32 @@ export class FeatureStore {
         this.db.prepare('INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (17, ?)').run(now);
       })();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 18) {
+      if (currentVersion > 0) this.backupBeforeMigration(18);
+      this.db.transaction(() => this.db.exec(`
+        CREATE TABLE IF NOT EXISTS song_requests (
+          redemption_id TEXT PRIMARY KEY, reward_id TEXT NOT NULL, user_id TEXT NOT NULL, display_name TEXT NOT NULL,
+          user_input TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('processing','added','fulfillment_pending','rejected','needs_review')),
+          track_uri TEXT, track_name TEXT, track_artist TEXT, last_error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS song_requests_recent ON song_requests(created_at DESC);
+        INSERT OR IGNORE INTO feature_config(key,value) VALUES
+          ('song_request_settings','{"enabled":false,"rewardId":null,"rewardTitle":"🎵 Song wünschen","cost":1000,"playlistId":null,"playlistName":null}');
+        INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (18, unixepoch()*1000);
+      `))();
+    }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 19) {
+      if (currentVersion > 0) this.backupBeforeMigration(19);
+      this.db.transaction(() => {
+        const row=this.db.prepare("SELECT value FROM feature_config WHERE key='song_request_settings'").get() as {value:string}|undefined;
+        if(row)try{const value=JSON.parse(row.value) as Record<string,unknown>;
+          if(value.enabled===false&&value.rewardId==null&&value.playlistId==null&&value.cost===500){value.cost=1000;this.db.prepare("UPDATE feature_config SET value=? WHERE key='song_request_settings'").run(JSON.stringify(value));}}
+        catch{/* Keep an invalid legacy setting untouched for operator review. */}
+        this.db.prepare('INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (19, ?)').run(Date.now());
+      })();
+    }
   }
 
   private backupBeforeMigration(version: number): void {
