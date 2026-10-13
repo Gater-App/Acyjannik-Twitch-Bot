@@ -12,11 +12,12 @@ interface EventSubMessage {
 
 export class EventSubClient {
   private socket: WebSocket | undefined;
+  private pendingSocket: WebSocket | undefined;
   private stopped = true;
   private retryTimer: NodeJS.Timeout | undefined;
   private keepaliveTimer: NodeJS.Timeout | undefined;
   private retryAttempt = 0;
-  private reconnectUrl?: string;
+  private reconnectUrl: string | undefined;
   private keepaliveTimeoutSeconds = 10;
 
   get isConnected(): boolean { return this.socket?.readyState === WebSocket.OPEN; }
@@ -25,45 +26,77 @@ export class EventSubClient {
     private readonly onSessionReady: (sessionId: string) => Promise<void>,
     private readonly onNotification: (message: Record<string, unknown>) => Promise<void>,
     private readonly logger: Logger = consoleLogger,
+    private readonly initialUrl = DEFAULT_EVENTSUB_URL,
   ) {}
 
   start(): void {
     this.stopped = false;
     this.retryAttempt = 0;
-    this.connect(this.reconnectUrl || DEFAULT_EVENTSUB_URL);
+    this.reconnectUrl = undefined;
+    this.connect(this.initialUrl);
   }
 
   async stop(): Promise<void> {
     this.stopped = true;
     if (this.retryTimer) clearTimeout(this.retryTimer);
     if (this.keepaliveTimer) clearTimeout(this.keepaliveTimer);
-    await new Promise<void>((resolve) => {
-      if (!this.socket || this.socket.readyState === WebSocket.CLOSED) { resolve(); return; }
-      this.socket.once('close', () => resolve());
-      this.socket.close(1000, 'shutdown');
-    });
+    const sockets = [...new Set([this.socket, this.pendingSocket].filter((socket): socket is WebSocket => Boolean(socket)))];
+    this.socket = undefined;
+    this.pendingSocket = undefined;
+    await Promise.all(sockets.map((socket) => new Promise<void>((resolve) => {
+      if (socket.readyState === WebSocket.CLOSED) { resolve(); return; }
+      socket.once('close', () => resolve());
+      socket.close(1000, 'shutdown');
+    })));
   }
 
-  private connect(url: string): void {
+  private connect(url: string, reconnectUrlAttempt = false, handoffFrom?: WebSocket): void {
     if (this.stopped) return;
     this.logger.info('Verbinde EventSub-WebSocket.');
     const socket = new WebSocket(url);
-    this.socket = socket;
-    socket.on('open', () => { this.retryAttempt = 0; });
+    if (handoffFrom) this.pendingSocket = socket;
+    else this.socket = socket;
+    let welcomed = false;
     socket.on('message', (data) => {
-      void this.handleMessage(data.toString()).catch((error: unknown) => {
+      const raw = data.toString();
+      try {
+        const incoming = JSON.parse(raw) as EventSubMessage;
+        if (incoming.metadata?.message_type === 'session_welcome') {
+          welcomed = true;
+          if (reconnectUrlAttempt) {
+            this.reconnectUrl = undefined;
+            if (this.pendingSocket === socket) {
+              this.pendingSocket = undefined;
+              this.socket = socket;
+              handoffFrom?.close(1000, 'EventSub handoff complete');
+            }
+          }
+        }
+      } catch { /* handleMessage reports malformed frames where appropriate. */ }
+      void this.handleMessage(raw, !reconnectUrlAttempt).catch((error: unknown) => {
         this.logger.error('EventSub-Nachricht konnte nicht verarbeitet werden.', { error: error instanceof Error ? error.message : 'unbekannt' });
         socket.close();
       });
     });
     socket.on('error', (error) => this.logger.warn('EventSub-WebSocket-Fehler.', { error: error.message }));
     socket.on('close', () => {
-      if (this.socket === socket) this.socket = undefined;
-      if (!this.stopped) this.scheduleReconnect();
+      const wasActive = this.socket === socket;
+      if (wasActive) this.socket = undefined;
+      if (this.pendingSocket === socket) this.pendingSocket = undefined;
+      // Twitch reconnect URLs are single-use and short-lived. Never keep
+      // retrying one after its handoff socket failed to establish a session.
+      if (reconnectUrlAttempt && !welcomed) {
+        this.reconnectUrl = undefined;
+        if (handoffFrom && this.socket === handoffFrom) {
+          this.socket = undefined;
+          handoffFrom.close(1000, 'EventSub handoff failed');
+        }
+        if (!this.stopped) this.scheduleReconnect();
+      } else if (wasActive && !this.stopped) this.scheduleReconnect();
     });
   }
 
-  private async handleMessage(raw: string): Promise<void> {
+  private async handleMessage(raw: string, configureSubscriptions = true): Promise<void> {
     let message: EventSubMessage & Record<string, unknown>;
     try { message = JSON.parse(raw) as EventSubMessage & Record<string, unknown>; } catch { this.logger.warn('Ungültige EventSub-Nachricht ignoriert.'); return; }
     const type = message.metadata?.message_type;
@@ -72,7 +105,8 @@ export class EventSubClient {
       if (!session?.id) return;
       this.keepaliveTimeoutSeconds = session.keepalive_timeout_seconds || 10;
       this.armKeepalive(this.keepaliveTimeoutSeconds);
-      await this.onSessionReady(session.id);
+      if (configureSubscriptions) await this.onSessionReady(session.id);
+      this.retryAttempt = 0;
       return;
     }
     if (type === 'session_keepalive') {
@@ -81,8 +115,12 @@ export class EventSubClient {
     }
     if (type === 'session_reconnect') {
       const reconnectUrl = message.payload?.session?.reconnect_url;
-      if (reconnectUrl) this.reconnectUrl = reconnectUrl;
-      this.socket?.close(1000, 'reconnect requested');
+      if (reconnectUrl) {
+        this.reconnectUrl = reconnectUrl;
+        this.retryAttempt = 0;
+        const previous = this.socket;
+        if (previous) this.connect(reconnectUrl, true, previous);
+      }
       return;
     }
     if (type === 'notification') {
@@ -111,7 +149,8 @@ export class EventSubClient {
     this.logger.warn('EventSub-Verbindung getrennt; Reconnect geplant.', { delayMs: delay });
     this.retryTimer = setTimeout(() => {
       this.retryTimer = undefined;
-      this.connect(this.reconnectUrl || DEFAULT_EVENTSUB_URL);
+      const useReconnectUrl = Boolean(this.reconnectUrl);
+      this.connect(this.reconnectUrl || this.initialUrl, useReconnectUrl);
     }, delay);
   }
 }
