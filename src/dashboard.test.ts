@@ -100,6 +100,7 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     const streamer=await fetch(`${base}/streamer`,{headers:{Cookie:sessionCookie}});
     assert.equal(streamer.status,200);
     const streamerHtml=await streamer.text();
+    assert.match(streamerHtml,/dashboardPoll\('#stream-status',update,10000\)/u,'Streamerstatus aktualisiert sichtbar und mit Single-Flight statt alle drei Sekunden');
     assert.match(streamerHtml,/Streamer-Steuerung/u);
     assert.match(streamerHtml,/start-drop/u);
     assert.match(streamerHtml,/start-imposter/u);
@@ -115,6 +116,7 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.equal(page.status, 200);
     const html = await page.text();
     assertInlineScriptsParse(html);
+    assert.match(html,/dashboardPollVisible/u);assert.match(html,/Retry-After/u);assert.doesNotMatch(html,/setInterval\(refreshMini,3000\)|setInterval\(update,3000\)/u,'veraltete aggressive Minispiel-/Streamer-Polls sind nicht mehr aktiv');
     const csrf = html.match(/name="csrf" content="([a-f0-9]+)"/u)?.[1] || '';
     assert.ok(csrf);
     assert.match(html,/Eigene Nachrichten/u);assert.match(html,/Community-Tipps/u);assert.match(html,/automatic-chat-form/u);
@@ -299,6 +301,7 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.equal((await fetch(`${widgetBase}/quest?token=${widgetToken}`)).status, 200, 'Dashboard-Aufruf darf einen bestehenden OBS-Link nicht widerrufen');
     assert.match(widgetPage.headers.get('content-security-policy') || '', /connect-src 'self'/u);
     const widgetHtml = await widgetPage.text();
+    assert.match(widgetHtml,/widgets\/api\//u,'OBS-Widget nutzt die vorhandene Snapshot-API');assert.match(widgetHtml,/now-hit\.at<10000/u,'Widget-Snapshot-Abfragen werden mit SSE-Fallback zusammengefasst');
     assert.match(widgetHtml, /LIVE-QUEST/u);
     assertInlineScriptsParse(widgetHtml);
     const widgetSnapshotResponse = await fetch(`${widgetBase}/api/quest?token=${widgetToken}`);
@@ -308,12 +311,12 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.equal(widgetSnapshot.quest.title, 'Nächste Runde nur Pistolen');
     assert.equal('submitterUserId' in widgetSnapshot.quest, false);
     assert.equal((await fetch(`${widgetBase}/api/poll?token=${widgetToken}`)).status, 404, 'Quest-Token darf kein Poll-Widget lesen');
-    const streamController = new AbortController();
-    const widgetStream = await fetch(`${widgetBase}/stream/quest?token=${widgetToken}`, { signal: streamController.signal });
-    assert.equal(widgetStream.headers.get('content-type')?.startsWith('text/event-stream'), true);
-    const widgetChunk = await widgetStream.body?.getReader().read();
-    assert.match(new TextDecoder().decode(widgetChunk?.value), /snapshot/u, 'Widget-Neuverbindung bekommt sofort einen Snapshot');
-    await streamController.abort();
+    const streamControllers=Array.from({length:4},()=>new AbortController());
+    const widgetStreams=await Promise.all(streamControllers.map(controller=>fetch(`${widgetBase}/stream/quest?token=${widgetToken}`,{signal:controller.signal})));
+    assert.ok(widgetStreams.every(stream=>stream.headers.get('content-type')?.startsWith('text/event-stream')));
+    const widgetChunk=await widgetStreams[0]!.body?.getReader().read();assert.match(new TextDecoder().decode(widgetChunk?.value),/snapshot/u,'Widget-Neuverbindung bekommt sofort einen Snapshot');
+    const excessWidget=await fetch(`${widgetBase}/stream/quest?token=${widgetToken}`);assert.equal(excessWidget.status,429,'parallele OBS-Quellen pro privatem Token sind begrenzt');assert.ok(Number(excessWidget.headers.get('Retry-After'))>=1);
+    await Promise.all(streamControllers.map(controller=>controller.abort()));
     const tokenRevoke = await fetch(`${base}/dashboard/api/widgets/token`, {
       method: 'POST', headers: { Cookie: sessionCookie, Origin: `http://localhost:${port}`, 'X-CSRF-Token': csrf, 'Content-Type': 'application/json' },
       body: JSON.stringify({ type: 'quest', action: 'revoke' }),
@@ -351,6 +354,9 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.equal(badCsrf.status, 403);
     const blocked = await fetch(`${base}/dashboard/api/overview`);
     assert.equal(blocked.status, 401);
+
+    const tabBursts=await Promise.all(Array.from({length:4},()=>Array.from({length:40},()=>fetch(`${base}/dashboard/api/status`,{headers:{Cookie:sessionCookie}}))).flat());
+    assert.equal(tabBursts.length,160);assert.ok(tabBursts.every((r)=>r.status===200),'vier gleichzeitig geöffnete Admin-Tabs bleiben innerhalb des sitzungsbasierten Leselimits');
 
     store.recordCommunityEvent('overlay.test', { label: 'structured event' }, Date.now());
     const controller = new AbortController();

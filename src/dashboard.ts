@@ -24,6 +24,7 @@ import type { SpotifySongRequests } from './song-requests.js';
 import { SONG_REQUESTS_CARD, SONG_REQUESTS_SCRIPT } from './song-requests-ui.js';
 import { formatPublicChatMessage } from './chat-message-format.js';
 import { ViewerCommunityPortal } from './community-portal.js';
+import { RateLimitBuckets, setRateLimitHeaders, trustedClientAddress, type RateLimitDecision } from './request-limits.js';
 
 interface Session { userId: string; login: string; csrf: string; expiresAt: number; }
 interface RuntimeStatus { twitchConnected: boolean; channel: string; startedAt: number; lastError?: string; queued?: number; suppressed?: number; chatResponse?: { profile: string; suppressed: number; deferred: number }; }
@@ -32,6 +33,18 @@ interface HelixUser { id: string; login: string; display_name: string; }
 type DashboardQuestSettings = QuestPolicy & { enabled: boolean; chatEnabled: boolean; channelPointsEnabled: boolean;
   modsCanModerate: boolean; modsCanSkip: boolean; moderatorUserIds: string[] };
 type DashboardPollSettings = { enabled: boolean; durationMs: number; allowVoteChange: boolean; ignoredUserIds: string[] };
+
+const DASHBOARD_POLLING_SCRIPT = `(()=>{
+const activeFlights=new Map(),shortCache=new Map();window.dashboardRetryUntil=0;
+window.fetch=((original)=>async(input,init={})=>{const method=(init.method||'GET').toUpperCase(),url=new URL(typeof input==='string'?input:input.url,location.href);
+if(method!=='GET'||url.origin!==location.origin||!/^\\/dashboard\\/api\\//u.test(url.pathname))return original(input,init);
+const key=url.pathname+url.search,now=Date.now(),cached=shortCache.get(key);if(cached&&now-cached.at<1500)return cached.response.clone();
+if(activeFlights.has(key))return (await activeFlights.get(key)).clone();
+const flight=(async()=>{const response=await original(input,init);if(response.status===429){const seconds=Math.min(60,Math.max(1,Number(response.headers.get('Retry-After'))||5));window.dashboardRetryUntil=Math.max(window.dashboardRetryUntil,Date.now()+seconds*1000)}else if(response.ok)shortCache.set(key,{at:Date.now(),response:response.clone()});return response})();activeFlights.set(key,flight);
+try{return (await flight).clone()}finally{activeFlights.delete(key)}})(window.fetch.bind(window));
+window.dashboardPollVisible=(target)=>{if(document.visibilityState==='hidden')return false;const node=typeof target==='string'?document.querySelector(target):target;if(!node)return false;for(let p=node;p&&p!==document.body;p=p.parentElement)if(p.hidden)return false;return node.getClientRects().length>0};
+window.dashboardPoll=(target,fn,interval)=>{let running=false;const run=async()=>{if(running||!window.dashboardPollVisible(target)||Date.now()<window.dashboardRetryUntil)return;running=true;try{await fn()}finally{running=false}};const timer=setInterval(run,interval);const wake=()=>{if(document.visibilityState!=='hidden')void run()};document.addEventListener('visibilitychange',wake);window.addEventListener('dashboard:viewchange',wake);queueMicrotask(wake);return timer};
+})();`;
 
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const STREAMER_PAGE = `<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="csrf" content="__CSRF__"><title>Streamer-Steuerung</title><style nonce="__NONCE__">:root{color-scheme:dark;font:16px system-ui,sans-serif;background:#101116;color:#eef0f8}*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 85% 0,#30234a 0,transparent 35%),#101116}main{max-width:980px;margin:auto;padding:24px 20px}header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}h1{font-size:1.4rem;margin:0}a{color:#c6a8ff}.toolbar{display:flex;gap:8px;align-items:center}.status{color:#aaaec0;font-size:.9rem}.group{margin:22px 0}.group h2{font-size:1rem;color:#c6a8ff;margin:0 0 9px}.row{display:grid;grid-template-columns:42px minmax(130px,1fr) minmax(120px,1.4fr) auto;gap:12px;align-items:center;padding:12px 14px;background:#1b1d29;border:1px solid #303342;border-radius:12px;margin:8px 0}.icon{font-size:1.35rem;text-align:center}.name{font-weight:700}.state{color:#b8bbca;font-size:.92rem}.actions{display:flex;gap:6px;justify-content:flex-end}button{font:inherit;color:#fff;background:#7652bd;border:0;border-radius:9px;padding:10px 14px;cursor:pointer;min-height:42px}button.secondary{background:#292b39}button.danger{background:#8c3d50}button:disabled{opacity:.45;cursor:not-allowed}.notice{min-height:24px;color:#f2d5ac}.compact{font-size:.86rem}@media(max-width:620px){main{padding:14px 10px}.row{grid-template-columns:34px 1fr auto;gap:8px;padding:10px}.state{grid-column:2;grid-row:2}.actions{grid-column:3;grid-row:1/3;flex-direction:column}.actions button{padding:8px;font-size:.87rem}header{align-items:flex-start}.toolbar{flex-direction:column;align-items:flex-end}}@media(max-width:380px){.row{grid-template-columns:30px 1fr}.actions{grid-column:1/-1;grid-row:auto;flex-direction:row;justify-content:flex-start;margin-left:38px}.state{grid-column:2}}</style></head><body><main><header><div><h1>🎛 Streamer-Steuerung</h1><div id="stream-status" class="status">Status wird geladen …</div></div><div class="toolbar"><a href="/dashboard">Dashboard</a><button id="compact" class="secondary" type="button">Kompakt</button></div></header><div id="notice" class="notice" role="status"></div><section class="group"><h2>Gerade aktiv</h2><div id="active"></div></section><section class="group"><h2>Spiele &amp; Aktionen</h2><div id="games"></div></section><section class="group"><h2>Saison-Events &amp; Quests</h2><div id="community"></div></section></main><script nonce="__NONCE__">(()=>{const csrf=document.querySelector('meta[name=csrf]').content,el=id=>document.getElementById(id),esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),seconds=t=>Math.max(0,Math.ceil((Number(t||0)-Date.now())/1000)),busy=new Set();async function api(path,method='GET',body){const r=await fetch('/dashboard/api/'+path,{method,headers:{'Content-Type':'application/json',...(method==='GET'?{}:{'X-CSRF-Token':csrf})},...(body?{body:JSON.stringify(body)}:{})});const d=await r.json().catch(()=>({error:'Antwort konnte nicht gelesen werden.'}));if(!r.ok)throw Error(d.error||'Aktion fehlgeschlagen.');return d}function button(label,action,kind='',disabled=false){return '<button type="button" class="'+kind+'" data-action="'+esc(action)+'" '+(disabled?'disabled':'')+'>'+esc(label)+'</button>'}function row(icon,name,state,actions=''){return '<article class="row"><div class="icon">'+icon+'</div><div class="name">'+esc(name)+'</div><div class="state">'+esc(state)+'</div><div class="actions">'+actions+'</div></article>'}async function update(){try{const [s,m,a,e,q]=await Promise.all(['status','minigames','arcade','events','quests'].map(x=>api(x)));const imp=m.state?.imposter,det=m.state?.detective,drop=a.drop?.drop,liveDrop=drop&&['announced','claiming','resolving'].includes(drop.status),wheel=a.wheel,active=[];if(imp)active.push(row('🎭','Chat-Imposter',imp.phase+' · '+(imp.players?.length||0)+' dabei · '+seconds(imp.endsAt)+' s',button('Abbrechen','cancel-imposter','danger')));if(det)active.push(row('🕵️','Chat-Detektiv',(det.phase==='playing'?'Raten läuft':'Ergebnis')+' · '+det.guesses+' Tipps · '+seconds(det.endsAt)+' s',button('Runde beenden','end-detective','danger')));if(liveDrop)active.push(row('🎁','Mystery Drop',(drop.participants||0)+' Teilnehmende · '+seconds(drop.endsAt)+' s'));if(wheel.activeAction)active.push(row('🎡','Chaos Wheel',wheel.activeAction.title+' · '+seconds(wheel.activeAction.endsAt)+' s'));const guess=await api('streamer-state');if(guess.guess)active.push(row('🔢','Zahlenraten','Runde aktiv · endet in '+seconds(guess.guess.expiresAt)+' s'));el('active').innerHTML=active.join('')||'<p class="status">Gerade läuft kein Spiel.</p>';const impAction=!m.settings.enabled?'Minispiele deaktiviert':!imp?'Anmeldung starten':imp.phase==='registration'?'Rollen verteilen':imp.phase==='playing'?'Abstimmung starten':imp.phase==='voting'?'Abstimmung läuft':'Warten …';let gameRows=[row('🎭','Chat-Imposter',imp?imp.phase+' · '+(imp.players?.length||0)+' Teilnehmende':(m.settings.enabled?'Bereit':'Deaktiviert'),imp?(imp.phase==='registration'?button('Rollen verteilen','close-imposter'):imp.phase==='playing'?button('Abstimmung starten','vote-imposter'):button('Abbrechen','cancel-imposter','danger')):button(impAction,'start-imposter', '',!m.settings.enabled)),row('🕵️','Chat-Detektiv',det?'Raten läuft · '+det.guesses+' Tipps':'Bereit',det?button('Runde beenden','end-detective','danger'):button(m.settings.enabled?'Runde starten':'Minispiele deaktiviert','start-detective','',!m.settings.enabled)),row('🎁','Mystery Drop',liveDrop?'Aktiv · '+(drop.participants||0)+' Teilnehmende · '+seconds(drop.endsAt)+' s':'Bereit · Zuschauer schreiben !claim',liveDrop?'':button('Drop starten','start-drop')),row('🎡','Chaos Wheel',wheel.autoPilotEnabled?'Automatik aktiv · '+(wheel.reason||''):'Pausiert · '+(wheel.reason||''),button(wheel.canSpin?'Jetzt drehen':wheel.autoPilotEnabled?'Pausieren':'Fortsetzen',wheel.canSpin?'spin':wheel.autoPilotEnabled?'pause-wheel':'resume-wheel',wheel.canSpin?'':'secondary',!wheel.canSpin&&wheel.autoPilotEnabled))];if(!guess.guessEnabled){}else gameRows.push(row('🔢','Zahlenraten',guess.guess?'Aktiv · '+seconds(guess.guess.expiresAt)+' s':'Start über vorhandenen Chatbefehl !startguess',guess.guess?'':'<span class="compact">Im Chat: <b>!startguess</b></span>'));el('games').innerHTML=gameRows.join('');const evts=e.events||[];el('community').innerHTML=evts.map(x=>row(x.emoji||'✨',x.name,x.active?'Aktiv':'Bereit',button(x.active?'Beenden':'Starten',x.active?'event-off:'+x.id:'event-on:'+x.id,x.active?'danger':''))).join('')+(q.active?row('📜','Aktive Quest',q.active.title+' · läuft',button('Abschließen','quest-complete:'+q.active.id,'secondary')):'');el('stream-status').textContent='Verbindung: '+(s.eventSubSocket?'Twitch verbunden':'wird geprüft')+' · aktualisiert';}catch(err){el('stream-status').textContent='Status konnte nicht geladen werden.';el('notice').textContent=err.message}}document.addEventListener('click',async ev=>{const b=ev.target.closest('[data-action]');if(!b||busy.has(b))return;const action=b.dataset.action;if(action==='cancel-imposter'||action==='end-detective'||action.startsWith('event-off:')||action.startsWith('quest-complete:'))if(!confirm('Möchtest du diese Aktion wirklich ausführen?'))return;busy.add(b);b.disabled=true;try{if(action.startsWith('event-on:')||action.startsWith('event-off:')){const [op,id]=action.split(':');await api('events','POST',{id,active:op==='event-on'})}else if(action==='quest-complete:'+action.split(':')[1])await api('quests/action','POST',{id:action.split(':')[1],action:'complete'});else if(action.startsWith('quest-complete:'))await api('quests/action','POST',{id:action.slice(15),action:'complete'});else if(action==='pause-wheel'||action==='resume-wheel'){const x=await api('arcade');await api('arcade','POST',{settings:{...x.settings,wheelAutoPilotEnabled:action==='resume-wheel'}})}else if(action==='start-drop'||action==='spin')await api('arcade','POST',{action});else await api('minigames/action','POST',{action});el('notice').textContent='Aktion ausgeführt.';await update()}catch(err){el('notice').textContent=err.message}finally{busy.delete(b);b.disabled=false}});el('compact').onclick=()=>document.body.classList.toggle('compact');update();setInterval(update,3000)})();</script></body></html>`;
@@ -70,10 +83,10 @@ const gamePages=[...document.querySelectorAll('[data-game-page]')],gameNav=[...d
 const communityPages=[...document.querySelectorAll('[data-community-page]')],communityNav=[...document.querySelectorAll('[data-community-target]')];
 const settingPages=[...document.querySelectorAll('[data-setting-page]')],settingNav=[...document.querySelectorAll('[data-setting-target]')];
 function pick(nodes,key,valueAttr,selected){nodes.forEach(n=>{const active=n.getAttribute(valueAttr)===selected;n.hidden=!active;if(active)n.dataset.active='true';else delete n.dataset.active});}
-function setGame(id,write=true){pick(gamePages,id,'data-game-page',id);gameNav.forEach(b=>{const active=b.dataset.gameTarget===id;b.setAttribute('aria-current',active?'page':'false')});const catalog=document.querySelector('#game-catalog');if(catalog)catalog.hidden=Boolean(id);if(write)history.replaceState(null,'','#spiele/'+id)}
-function setCommunity(id,write=true){pick(communityPages,id,'data-community-page',id);communityNav.forEach(b=>b.setAttribute('aria-current',b.dataset.communityTarget===id?'page':'false'));if(write)history.replaceState(null,'','#community/'+id)}
-function setSetting(id,write=true){pick(settingPages,id,'data-setting-page',id);settingNav.forEach(b=>b.setAttribute('aria-current',b.dataset.settingTarget===id?'page':'false'));if(write)history.replaceState(null,'','#einstellungen/'+id)}
-function setView(id,write=true){views.forEach(v=>{const active=v.dataset.dashboardView===id;v.hidden=!active;if(active)v.dataset.active='true';else delete v.dataset.active});mainNav.forEach(b=>b.setAttribute('aria-current',b.dataset.viewTarget===id?'page':'false'));if(id==='community'&&!communityPages.some(p=>p.dataset.active==='true'))setCommunity('events',false);if(id==='settings'&&!settingPages.some(p=>p.dataset.active==='true'))setSetting('messages',false);if(id==='games'&&!gamePages.some(p=>p.dataset.active==='true')){const catalog=document.querySelector('#game-catalog');if(catalog)catalog.hidden=false;pick(gamePages,'','data-game-page','');gameNav.forEach(b=>b.setAttribute('aria-current','false'))}if(write)history.replaceState(null,'','#'+id);window.scrollTo(0,0)}
+function setGame(id,write=true){pick(gamePages,id,'data-game-page',id);gameNav.forEach(b=>{const active=b.dataset.gameTarget===id;b.setAttribute('aria-current',active?'page':'false')});const catalog=document.querySelector('#game-catalog');if(catalog)catalog.hidden=Boolean(id);if(write)history.replaceState(null,'','#spiele/'+id);window.dispatchEvent(new Event('dashboard:viewchange'))}
+function setCommunity(id,write=true){pick(communityPages,id,'data-community-page',id);communityNav.forEach(b=>b.setAttribute('aria-current',b.dataset.communityTarget===id?'page':'false'));if(write)history.replaceState(null,'','#community/'+id);window.dispatchEvent(new Event('dashboard:viewchange'))}
+function setSetting(id,write=true){pick(settingPages,id,'data-setting-page',id);settingNav.forEach(b=>b.setAttribute('aria-current',b.dataset.settingTarget===id?'page':'false'));if(write)history.replaceState(null,'','#einstellungen/'+id);window.dispatchEvent(new Event('dashboard:viewchange'))}
+function setView(id,write=true){views.forEach(v=>{const active=v.dataset.dashboardView===id;v.hidden=!active;if(active)v.dataset.active='true';else delete v.dataset.active});mainNav.forEach(b=>b.setAttribute('aria-current',b.dataset.viewTarget===id?'page':'false'));if(id==='community'&&!communityPages.some(p=>p.dataset.active==='true'))setCommunity('events',false);if(id==='settings'&&!settingPages.some(p=>p.dataset.active==='true'))setSetting('messages',false);if(id==='games'&&!gamePages.some(p=>p.dataset.active==='true')){const catalog=document.querySelector('#game-catalog');if(catalog)catalog.hidden=false;pick(gamePages,'','data-game-page','');gameNav.forEach(b=>b.setAttribute('aria-current','false'))}if(write)history.replaceState(null,'','#'+id);window.scrollTo(0,0);window.dispatchEvent(new Event('dashboard:viewchange'))}
 function route(){const [raw,sub]=location.hash.slice(1).split('/');const names={uebersicht:'overview',spiele:'games',community:'community',obs:'obs',einstellungen:'settings',chat:'settings',befehle:'settings'};const view=names[raw]||'overview';setView(view,false);if(raw==='spiele'&&sub)setGame(sub,false);if(raw==='community'&&sub)setCommunity(sub,false);if(raw==='einstellungen'&&sub)setSetting(sub,false);if(raw==='chat')setSetting('messages',false);if(raw==='befehle')setSetting('commands',false)}
 mainNav.forEach(b=>b.addEventListener('click',()=>setView(b.dataset.viewTarget)));gameNav.forEach(b=>b.addEventListener('click',()=>setGame(b.dataset.gameTarget)));communityNav.forEach(b=>b.addEventListener('click',()=>setCommunity(b.dataset.communityTarget)));settingNav.forEach(b=>b.addEventListener('click',()=>setSetting(b.dataset.settingTarget)));window.addEventListener('hashchange',route);
 function pageButton(label,view,sub){const b=document.createElement('button');b.type='button';b.className='catalog-card card';const h=document.createElement('h3'),p=document.createElement('p');h.textContent=label;p.className='muted';p.textContent='Öffnen';b.replaceChildren(h,p);b.addEventListener('click',()=>{setView(view);if(sub)view==='games'?setGame(sub):view==='community'?setCommunity(sub):setSetting(sub)});return b}
@@ -117,9 +130,9 @@ export class DashboardServer {
   private server: http.Server | undefined;
   private readonly sessions = new Map<string, Session>();
   private readonly states = new Map<string, number>();
-  private readonly rates = new Map<string, { count: number; resets: number }>();
-  private readonly eventStreams = new Map<http.ServerResponse, NodeJS.Timeout>();
-  private readonly widgetStreams = new Map<http.ServerResponse, NodeJS.Timeout>();
+  private readonly rates = new RateLimitBuckets();
+  private readonly eventStreams = new Map<http.ServerResponse, { timer: NodeJS.Timeout; userId: string }>();
+  private readonly widgetStreams = new Map<http.ServerResponse, { timer: NodeJS.Timeout; tokenHash: string }>();
   private readonly participantSessions = new Map<string, { userId: string; expiresAt: number }>();
   private readonly adminIds: Set<string>;
   private readonly clientId = process.env.TWITCH_CLIENT_ID?.trim() || '';
@@ -170,9 +183,9 @@ export class DashboardServer {
   async stop(): Promise<void> {
     this.viewerPortal?.stop();
     if (!this.server) return;
-    for (const [response, timer] of this.eventStreams) { clearInterval(timer); response.end(); }
+    for (const [response, stream] of this.eventStreams) { clearInterval(stream.timer); response.end(); }
     this.eventStreams.clear();
-    for (const [response, timer] of this.widgetStreams) { clearInterval(timer); response.end(); }
+    for (const [response, stream] of this.widgetStreams) { clearInterval(stream.timer); response.end(); }
     this.widgetStreams.clear();
     await new Promise<void>((resolve) => this.server!.close(() => resolve()));
     this.server = undefined;
@@ -184,32 +197,42 @@ export class DashboardServer {
   private async route(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     this.headers(res);
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
-    const clientIp = req.socket.remoteAddress || 'unknown';
-    if (!this.rateLimit(clientIp)) { this.json(res, 429, { error: 'Zu viele Anfragen. Bitte kurz warten.' }); return; }
+    const clientIp = trustedClientAddress(req);
     if (this.viewerPortal?.handles(url.pathname)) { await this.viewerPortal.handle(req,res,url); return; }
     if (url.pathname === '/hilfe') {
+      if (this.rejectRateLimit(res, this.rates.consume('public-help', clientIp, 90, 60_000), 'Zu viele Hilfeaufrufe. Bitte kurz warten.')) return;
       if(req.method!=='GET'){res.statusCode=405;res.setHeader('Allow','GET');res.setHeader('Content-Type','text/plain; charset=utf-8');res.end('Nur lesender Aufruf erlaubt.');return;}
       const nonce=randomBytes(18).toString('base64');
       res.setHeader('Content-Security-Policy',`default-src 'none'; style-src 'nonce-${nonce}'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`);
       res.statusCode=200;res.setHeader('Content-Type','text/html; charset=utf-8');
       res.end(renderPublicHelpPage(this.publicHelpAvailability(),url.searchParams.get('q')||'',nonce));return;
     }
-    if (url.pathname === '/dashboard/login' && req.method === 'GET') { this.login(res); return; }
+    if ((url.pathname === '/dashboard/login' || url.pathname === '/games/imposter/login') && req.method === 'GET') {
+      if (this.rejectRateLimit(res, this.rates.consume('oauth-start', clientIp, 20, 10 * 60_000), 'Zu viele Anmeldeversuche. Bitte später erneut versuchen.')) return;
+      if (url.pathname === '/games/imposter/login') { this.participantLogin(res); return; }
+      this.login(res); return;
+    }
     if (url.pathname === '/streamer') {
       if (req.method !== 'GET') { res.statusCode=405;res.setHeader('Allow','GET');res.end('Methode nicht erlaubt.');return; }
       const session=this.authenticate(req,res);if(!session)return;
+      if (this.rejectRateLimit(res, this.rates.consume('admin-page', session.userId, 120, 60_000), 'Zu viele Seitenaufrufe. Bitte kurz warten.')) return;
       const nonce=randomBytes(18).toString('base64');res.setHeader('Cache-Control','no-store');
       res.setHeader('Content-Security-Policy',`default-src 'self'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`);
-      res.statusCode=200;res.setHeader('Content-Type','text/html; charset=utf-8');res.end(STREAMER_PAGE.replaceAll('__CSRF__',session.csrf).replaceAll('__NONCE__',nonce));return;
+      res.statusCode=200;res.setHeader('Content-Type','text/html; charset=utf-8');res.end(STREAMER_PAGE.replace('(()=>{const csrf=',`${DASHBOARD_POLLING_SCRIPT}(()=>{const csrf=`).replace('update();setInterval(update,3000)',"window.dashboardPoll('#stream-status',update,10000)").replaceAll('__CSRF__',session.csrf).replaceAll('__NONCE__',nonce));return;
     }
-    if (url.pathname === '/dashboard/oauth/callback' && req.method === 'GET') { await this.callback(url, req, res); return; }
+    if (url.pathname === '/dashboard/oauth/callback' && req.method === 'GET') {
+      if (this.rejectRateLimit(res, this.rates.consume('oauth-callback', clientIp, 30, 10 * 60_000), 'Zu viele Anmeldeversuche. Bitte später erneut versuchen.')) return;
+      await this.callback(url, req, res); return;
+    }
     if (url.pathname === '/dashboard/spotify/callback' && req.method === 'GET') {
       res.setHeader('Cache-Control','no-store');res.setHeader('Referrer-Policy','no-referrer');
       try{if(!this.songRequests)throw new Error('Song Requests sind nicht eingerichtet.');await this.songRequests.handleCallback(url);res.statusCode=200;res.setHeader('Content-Type','text/html; charset=utf-8');res.end('<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Spotify verbunden</title><body style="font:16px system-ui;background:#111;color:#eee;padding:2rem"><h1>Spotify verbunden</h1><p>Du kannst dieses Fenster schließen und die Musikwünsche im Dashboard fertig einrichten.</p><a style="color:#c9a8ff" href="/dashboard#community/music">Zum Dashboard</a></body></html>');}
       catch(error){res.statusCode=400;res.setHeader('Content-Type','text/plain; charset=utf-8');res.end(error instanceof Error?error.message:'Spotify-Verbindung fehlgeschlagen.');}return;
     }
-    if (url.pathname === '/games/imposter/login' && req.method === 'GET') { this.participantLogin(res); return; }
-    if (url.pathname === '/games/imposter/callback' && req.method === 'GET') { await this.participantCallback(url, req, res); return; }
+    if (url.pathname === '/games/imposter/callback' && req.method === 'GET') {
+      if (this.rejectRateLimit(res, this.rates.consume('oauth-callback', clientIp, 30, 10 * 60_000), 'Zu viele Anmeldeversuche. Bitte später erneut versuchen.')) return;
+      await this.participantCallback(url, req, res); return;
+    }
     if (url.pathname === '/games/imposter/role' && req.method === 'GET') { this.participantRole(req, res); return; }
     if (url.pathname === '/dashboard/api/logout' && req.method === 'POST') {
       const session = this.authenticate(req, res, true); if (!session) return;
@@ -226,16 +249,38 @@ export class DashboardServer {
         .replace('<button type="button" data-community-target="welcome">Begrüßung</button>','<button type="button" data-community-target="welcome">Begrüßung</button><button type="button" data-community-target="music">Song-Wünsche</button>')
         .replace('<section data-community-page="welcome"','<section data-community-page="music" class="subpage"><div class="view-grid">'+SONG_REQUESTS_CARD+'</div></section><section data-community-page="welcome"');
       const page = PAGE.replace('</style>', DASHBOARD_STYLE+'</style>').replace('<div class="row"><div><h1>Community Bot','<header class="dashboard-top"><div><h1>Community Bot').replace('</button></div><p id="notice"','</button></header><p id="notice"').replace('<p class="muted">Hier steuerst du Chatspiele und Stream-Anzeigen. Fast alles ist optional – starte nur, was du wirklich nutzen möchtest.</p>','').replace('</p><section class="grid">', `</p>${integratedStructure}<div id="dashboard-legacy-source" class="legacy-source"><section class="grid">`).replace('</section></main>', `</section><h2>Community-Aktionen</h2><p class="muted">Community-Spiele und Aktionen</p><section class="grid">${WELCOME_CARD}${QUEST_POLL_CARD}${SPARK_CARD}${MINI_GAME_CARD}${ARCADE_CARD}</section><h2>OBS</h2><section class="grid">${OBS_CARD}</section><h2>Einstellungen</h2><section class="grid">${CHANNEL_POINTS_CARD}${SETTINGS_CARD}</section></div></main>`)
-        .replace('</script>', `${OBS_SCRIPT}${SETTINGS_SCRIPT}${WELCOME_SCRIPT}${QUEST_POLL_SCRIPT}${SPARK_SCRIPT}${MINI_GAME_SCRIPT}${CHANNEL_POINTS_SCRIPT}${ARCADE_SCRIPT}${ARCADE_SMART_CONTROLS_SCRIPT}${DASHBOARD_WORDING_SCRIPT}${DASHBOARD_STRUCTURE_SCRIPT}${DASHBOARD_CLEANUP_SCRIPT}${DASHBOARD_REMAINDER_SCRIPT}${DASHBOARD_OBS_GUARD_SCRIPT}${DASHBOARD_TIMER_SCRIPT}${DASHBOARD_OBS_DEMO_SCRIPT}${CHAT_RESPONSE_SCRIPT}${CHAT_IDENTITY_PREVIEW_SCRIPT}${DASHBOARD_UX_V3_SCRIPT}${DASHBOARD_APP_SCRIPT}</script>`);
+        .replace('</script>', `${DASHBOARD_POLLING_SCRIPT}${OBS_SCRIPT}${SETTINGS_SCRIPT}${WELCOME_SCRIPT}${QUEST_POLL_SCRIPT}${SPARK_SCRIPT}${MINI_GAME_SCRIPT}${CHANNEL_POINTS_SCRIPT}${ARCADE_SCRIPT}${ARCADE_SMART_CONTROLS_SCRIPT}${DASHBOARD_WORDING_SCRIPT}${DASHBOARD_STRUCTURE_SCRIPT}${DASHBOARD_CLEANUP_SCRIPT}${DASHBOARD_REMAINDER_SCRIPT}${DASHBOARD_OBS_GUARD_SCRIPT}${DASHBOARD_TIMER_SCRIPT}${DASHBOARD_OBS_DEMO_SCRIPT}${CHAT_RESPONSE_SCRIPT}${CHAT_IDENTITY_PREVIEW_SCRIPT}${DASHBOARD_UX_V3_SCRIPT}${DASHBOARD_APP_SCRIPT}</script>`);
       const messagesUi=page.replace('<article class="card"><div id="chat-response-settings">','<article class="card"><div id="automatic-chat-messages"><h3>Eigene Nachrichten</h3><p class="muted">Der Bot sendet diese Nachricht frühestens im gewählten Abstand – nur bei bestätigtem Live-Stream und mit Chatpause zwischen automatischen Hinweisen.</p><form id="automatic-chat-form"><input type="hidden" name="id"><label>Interner Titel<input name="title" maxlength="60" required placeholder="z. B. Discord-Hinweis"></label><label>Nachricht<textarea name="message" maxlength="500" required placeholder="Schau gern auf unserem Discord vorbei …"></textarea></label><label>Wiederholung<select name="interval"><option value="30">30 Minuten</option><option value="45">45 Minuten</option><option value="60">60 Minuten</option><option value="90">90 Minuten</option><option value="custom">Eigenes Intervall</option></select></label><label name="custom" hidden>Eigenes Intervall in Minuten<input name="customInterval" type="number" min="15" max="1440" value="30"></label><label><input name="enabled" type="checkbox" checked> Aktiviert</label><label><input name="activeChatOnly" type="checkbox"> Nur bei aktivem Chat (mindestens 6 echte Nachrichten)</label><p id="automatic-chat-preview" class="chat-preview" aria-live="polite">【📢 INFO】 Vorschau</p><button type="submit">Nachricht speichern</button> <button type="button" name="cancel">Abbrechen</button></form><div id="automatic-chat-list" aria-live="polite"></div></div></article><article class="card"><h3>Community-Tipps</h3><div id="chat-response-settings">');
       const autoScript=AUTOMATIC_CHAT_MESSAGES_SCRIPT.replace("const style=document.createElement('style');","const style=document.createElement('style');style.nonce=document.querySelector('script[nonce]')?.nonce||'';");
       const withAutomaticScript=messagesUi.replace('</script>',`${autoScript}${SONG_REQUESTS_SCRIPT}</script>`);
-      res.end(withAutomaticScript.replaceAll('__CSRF__', session.csrf).replaceAll('__NONCE__', nonce)); return;
+      const reducedPolling=withAutomaticScript
+        .replaceAll('updateHome();setInterval(updateHome,12000);',"window.dashboardPoll('#home-status',updateHome,20000);")
+        .replaceAll('updateDetective();updateDrop();setInterval(updateDetective,3000);setInterval(updateDrop,3000);',"window.dashboardPoll('#detective-state',updateDetective,8000);window.dashboardPoll('#drop-page-status',updateDrop,8000);")
+        .replaceAll('refreshMini();loadMiniSettings();checkImposterEligibility();refreshMiniWidgetStatus();setInterval(refreshMini,3000);setInterval(refreshMiniWidgetStatus,15000);setInterval(checkImposterEligibility,3000);setInterval(miniCountdown,250);',"window.dashboardPoll('#mini-state',refreshMini,8000);window.dashboardPoll('#mini-overlay-status',refreshMiniWidgetStatus,45000);window.dashboardPoll('#mini-countdown',miniCountdown,1000);")
+        .replaceAll('arcadeLoad();setInterval(arcadeLoad,5000);',"window.dashboardPoll('#arcade-state',arcadeLoad,10000);")
+        .replaceAll('update();setInterval(update,3000);setInterval(()=>{const line=state.querySelector(\'[data-drop-status]\');if(line&&line.textContent.includes(\'Teilnehmende\'))update()},1000)',"window.dashboardPoll('#arcade-state',update,12000)")
+        .replaceAll('refreshSpark();setInterval(refreshSpark,15000);',"window.dashboardPoll('#spark-settings',refreshSpark,30000);")
+        .replaceAll('refreshChannelPoints();setInterval(refreshChannelPoints,10000);',"window.dashboardPoll('#cp-enabled',refreshChannelPoints,30000);")
+        .replaceAll('refreshSongRequests();setInterval(refreshSongRequests,12000);',"window.dashboardPoll('#sr-status',refreshSongRequests,30000);")
+        .replaceAll('refreshStats();setInterval(refreshStats,15000)',"window.dashboardPoll('#chat-response-settings',refreshStats,30000)")
+        .replaceAll('renderCommandAdmin();setInterval(renderCommandAdmin,15000)',"window.dashboardPoll('#command-manager',renderCommandAdmin,30000)")
+        .replaceAll('update();setInterval(update,15000)',"window.dashboardPoll('#dashboard-overview',update,30000)")
+        .replaceAll('refresh();setInterval(refresh,15000)',"window.dashboardPoll('#dashboard-legacy-source',refresh,30000)")
+        .replaceAll('refreshQuests();refreshQuestChoices();renderPolls();setInterval(()=>{refreshQuests();renderPolls()},5000);',"window.dashboardPoll('#dashboard-community',async()=>{await refreshQuests();await renderPolls()},12000);refreshQuestChoices();");
+      res.end(reducedPolling.replaceAll('__CSRF__', session.csrf).replaceAll('__NONCE__', nonce)); return;
     }
     if (url.pathname.startsWith('/widgets/')) { await this.widgetRoute(url, req, res); return; }
     if (url.pathname.startsWith('/dashboard/api/')) {
       const session = this.authenticate(req, res, true); if (!session) return;
       if (req.method !== 'GET' && !this.checkCsrf(req, session)) { this.json(res, 403, { error: 'CSRF-Prüfung fehlgeschlagen.' }); return; }
+      const route = url.pathname.slice('/dashboard/api/'.length);
+      if (route === 'stream' && req.method === 'GET') {
+        this.openEventStream(url, req, res, session.userId); return;
+      }
+      const decision = req.method === 'GET'
+        ? this.rates.consume('admin-read', session.userId, 300, 60_000)
+        : this.rates.consume('admin-write', session.userId, 60, 60_000);
+      if (this.rejectRateLimit(res, decision, 'Zu viele Dashboard-Aktionen. Bitte kurz warten.')) return;
       await this.api(url, req, res, session); return;
     }
     if (url.pathname === '/healthz' && req.method === 'GET') { this.json(res, 200, { ok: true }); return; }
@@ -253,20 +298,25 @@ export class DashboardServer {
     if (!/^[A-Za-z0-9_-]{40,100}$/u.test(token)) { this.json(res, 404, { error: 'Widget nicht verfügbar.' }); return; }
     const tokenHash = createHash('sha256').update(token).digest('hex');
     if (!this.store.widgetTokenValid(type, tokenHash, Date.now())) { this.json(res, 404, { error: 'Widget nicht verfügbar.' }); return; }
+    if (!stream && this.rejectRateLimit(res, this.rates.consume('widget-read', `${type}:${tokenHash}`, 240, 60_000), 'OBS-Widget wird zu häufig abgefragt. Bitte kurz warten.')) return;
     if (page) {
       const nonce = randomBytes(18).toString('base64');
       const settings = this.store.config('widget_settings', defaultWidgetSettings());
       res.setHeader('Content-Security-Policy', `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; img-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`);
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.end(communityWidgetHtml(type, nonce, settings.fontSize, settings.theme));
+      const widgetCacheScript=`<script nonce="${nonce}">(()=>{const original=window.fetch.bind(window),cache=new Map(),flights=new Map(),retry=new Map();window.fetch=async(input,init={})=>{const method=(init.method||'GET').toUpperCase(),url=new URL(typeof input==='string'?input:input.url,location.href);if(method!=='GET'||url.origin!==location.origin||!url.pathname.startsWith('/widgets/api/'))return original(input,init);const key=url.href,now=Date.now();if((retry.get(key)||0)>now)return new Response(JSON.stringify({error:'Kurz pausiert'}),{status:429,headers:{'Retry-After':String(Math.ceil((retry.get(key)-now)/1000)),'Content-Type':'application/json'}});const hit=cache.get(key);if(hit&&now-hit.at<10000)return hit.response.clone();if(flights.has(key))return(await flights.get(key)).clone();const task=(async()=>{const r=await original(input,init);if(r.status===429){const s=Math.min(60,Math.max(1,Number(r.headers.get('Retry-After'))||5));retry.set(key,Date.now()+s*1000)}else if(r.ok)cache.set(key,{at:Date.now(),response:r.clone()});return r})();flights.set(key,task);try{return(await task).clone()}finally{flights.delete(key)}}})()</script>`;
+      res.end(communityWidgetHtml(type, nonce, settings.fontSize, settings.theme).replace('</head>',`${widgetCacheScript}</head>`));
       return;
     }
     if (api) { this.json(res, 200, this.widgetSnapshot(type)); return; }
-    this.openWidgetEventStream(type, res);
+    this.openWidgetEventStream(type, tokenHash, res);
   }
 
-  private openWidgetEventStream(type: WidgetType, res: http.ServerResponse): void {
-    if (this.widgetStreams.size >= 10) { this.json(res, 429, { error: 'Zu viele OBS-Verbindungen.' }); return; }
+  private openWidgetEventStream(type: WidgetType, tokenHash: string, res: http.ServerResponse): void {
+    const forToken = [...this.widgetStreams.values()].filter((stream) => stream.tokenHash === tokenHash).length;
+    if (forToken >= 4 || this.widgetStreams.size >= 50) {
+      setRateLimitHeaders(res, 10); this.json(res, 429, { error: 'Zu viele OBS-Verbindungen für dieses Widget.', retryAfterSeconds: 10 }); return;
+    }
     res.statusCode = 200; res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-transform'); res.setHeader('Connection', 'keep-alive'); res.flushHeaders();
     let previous = '';
@@ -281,8 +331,8 @@ export class DashboardServer {
       } catch { res.end(); }
     };
     send();
-    const timer = setInterval(send, 1000);
-    this.widgetStreams.set(res, timer);
+    const timer = setInterval(send, 2500);
+    this.widgetStreams.set(res, { timer, tokenHash });
     res.on('close', () => { clearInterval(timer); this.widgetStreams.delete(res); });
   }
 
@@ -430,7 +480,7 @@ export class DashboardServer {
       const active = this.store.activePoll(); const history = this.store.pollHistory(25);
       this.json(res, 200, { active: active ?? history.find((poll) => poll.status === 'ended') ?? null, history }); return;
     }
-    if (route === 'stream' && req.method === 'GET') { this.openEventStream(url, req, res); return; }
+    if (route === 'stream' && req.method === 'GET') { this.openEventStream(url, req, res, session.userId); return; }
     if (req.method !== 'POST') { this.json(res, 405, { error: 'Methode nicht erlaubt.' }); return; }
     const body = await this.readJson(req); if (!body) { this.json(res, 400, { error: 'Ungültiger JSON-Body.' }); return; }
     const now = Date.now();
@@ -792,11 +842,11 @@ export class DashboardServer {
 
   private clearCookie(res: http.ServerResponse): void { res.setHeader('Set-Cookie', 'community_admin=; Path=/dashboard; HttpOnly; Secure; SameSite=Lax; Max-Age=0'); }
 
-  private rateLimit(ip: string): boolean {
-    const now = Date.now(); const record = this.rates.get(ip);
-    if (this.rates.size > 10_000) for (const [key, value] of this.rates) if (value.resets <= now) this.rates.delete(key);
-    if (!record || record.resets <= now) { this.rates.set(ip, { count: 1, resets: now + 60_000 }); return true; }
-    record.count += 1; return record.count <= 120;
+  private rejectRateLimit(res: http.ServerResponse, decision: RateLimitDecision, message: string): boolean {
+    if (decision.allowed) return false;
+    setRateLimitHeaders(res, decision.retryAfterSeconds);
+    this.json(res, 429, { error: message, retryAfterSeconds: decision.retryAfterSeconds });
+    return true;
   }
 
   private async readJson(req: http.IncomingMessage): Promise<Record<string, unknown> | undefined> {
@@ -815,8 +865,11 @@ export class DashboardServer {
       cooldownMs: settings.cooldownMs, activeDurationMs: settings.activeDurationMs, completionXp: settings.completionXp };
   }
 
-  private openEventStream(url: URL, req: http.IncomingMessage, res: http.ServerResponse): void {
-    if (this.eventStreams.size >= 3) { this.json(res, 429, { error: 'Es sind bereits genügend Event-Streams geöffnet.' }); return; }
+  private openEventStream(url: URL, req: http.IncomingMessage, res: http.ServerResponse, userId: string): void {
+    const forUser = [...this.eventStreams.values()].filter((stream) => stream.userId === userId).length;
+    if (forUser >= 3 || this.eventStreams.size >= 50) {
+      setRateLimitHeaders(res, 10); this.json(res, 429, { error: 'Für dein Dashboard sind bereits genügend Live-Verbindungen geöffnet.', retryAfterSeconds: 10 }); return;
+    }
     let lastId = Number(req.headers['last-event-id'] || url.searchParams.get('after') || 0);
     if (!Number.isSafeInteger(lastId) || lastId < 0) lastId = 0;
     res.statusCode = 200; res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -833,7 +886,7 @@ export class DashboardServer {
     };
     send();
     const timer = setInterval(send, 10_000);
-    this.eventStreams.set(res, timer);
+    this.eventStreams.set(res, { timer, userId });
     res.on('close', () => { clearInterval(timer); this.eventStreams.delete(res); });
   }
 

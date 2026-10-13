@@ -4,6 +4,7 @@ import type { AppConfig, ChatMessage } from './types.js';
 import { CommunityFeatures, levelForXp, xpAtLevel } from './community-features.js';
 import { CommunityArcade } from './community-arcade.js';
 import { FeatureStore } from './feature-store.js';
+import { RateLimitBuckets, setRateLimitHeaders, trustedClientAddress } from './request-limits.js';
 
 const VIEWER_SESSION_MS=12*60*60_000;
 const OAUTH_STATE_MS=10*60_000;
@@ -25,7 +26,7 @@ export class ViewerCommunityPortal {
   private readonly secureCookies:boolean;
   private readonly clientId:string;
   private readonly clientSecret:string;
-  private readonly actionRates=new Map<string,{count:number;resetAt:number}>();
+  private readonly rates=new RateLimitBuckets();
   private readonly cleanupTimer:NodeJS.Timeout;
 
   constructor(private readonly store:FeatureStore,private readonly features:CommunityFeatures,private readonly config:AppConfig,
@@ -43,14 +44,22 @@ export class ViewerCommunityPortal {
   async handle(req:IncomingMessage,res:ServerResponse,url:URL):Promise<boolean>{
     const path=url.pathname;
     if(path==='/community/login'&&req.method==='GET'){this.loginPage(res);return true;}
-    if(path==='/community/login/twitch'&&req.method==='GET'){this.login(res);return true;}
+    if(path==='/community/login/twitch'&&req.method==='GET'){
+      if(this.rejectRateLimit(res,this.rates.consume('viewer-oauth-start',trustedClientAddress(req),20,10*60_000),'Zu viele Anmeldeversuche. Bitte später erneut versuchen.'))return true;
+      this.login(res);return true;
+    }
     if(path==='/community/logout'&&req.method==='POST'){this.logout(req,res);return true;}
-    if(path==='/community/api/state'&&req.method==='GET'){this.sendJson(res,200,this.state(req));return true;}
+    if(path==='/community/api/state'&&req.method==='GET'){
+      const session=this.session(req),identity=session?.userId||trustedClientAddress(req);
+      const decision=this.rates.consume(session?'viewer-read':'viewer-public-read',identity,session?240:60,60_000);
+      if(this.rejectRateLimit(res,decision,'Die Community wird gerade zu häufig abgefragt. Bitte kurz warten.'))return true;
+      this.sendJson(res,200,this.state(req));return true;
+    }
     if(path.startsWith('/community/api/')){
       if(req.method!=='POST'){this.sendJson(res,405,{error:'Nur sichere Aktionen sind erlaubt.'});return true;}
       const session=this.session(req);if(!session){this.sendJson(res,401,{error:'Bitte melde dich mit Twitch an.'});return true;}
       if(!this.validCsrf(req,session)){this.sendJson(res,403,{error:'Sicherheitsprüfung fehlgeschlagen. Bitte lade die Seite neu.'});return true;}
-      if(!this.rateAllowed(session.userId)){this.sendJson(res,429,{error:'Du bist gerade sehr aktiv. Bitte warte kurz.'});return true;}
+      if(this.rejectRateLimit(res,this.rates.consume('viewer-write',session.userId,30,60_000),'Du bist gerade sehr aktiv. Bitte warte kurz.'))return true;
       const body=await this.readBody(req);if(!body){this.sendJson(res,400,{error:'Die Eingabe konnte nicht gelesen werden.'});return true;}
       await this.action(path,body,session,res);return true;
     }
@@ -244,7 +253,10 @@ export class ViewerCommunityPortal {
     const origin=req.headers.origin;if(origin&&origin!==this.publicOrigin)return false;
     return true;
   }
-  private rateAllowed(userId:string):boolean{const now=Date.now(),r=this.actionRates.get(userId);if(this.actionRates.size>4000)for(const [id,entry] of this.actionRates)if(entry.resetAt<=now)this.actionRates.delete(id);if(!r||r.resetAt<=now){this.actionRates.set(userId,{count:1,resetAt:now+60_000});return true;}if(r.count>=30)return false;r.count++;return true;}
+  private rejectRateLimit(res:ServerResponse,decision:{allowed:boolean;retryAfterSeconds:number},message:string):boolean{
+    if(decision.allowed)return false;setRateLimitHeaders(res,decision.retryAfterSeconds);
+    this.sendJson(res,429,{error:message,retryAfterSeconds:decision.retryAfterSeconds});return true;
+  }
   private async readBody(req:IncomingMessage):Promise<Record<string,unknown>|undefined>{
     let raw='';for await(const chunk of req){raw+=chunk;if(raw.length>12_000)return undefined;}
     try{const value=JSON.parse(raw) as unknown;return value&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:undefined;}catch{return undefined;}
@@ -257,7 +269,10 @@ export class ViewerCommunityPortal {
   private page(res:ServerResponse,path:string):void{
     const nonce=randomBytes(18).toString('base64');res.setHeader('Cache-Control','no-store');res.setHeader('Referrer-Policy','strict-origin-when-cross-origin');
     res.setHeader('Content-Security-Policy',`default-src 'self'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; img-src 'self' https://static-cdn.jtvnw.net; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`);
-    res.statusCode=200;res.setHeader('Content-Type','text/html; charset=utf-8');res.end(renderCommunityPage(path,nonce));
+    res.statusCode=200;res.setHeader('Content-Type','text/html; charset=utf-8');
+    const pollGuard=`<script nonce="${nonce}">(()=>{const original=window.fetch.bind(window),cache=new Map(),flights=new Map(),retryUntil=new Map();window.fetch=async(input,init={})=>{const method=(init.method||'GET').toUpperCase(),url=new URL(typeof input==='string'?input:input.url,location.href);if(method!=='GET'||url.origin!==location.origin||url.pathname!=='/community/api/state')return original(input,init);const key=url.href,now=Date.now(),retry=retryUntil.get(key)||0;if(retry>now)return new Response(JSON.stringify({error:'Kurz pausiert'}),{status:429,headers:{'Retry-After':String(Math.ceil((retry-now)/1000)),'Content-Type':'application/json'}});const cached=cache.get(key);if(cached&&now-cached.at<8000)return cached.response.clone();if(flights.has(key))return(await flights.get(key)).clone();const task=(async()=>{const r=await original(input,init);if(r.status===429){const seconds=Math.min(60,Math.max(1,Number(r.headers.get('Retry-After'))||5));retryUntil.set(key,Date.now()+seconds*1000)}else if(r.ok)cache.set(key,{at:Date.now(),response:r.clone()});return r})();flights.set(key,task);try{return(await task).clone()}finally{flights.delete(key)}}})()</script>`;
+    const html=renderCommunityPage(path,nonce).replace('</head>',`${pollGuard}</head>`).replace('refresh();setInterval(refresh,4000)','refresh();setInterval(refresh,12000);document.addEventListener("visibilitychange",()=>{if(!document.hidden)refresh()})');
+    res.end(html);
   }
 }
 
