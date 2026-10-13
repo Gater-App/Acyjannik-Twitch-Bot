@@ -129,8 +129,11 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.match(html,/Mindestzahl von/u,'Rollenverteilung bleibt gesperrt bis genug Mitspielende angemeldet sind');
     assert.match(html,/Chat-Nachrichten/u,'das Antwortverhalten ist im Dashboard auffindbar');
     for (const label of ['Übersicht','Spiele','Community','OBS','Chatbefehle','Einstellungen']) assert.match(html,new RegExp(label,'u'));
-    assert.match(html,/<nav class="main-nav" aria-label="Hauptbereiche"><a href="#uebersicht">Übersicht<\/a><a href="#spiele">Spiele<\/a><a href="#community">Community<\/a><a href="#obs">OBS<\/a><\/nav>/u,'die Hauptnavigation bleibt auf vier Bereiche begrenzt');
-    assert.match(html,/<nav class="secondary-nav" aria-label="Weitere Werkzeuge">[\s\S]*Chatbefehle[\s\S]*Weitere Einstellungen/u,'Chatbefehle und Einstellungen sind sekundär erreichbar');
+    assert.match(html,/<nav class="main-nav" aria-label="Hauptnavigation">[\s\S]*data-view-target="overview"[\s\S]*data-view-target="games"[\s\S]*data-view-target="community"[\s\S]*data-view-target="obs"[\s\S]*data-view-target="settings"/u,'die Navigation wechselt zwischen fünf echten Ansichten');
+    assert.match(html,/id="dashboard-legacy-source" class="legacy-source"/u,'alte Funktionsquellen werden beim Laden verborgen und danach den Ansichten zugeordnet');
+    assert.match(html,/data-game-page="imposter"[\s\S]*data-game-page="detective"[\s\S]*data-game-page="drop"[\s\S]*data-game-page="wheel"/u,'Spiele haben getrennte Ansichten');
+    assert.match(html,/id="home-status"[\s\S]*id="home-current"[\s\S]*id="home-warnings"/u,'Startseite ist auf Status, aktuelles Spiel, Aktionen und Warnungen begrenzt');
+    assert.match(html,/id="dashboard-app"/u,'Dashboard ist als getrennte App-Ansicht gerendert');
     assert.match(html,/Community-Boss[\s\S]*hideCard\('Community-Boss'\)/u,'Boss-Feature wird in der normalen Oberfläche nur ausgeblendet');
     assert.match(html,/Chat-Umfrage[\s\S]*hideCard\('Chat-Umfrage'\)/u,'allgemeine Umfrage wird in der normalen Oberfläche nur ausgeblendet');
     assert.match(html,/Weitere Chatspiele[\s\S]*Experimentell[\s\S]*!8ball Frage[\s\S]*!duel @Name[\s\S]*!startguess[\s\S]*!rps schere/u,'experimentelle Chatspiele bleiben mit konkreten Befehlen auffindbar');
