@@ -505,6 +505,16 @@ export class FeatureStore {
         `);
       })();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 11) {
+      if (currentVersion > 0) this.backupBeforeMigration(11);
+      const columns = new Set((this.db.prepare('PRAGMA table_info(community_pet_interactions)').all() as Array<{name:string}>).map(column=>column.name));
+      this.db.transaction(() => {
+        if (!columns.has('announced_at')) this.db.exec('ALTER TABLE community_pet_interactions ADD COLUMN announced_at INTEGER');
+        // Existing interactions predate batching and must not be replayed as new announcements.
+        this.db.exec("UPDATE community_pet_interactions SET announced_at=created_at WHERE announced_at IS NULL; INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (11, unixepoch()*1000);");
+      })();
+    }
   }
 
   private backupBeforeMigration(version: number): void {

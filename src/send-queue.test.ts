@@ -8,3 +8,21 @@ test('Sendewarteschlange sendet seriell und hält Antworten in Reihenfolge', asy
   await Promise.all([queue.enqueue('eins'), queue.enqueue('zwei'), queue.enqueue('drei')]);
   assert.deepEqual(sent, ['eins', 'zwei', 'drei']);
 });
+
+test('Sendewarteschlange begrenzt Duplikate, zeigt Zähler und priorisiert wichtige Ankündigungen', async () => {
+  const sent: string[] = [];
+  let release: (() => void) | undefined;
+  const queue = new SendQueue(async message => {
+    if (message === 'blocker') await new Promise<void>(resolve => { release = resolve; });
+    sent.push(message);
+  }, 0, undefined, 500, 2);
+  const first = queue.enqueue('blocker');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const regular = queue.enqueue('normale Info');
+  const duplicate = queue.enqueue('normale Info');
+  const important = queue.enqueue('Der Mystery Drop startet!');
+  assert.equal(queue.snapshot().suppressed, 1);
+  release?.();
+  await Promise.all([first, regular, duplicate, important]);
+  assert.deepEqual(sent, ['blocker', 'Der Mystery Drop startet!', 'normale Info']);
+});

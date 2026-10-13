@@ -4,6 +4,8 @@ import type { Logger } from './logger.js';
 interface QueueItem {
   message: string;
   replyParentMessageId?: string;
+  priority: number;
+  key: string;
   resolve: () => void;
   reject: (error: unknown) => void;
 }
@@ -11,27 +13,40 @@ interface QueueItem {
 export class SendQueue {
   private readonly items: QueueItem[] = [];
   private sending = false;
+  private suppressed = 0;
 
   constructor(
     private readonly send: (message: string, replyParentMessageId?: string) => Promise<void>,
     private readonly intervalMs = 1100,
     private readonly logger: Logger = consoleLogger,
     private readonly maxLength = 500,
+    private readonly maxQueueSize = 100,
   ) {}
 
   enqueue(message: string, replyParentMessageId?: string): Promise<void> {
     assertChatMessageLength(message, this.maxLength);
     return new Promise<void>((resolve, reject) => {
-      this.items.push({ message, ...(replyParentMessageId ? { replyParentMessageId } : {}), resolve, reject });
+      const key = `${replyParentMessageId || ''}:${message.trim().toLocaleLowerCase()}`;
+      if (this.items.some(item => item.key === key)) { this.suppressed++; resolve(); return; }
+      if (this.items.length >= this.maxQueueSize) {
+        const lowest = this.items.reduce((best, item, index, all) => item.priority < all[best]!.priority ? index : best, 0);
+        const incomingPriority = priorityFor(message);
+        if (incomingPriority <= this.items[lowest]!.priority) { this.suppressed++; resolve(); return; }
+        const [removed] = this.items.splice(lowest, 1);
+        removed?.resolve(); this.suppressed++;
+      }
+      this.items.push({ message, key, priority: priorityFor(message), ...(replyParentMessageId ? { replyParentMessageId } : {}), resolve, reject });
       void this.flush();
     });
   }
 
   get size(): number { return this.items.length; }
+  snapshot() { return { queued: this.items.length, suppressed: this.suppressed }; }
 
   private async flush(): Promise<void> {
     if (this.sending || this.items.length === 0) return;
     this.sending = true;
+    this.items.sort((a, b) => b.priority - a.priority);
     const item = this.items.shift();
     if (!item) { this.sending = false; return; }
     try {
@@ -47,6 +62,10 @@ export class SendQueue {
       }, this.intervalMs);
     }
   }
+}
+
+function priorityFor(message: string): number {
+  return /gestartet|startet|beendet|aufgelöst|gewinner|abstimmung|umfrage|der mystery drop ist geöffnet|der mystery drop ist vorbei|chat-imposter|chat-detektiv/iu.test(message) ? 2 : 1;
 }
 
 const consoleLogger: Logger = {

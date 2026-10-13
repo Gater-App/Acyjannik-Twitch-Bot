@@ -51,6 +51,7 @@ test('First-chat welcome is opt-in, personalized, deduplicated and stores no cha
   const message:ChatMessage={eventId:'welcome-1',broadcasterUserId:config.broadcasterUserId,senderUserId:'new-viewer',senderLogin:'newviewer',senderDisplayName:'NewViewer',message:'private text must not be persisted',sentAt:1};
   assert.equal(community.firstChatWelcome(message,100),undefined);
   store.setConfig('first_chat_welcome',{enabled:true,message:'Willkommen, {user}!'});
+  assert.equal(community.firstChatWelcome({...message,eventId:'welcome-bot',senderLogin:'streamelements'},150,['StreamElements']),undefined,'ausgeschlossene Bots verbrauchen keinen First-Chat-Eintrag');
   assert.equal(community.firstChatWelcome(message,200),'Willkommen, NewViewer!');
   assert.equal(community.firstChatWelcome({...message,eventId:'welcome-2'},300),undefined);
   assert.equal((store.miniGameQuery(db=>db.prepare('SELECT COUNT(*) n FROM first_chat_seen').get()) as {n:number}).n,1);

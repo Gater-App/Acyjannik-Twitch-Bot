@@ -130,6 +130,20 @@ export class CommunityArcade {
         ?`🎁 Der Mystery Drop ist geöffnet! ${due.claims.length} ${due.claims.length===1?'Person erhält':'Personen erhalten'} je ${due.amount} XP. Danke fürs Mitmachen – der Drache freut sich!`
         :'🎁 Der Mystery Drop ist vorbei – diesmal hat niemand mitgemacht. Beim nächsten Mal mit !claim dabei sein!');
     }
+    const batch=this.store.miniGameTransaction(db=>{
+      const oldest=now-2*60_000;
+      db.prepare('UPDATE community_pet_interactions SET announced_at=created_at WHERE announced_at IS NULL AND created_at<?').run(oldest);
+      const rows=db.prepare('SELECT event_id,user_id,kind FROM community_pet_interactions WHERE announced_at IS NULL AND created_at>=? AND created_at<=? ORDER BY created_at').all(now-60_000,now) as Array<{event_id:string;user_id:string;kind:string}>;
+      const participants=new Set(rows.map(row=>row.user_id));
+      const last=this.store.config<number>('pet_chat_batch_last_at',0);
+      if(participants.size<3||(last>0&&now-last<60_000))return undefined;
+      const ids=rows.map(row=>row.event_id);
+      if(!ids.length)return undefined;
+      const placeholders=ids.map(()=>'?').join(',');
+      db.prepare(`UPDATE community_pet_interactions SET announced_at=? WHERE event_id IN (${placeholders}) AND announced_at IS NULL`).run(now,...ids);
+      return {participants:participants.size,actions:rows.length};
+    });
+    if(batch){this.store.setConfig('pet_chat_batch_last_at',now);out.push(`🐉 Gemeinschafts-Power: ${batch.participants} Zuschauer haben in letzter Zeit ${batch.actions} Aktionen mit dem Community-Pet geteilt. Danke, dass ihr euch gemeinsam um den Drachen kümmert!`);}
     this.store.miniGameTransaction(db=>{
       db.prepare("UPDATE community_pet SET hunger=MAX(20,hunger-MIN(5,MAX(0,CAST((?-updated_at)/86400000 AS INTEGER)))),energy=MIN(100,energy+MIN(5,MAX(0,CAST((?-updated_at)/86400000 AS INTEGER)))),updated_at=updated_at+MAX(0,CAST((?-updated_at)/86400000 AS INTEGER))*86400000 WHERE id=1 AND ?-updated_at>=86400000").run(now,now,now,now);
       db.prepare("UPDATE community_pet SET animation=CASE WHEN paused=1 THEN 'sleep' WHEN animation IN ('feed','play','care','happy','drop','levelup','evolution') AND updated_at<? THEN 'idle' ELSE animation END WHERE id=1").run(now-12000);

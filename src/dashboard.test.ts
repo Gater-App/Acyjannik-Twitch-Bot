@@ -95,6 +95,7 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.doesNotMatch(html,/id="mini-config"/u,'normale Minispiel-Einstellungen dürfen kein JSON-Textfeld zeigen');
     assert.match(html,/Nächster Phasenwechsel in/u,'geführter Imposter-Status zeigt den Countdown');
     assert.match(html,/Mindestzahl von/u,'Rollenverteilung bleibt gesperrt bis genug Mitspielende angemeldet sind');
+    assert.match(html,/Chat-Nachrichten/u,'das Antwortverhalten ist im Dashboard auffindbar');
     for (const label of ['Übersicht','Spiele','Community','OBS','Chatbefehle','Einstellungen']) assert.match(html,new RegExp(label,'u'));
     assert.match(html,/<nav class="main-nav" aria-label="Hauptbereiche"><a href="#uebersicht">Übersicht<\/a><a href="#spiele">Spiele<\/a><a href="#community">Community<\/a><a href="#obs">OBS<\/a><\/nav>/u,'die Hauptnavigation bleibt auf vier Bereiche begrenzt');
     assert.match(html,/<nav class="secondary-nav" aria-label="Weitere Werkzeuge">[\s\S]*Chatbefehle[\s\S]*Weitere Einstellungen/u,'Chatbefehle und Einstellungen sind sekundär erreichbar');
@@ -124,6 +125,13 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     const welcomeSave=await fetch(`${base}/dashboard/api/welcome`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({enabled:true,message:'Willkommen, {user}!'})});
     assert.equal(welcomeSave.status,200);
     assert.equal((await (await fetch(`${base}/dashboard/api/welcome`,{headers:{Cookie:sessionCookie}})).json() as {enabled:boolean}).enabled,true);
+    const chatSettingsBefore=await fetch(`${base}/dashboard/api/chat-messages`,{headers:{Cookie:sessionCookie}});
+    assert.equal((await chatSettingsBefore.json() as {profile:string}).profile,'normal');
+    const chatSettingsSave=await fetch(`${base}/dashboard/api/chat-messages`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({profile:'calm',welcomeBots:['StreamElements','nightbot']})});
+    assert.equal(chatSettingsSave.status,200,await chatSettingsSave.clone().text());
+    assert.deepEqual(store.config('chat_response_settings',{}),{profile:'calm',welcomeBots:['streamelements','nightbot']});
+    const invalidChatSettings=await fetch(`${base}/dashboard/api/chat-messages`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({profile:'quiet',welcomeBots:[]})});
+    assert.equal(invalidChatSettings.status,400,'unbekanntes Profil wird abgewiesen');
 
     store.setConfig('spark_settings',{enabled:false,paused:false,minParticipants:3});
     const sparkResponse = await fetch(`${base}/dashboard/api/spark`, { headers: { Cookie: sessionCookie } });

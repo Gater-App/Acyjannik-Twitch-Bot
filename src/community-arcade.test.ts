@@ -19,6 +19,19 @@ test('Community-Pet bleibt gemeinschaftlich, begrenzt Werte und dedupliziert Eve
   store.close();
 });
 
+test('Community-Aktionen werden nur aus gespeicherten, deduplizierten Interaktionen gebündelt und nach Neustart nicht wiederholt',()=>{
+  const {store,arcade}=setup();arcade.updateSettings({...arcade.settings(),petEnabled:true});
+  for(const user of ['u1','u2','u3'])assert.match(arcade.handle(message(user,`pet-${user}`,'!feed'),'feed',[],10_000)||'',/füttert/u);
+  const notice=arcade.tick(10_001).find(text=>text.includes('Gemeinschafts-Power'));
+  assert.match(notice||'',/3 Zuschauer.*3 Aktionen/u);
+  assert.equal(arcade.tick(10_002).some(text=>text.includes('Gemeinschafts-Power')),false);
+  const afterRestart=new CommunityArcade(store,'broadcaster');
+  assert.equal(afterRestart.tick(10_003).some(text=>text.includes('Gemeinschafts-Power')),false);
+  const rows=store.miniGameQuery(db=>(db.prepare('SELECT COUNT(*) n FROM community_pet_interactions WHERE announced_at IS NOT NULL').get() as {n:number}).n);
+  assert.equal(rows,3);
+  store.close();
+});
+
 test('Mystery-Drop nimmt pro Twitch-ID einen Claim an und vergibt XP genau einmal',()=>{
   const {store,arcade}=setup();arcade.updateSettings({...arcade.settings(),dropsEnabled:true,dropDurationMs:10_000});
   assert.match(arcade.startDropAdmin('broadcaster','rare',1000),/Ein Mystery Drop startet/u);

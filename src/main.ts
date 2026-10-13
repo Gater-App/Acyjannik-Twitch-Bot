@@ -11,6 +11,7 @@ import { TwitchOAuth, FileTokenStore, OAuthCallbackServer } from './twitch-oauth
 import { TwitchApi, TwitchApiError } from './twitch-api.js';
 import { EventSubClient } from './eventsub.js';
 import { SendQueue } from './send-queue.js';
+import { ChatResponsePolicy, DEFAULT_CHAT_RESPONSE_SETTINGS } from './chat-response-policy.js';
 import { parseEventSubChatMessage } from './chat.js';
 import type { ChatMessage } from './types.js';
 import { ChannelPointsService } from './channel-points.js';
@@ -81,7 +82,8 @@ async function runLiveMode(): Promise<void> {
     [{name:'channel-points',oauth:redemptionOauth,callbackPath:'/oauth/redemptions/callback',stateFilePath:`${config.redemptionTokenFile}.oauth-state`}],
     `${config.tokenFile}.oauth-state`);
   const game = new GameService(database, config);
-  const handler = new CommandHandler(database, game, config, undefined, community);
+  const chatPolicy = new ChatResponsePolicy(features.config('chat_response_settings', DEFAULT_CHAT_RESPONSE_SETTINGS));
+  const handler = new CommandHandler(database, game, config, undefined, community, chatPolicy);
   const queue = new SendQueue(
     async (message, replyParentMessageId) => {
       const result = await sendChatMessageWithRetry(api, config.broadcasterUserId, config.botUserId, message, replyParentMessageId);
@@ -129,6 +131,7 @@ async function runLiveMode(): Promise<void> {
       const command=chatMessage.message.trim().split(/\s+/u)[0]?.toLowerCase()||'';
       if(command.startsWith('!'))logger.info('Twitch-Chatbefehl verarbeitet.',{command:/^![a-z0-9_-]{1,32}$/u.test(command)?command:'!other',replyCount:replies.length});
       for (const reply of replies) {
+        if (!chatPolicy.shouldSend({ command: command.startsWith('!') ? command : '', message: reply.message })) continue;
         try { await queue.enqueue(reply.message, reply.replyParentMessageId); }
         catch { /* SendQueue logs the safe transport failure; EventSub stays connected. */ }
       }
@@ -164,9 +167,9 @@ async function runLiveMode(): Promise<void> {
       return {maxLength:settings.maxLength??180,queueLimit:settings.queueLimit??100,maxOpenPerUser:settings.maxOpenPerUser??2,
         cooldownMs:settings.cooldownMs??300_000,activeDurationMs:settings.activeDurationMs??0,completionXp:settings.completionXp??25};
     },logger);
-    dashboard = new DashboardServer(features, () => ({twitchConnected:eventsub.isConnected,channel:config.channelLogin,startedAt:botStartedAt}),
+    dashboard = new DashboardServer(features, () => ({twitchConnected:eventsub.isConnected,channel:config.channelLogin,startedAt:botStartedAt,...queue.snapshot(),chatResponse:chatPolicy.snapshot()}),
       logger,fetch,()=>community.conversationSpark.snapshot(),channelPoints,()=>oauthServer.startUrlFor('channel-points'),community.miniGames,community.arcade,
-      async(message)=>{await queue.enqueue(message);});
+      async(message)=>{await queue.enqueue(message);},chatPolicy);
     logger.info('OAuth-Server erreichbar unter http://127.0.0.1:3000/oauth/start');
     await dashboard.start();
     eventsub.start();

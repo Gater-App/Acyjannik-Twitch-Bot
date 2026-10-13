@@ -4,6 +4,7 @@ import { formatCooldown, GameService } from './game.js';
 import { clampChatMessage, eventMessage } from './chat.js';
 import type { CommunityFeatures } from './community-features.js';
 import { helpReply } from './help.js';
+import type { ChatResponsePolicy } from './chat-response-policy.js';
 
 const RESET_CONFIRMATION = 'confirm';
 const RESET_CONFIRMATION_TTL_MS = 60_000;
@@ -25,6 +26,7 @@ export class CommandHandler {
     private readonly config: AppConfig,
     private readonly backup: (destination: string) => Promise<void> = (destination) => this.database.backup(destination),
     private readonly community?: CommunityFeatures,
+    private readonly chatPolicy?: ChatResponsePolicy,
   ) {}
 
   async handle(message: ChatMessage, now = Date.now()): Promise<CommandReply[]> {
@@ -36,7 +38,7 @@ export class CommandHandler {
     const words = message.message.trim().split(/\s+/u);
     const rawCommand = words.shift();
     if (!rawCommand?.startsWith('!')) {
-      const welcome = this.community?.firstChatWelcome(message, now);
+      const welcome = this.community?.firstChatWelcome(message, now, this.chatPolicy?.snapshot().welcomeBots);
       if (welcome) return reply(welcome);
       const sparkSuggestion = this.community?.observeActivity(message, now);
       return sparkSuggestion ? reply(sparkSuggestion) : [];
