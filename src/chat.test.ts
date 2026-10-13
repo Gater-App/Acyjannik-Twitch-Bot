@@ -11,16 +11,19 @@ test('Chatlimit zählt Unicode-Codepoints und verhindert überlange Nachrichten'
 
 test('EventSub-Chatpayload wird auf User-ID und Event-ID abgebildet', () => {
   const message = parseEventSubChatMessage({
-    metadata: { message_id: 'meta-id' },
-    event: {
-      message_id: 'event-id',
-      broadcaster_user_id: 'broadcaster-1',
-      chatter_user_id: 'viewer-1',
-      chatter_user_login: 'viewer',
-      chatter_user_name: 'Viewer',
-      message: { text: '!top' },
-      badges: [{ set_id: 'moderator', id: '1', info: '' }],
-      sent_at: '2026-10-12T12:00:00.000Z',
+    metadata: { message_type: 'notification', message_id: 'meta-id' },
+    payload: {
+      subscription: { type: 'channel.chat.message' },
+      event: {
+        message_id: 'event-id',
+        broadcaster_user_id: 'broadcaster-1',
+        chatter_user_id: 'viewer-1',
+        chatter_user_login: 'viewer',
+        chatter_user_name: 'Viewer',
+        message: { text: '!top' },
+        badges: [{ set_id: 'moderator', id: '1', info: '' }],
+        sent_at: '2026-10-12T12:00:00.000Z',
+      },
     },
   });
   assert.equal(message.eventId, 'event-id');

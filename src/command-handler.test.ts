@@ -4,6 +4,7 @@ import { CommandHandler } from './command-handler.js';
 import { Database } from './database.js';
 import { GameService } from './game.js';
 import { testConfig } from './test-config.js';
+import { parseEventSubChatMessage } from './chat.js';
 import type { AppConfig, ChatMessage } from './types.js';
 
 function message(config: AppConfig, text: string, senderUserId = config.broadcasterUserId, overrides: Partial<ChatMessage> = {}): ChatMessage {
@@ -96,5 +97,33 @@ test('!help bietet kurze Themenhilfe und schützt die Admin-Übersicht', async (
   assert.match(mod[0]?.message || '', /!startimposter/u);
   const owner = await handler.handle(message(config, '!help admin'), 5_000);
   assert.match(owner[0]?.message || '', /!resethalloween CONFIRM/u);
+  database.close();
+});
+
+test('echter verschachtelter Twitch-EventSub-Frame erreicht !help und wird dedupliziert', async () => {
+  const { config, database, handler } = setup();
+  const event = {
+    metadata: { message_type: 'notification', message_id: 'meta-help-1' },
+    payload: {
+      subscription: { type: 'channel.chat.message' },
+      event: {
+        message_id: 'event-help-1',
+        broadcaster_user_id: config.broadcasterUserId,
+        chatter_user_id: 'viewer-live',
+        chatter_user_login: 'viewer',
+        chatter_user_name: 'Viewer',
+        message: { text: '!help' },
+        badges: [],
+        sent_at: '2026-10-13T19:00:00.000Z',
+      },
+    },
+  };
+  const parsed = parseEventSubChatMessage(event);
+  assert.equal(parsed.broadcasterUserId, config.broadcasterUserId);
+  assert.equal(parsed.senderUserId, 'viewer-live');
+  const replies = await handler.handle(parsed, 1_000);
+  assert.equal(replies.length, 1);
+  assert.match(replies[0]?.message || '', /!help games/u);
+  assert.deepEqual(await handler.handle(parsed, 1_001), [], 'redelivery of the same Twitch event is ignored');
   database.close();
 });

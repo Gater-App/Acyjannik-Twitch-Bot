@@ -86,6 +86,7 @@ async function runLiveMode(): Promise<void> {
     async (message, replyParentMessageId) => {
       const result = await sendChatMessageWithRetry(api, config.broadcasterUserId, config.botUserId, message, replyParentMessageId);
       if (!result.isSent) logger.warn('Twitch hat die Antwort verworfen.', { reason: result.dropReason || 'unbekannt' });
+      else logger.info('Twitch hat die Chatantwort angenommen.');
     },
     Math.max(1500, config.sendQueueIntervalMs),
     logger,
@@ -106,10 +107,30 @@ async function runLiveMode(): Promise<void> {
         catch(error){logger.error('Kanalpunkte-Einlösung konnte nicht verarbeitet werden.',{error:error instanceof Error?error.message:'unbekannt'});}
         return;
       }
-      const chatMessage = parseEventSubChatMessage(rawMessage);
-      const replies = await handler.handle(chatMessage);
+      if(subscription?.type!=='channel.chat.message'){
+        logger.warn('Nicht unterstützter EventSub-Benachrichtigungstyp ignoriert.',{subscriptionType:typeof subscription?.type==='string'?subscription.type:'unbekannt'});
+        return;
+      }
+      let chatMessage;
+      try { chatMessage = parseEventSubChatMessage(rawMessage); }
+      catch {
+        const payload=rawMessage.payload&&typeof rawMessage.payload==='object'?rawMessage.payload as Record<string,unknown>:{};
+        const event=payload.event&&typeof payload.event==='object'?payload.event as Record<string,unknown>:{};
+        logger.warn('EventSub-Chat-Event hat ein unerwartetes Format; Verbindung bleibt bestehen.',{
+          payloadKeys:Object.keys(payload),eventKeys:Object.keys(event),
+          hasBroadcasterId:typeof event.broadcaster_user_id==='string',
+          hasChatterId:typeof event.chatter_user_id==='string',hasMessageId:typeof event.message_id==='string',
+        });
+        return;
+      }
+      let replies;
+      try { replies = await handler.handle(chatMessage); }
+      catch(error){logger.error('Twitch-Chatnachricht konnte im Command-Handler nicht verarbeitet werden.',{error:error instanceof Error?error.message:'unbekannt'});return;}
+      const command=chatMessage.message.trim().split(/\s+/u)[0]?.toLowerCase()||'';
+      if(command.startsWith('!'))logger.info('Twitch-Chatbefehl verarbeitet.',{command:/^![a-z0-9_-]{1,32}$/u.test(command)?command:'!other',replyCount:replies.length});
       for (const reply of replies) {
-        await queue.enqueue(reply.message, reply.replyParentMessageId);
+        try { await queue.enqueue(reply.message, reply.replyParentMessageId); }
+        catch { /* SendQueue logs the safe transport failure; EventSub stays connected. */ }
       }
     },
   );

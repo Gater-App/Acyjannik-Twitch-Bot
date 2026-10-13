@@ -25,8 +25,14 @@ export function eventMessage(template: string, values: Record<string, string | n
 }
 
 export function parseEventSubChatMessage(payload: Record<string, unknown>): ChatMessage {
-  const event = payload.event as Record<string, unknown> | undefined;
-  const metadata = payload.metadata as Record<string, unknown> | undefined;
+  // Twitch sends an EventSub envelope: metadata is top-level while the
+  // notification's event lives under payload.event. Keep accepting the
+  // previous flattened form for callers that construct ChatMessage fixtures.
+  const notification = payload.payload && typeof payload.payload === 'object'
+    ? payload.payload as Record<string, unknown>
+    : payload;
+  const event = notification.event as Record<string, unknown> | undefined;
+  const metadata = (payload.metadata ?? notification.metadata) as Record<string, unknown> | undefined;
   if (!event || !metadata) throw new Error('Ungültige EventSub-Nachricht.');
   const badges = Array.isArray(event.badges) ? event.badges as Array<Record<string, unknown>> : [];
   const senderUserId = String(event.chatter_user_id ?? '');
