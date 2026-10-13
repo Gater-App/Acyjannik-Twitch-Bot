@@ -116,6 +116,7 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.equal(page.status, 200);
     const html = await page.text();
     assertInlineScriptsParse(html);
+    assert.match(html,/data-dashboard-view="overview" data-active="true"/u,'Übersicht bleibt bei einem Frontend-Startfehler sichtbar');
     assert.match(html,/dashboardPollVisible/u);assert.match(html,/Retry-After/u);assert.doesNotMatch(html,/setInterval\(refreshMini,3000\)|setInterval\(update,3000\)/u,'veraltete aggressive Minispiel-/Streamer-Polls sind nicht mehr aktiv');
     const csrf = html.match(/name="csrf" content="([a-f0-9]+)"/u)?.[1] || '';
     assert.ok(csrf);

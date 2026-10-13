@@ -15,6 +15,7 @@
     "demo:games": "tsx src/mini-games-demo.ts",
     "demo:arcade": "tsx src/community-arcade-demo.ts",
     "test": "node --import tsx --test src/*.test.ts",
+    "test:browser": "node --import tsx --test browser-tests/*.browser.test.ts",
     "check": "npm run build && npm test"
   },
   "dependencies": {
@@ -26,6 +27,7 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.7.2",
     "@types/ws": "^8.18.1",
+    "playwright": "^1.64.0",
     "tsx": "^4.20.5",
     "typescript": "^5.9.3"
   }
