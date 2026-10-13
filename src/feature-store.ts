@@ -474,6 +474,17 @@ export class FeatureStore {
         INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (8, unixepoch()*1000);
       `))();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 9) {
+      if (currentVersion > 0) this.backupBeforeMigration(9);
+      this.db.transaction(() => this.db.exec(`
+        CREATE TABLE IF NOT EXISTS first_chat_seen(user_id TEXT PRIMARY KEY,first_seen_at INTEGER NOT NULL);
+        INSERT OR IGNORE INTO first_chat_seen(user_id,first_seen_at) SELECT user_id,updated_at FROM xp_users;
+        INSERT OR IGNORE INTO feature_config(key,value) VALUES
+          ('first_chat_welcome','{"enabled":false,"message":"Willkommen im Chat, {user}! 🎮 Schreib !help, wenn du die Community-Befehle sehen möchtest."}');
+        INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (9, unixepoch()*1000);
+      `))();
+    }
   }
 
   private backupBeforeMigration(version: number): void {
@@ -499,6 +510,13 @@ export class FeatureStore {
   setConfig(key: string, value: unknown): void {
     this.db.prepare('INSERT INTO feature_config(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
       .run(key, JSON.stringify(value));
+  }
+
+  markFirstChat(userId:string,now:number,retentionMs=31_536_000_000):boolean {
+    return this.db.transaction(()=>{
+      this.db.prepare('DELETE FROM first_chat_seen WHERE first_seen_at<?').run(now-retentionMs);
+      return this.db.prepare('INSERT OR IGNORE INTO first_chat_seen(user_id,first_seen_at) VALUES(?,?)').run(userId,now).changes===1;
+    })();
   }
 
   createSparkProposal(input: Omit<SparkProposal, 'status' | 'decidedBy' | 'rejectionReason'>, maxPending: number,
@@ -1341,7 +1359,7 @@ export class FeatureStore {
   }
 
   users(search = '', limit = 25): Array<{ userId: string; displayName: string; xp: number }> {
-    const rows = this.db.prepare('SELECT user_id,display_name,xp FROM xp_users WHERE ?="" OR lower(user_id) LIKE lower(?) OR lower(display_name) LIKE lower(?) ORDER BY xp DESC LIMIT ?')
+    const rows = this.db.prepare("SELECT user_id,display_name,xp FROM xp_users WHERE ?='' OR lower(user_id) LIKE lower(?) OR lower(display_name) LIKE lower(?) ORDER BY xp DESC LIMIT ?")
       .all(search, `%${search}%`, `%${search}%`, limit) as Array<{ user_id: string; display_name: string; xp: number }>;
     return rows.map((row) => ({ userId: row.user_id, displayName: row.display_name, xp: row.xp }));
   }

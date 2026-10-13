@@ -25,6 +25,8 @@ oder Sachpreisverlosungen.
 - Responsives Admin-Dashboard für Status, Module, Events, Nutzer-XP,
   protokollierte Korrekturen und Chatbefehle; Twitch-OAuth, feste User-ID-Allowlist,
   HttpOnly-/Secure-Cookies, SameSite, CSRF-Prüfung, Rate-Limit und Logout
+- Optionale Begrüßung neuer Chatter mit `{user}`-Platzhalter; standardmäßig aus,
+  pro Twitch-ID höchstens einmal je 365 Tage und ohne Speicherung von Chattexten
 - Moderierte Zuschauer-Quests mit persistenten Status, Cooldowns, Warteschlange,
   expliziter Freigabe/Start und einmaliger XP-Belohnung bei erfolgreichem Abschluss
 - Botinterne Chat- und Quest-Abstimmungen mit einer Stimme pro Twitch-User-ID,
@@ -177,6 +179,16 @@ Imposter wird vor der Auflösung nur Phase, Teilnehmerzahl und Stimmzahl gezeigt
 für den Detektiv wird der freigegebene Zitattext gezeigt, nicht der Autor. Die
 Identität erscheint erst in der Auflösung. Token-URL nicht öffentlich teilen;
 Erneuern widerruft die vorherige URL.
+
+### Begrüßung neuer Chatter
+
+Im Dashboard lässt sich eine zurückhaltende Willkommensnachricht aktivieren und
+anpassen. Sie erscheint bei der ersten normalen Chatnachricht eines Kontos im
+aktiven 365-Tage-Aufbewahrungsfenster; Befehle werden nicht abgefangen. Bereits
+im XP-System bekannte Konten werden beim Upgrade als zuvor gesehen übernommen.
+Gespeichert werden ausschließlich Twitch-User-ID und Zeitpunkt. Das Feature ist
+nach der Migration zunächst ausgeschaltet und muss für den gewünschten Stream
+im Dashboard ausdrücklich aktiviert werden.
 
 Datensparsamkeit: Es werden keine Chatverläufe mitgeschnitten. Nur explizit
 eingereichte Zitate, Twitch-User-ID/Login/Anzeigename, Einreichungs-/Ablaufzeit,
@@ -338,6 +350,11 @@ Aktueller Implementierungsumfang: gemeinschaftlicher Drache mit begrenzten Pfleg
 | `!startwheel`, `!cancelwheel`, `!wheelpause`, `!wheelresume` | Jannik/Mods steuern den Dreh; Pause/Fortsetzen nur Jannik |
 
 ## Oracle Always Free ARM64 – Installation und Abnahme
+
+Hinweis zum aktuellen Live-Host: Die am 13.10.2026 geprüfte VM meldet
+`x86_64` und läuft mit Node.js 24; der ARM64-Container-Build wurde nicht
+abgenommen. Dieses Kapitel beschreibt das ARM64-Ziel, nicht die nachgewiesene
+Architektur des aktuell laufenden Prozesses.
 
 Die Compose-Datei bindet OAuth- und Dashboard-Port ausschließlich an Loopback
 des Hosts (`127.0.0.1`); Caddy vermittelt HTTPS auf 80/443. Die vorhandenen

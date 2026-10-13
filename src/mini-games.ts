@@ -36,7 +36,14 @@ export class MiniGames {
     if(!Array.isArray(saved.imposter?.rules)||saved.imposter.rules.length===0)store.setConfig('mini_game_settings',{...DEFAULT_MINI_GAME_SETTINGS,...saved,imposter:{...DEFAULT_MINI_GAME_SETTINGS.imposter,...saved.imposter,rules:DEFAULT_MINI_GAME_SETTINGS.imposter.rules}});
   }
   settings():MiniGameSettings{return setting(this.store)}
-  updateSettings(value:MiniGameSettings):void{this.store.setConfig('mini_game_settings',value)}
+  updateSettings(value:MiniGameSettings):void{
+    if(!value||typeof value!=='object'||typeof value.enabled!=='boolean'||!value.imposter||!value.detective)throw new Error('Minispiel-Einstellungen sind unvollständig.');
+    const integer=(n:number,min:number,max:number)=>Number.isSafeInteger(n)&&n>=min&&n<=max;
+    const i=value.imposter,d=value.detective;
+    if(!integer(i.minPlayers,3,20)||!integer(i.maxPlayers,i.minPlayers,50)||!integer(i.registrationMs,1_000,3_600_000)||!integer(i.playMs,1_000,3_600_000)||!integer(i.votingMs,1_000,300_000)||!integer(i.cooldownMs,0,86_400_000)||typeof i.allowVoteChange!=='boolean'||typeof i.noSelfVote!=='boolean'||!['imposter','neutral'].includes(i.tieOutcome)||!integer(i.winXp,0,1000)||!integer(i.participationXp,0,1000)||!Array.isArray(i.rules)||i.rules.length<1||i.rules.length>100||i.rules.some(r=>!r||typeof r.id!=='string'||!/^[a-z0-9_-]{1,40}$/u.test(r.id)||typeof r.name!=='string'||r.name.length<1||r.name.length>80||typeof r.description!=='string'||r.description.length<5||r.description.length>240||typeof r.enabled!=='boolean'))throw new Error('Imposter-Einstellungen oder Regelpool sind ungültig.');
+    if(!integer(d.roundMs,1_000,600_000)||!integer(d.quoteRetentionDays,1,3650)||!integer(d.winXp,0,1000)||!integer(d.dailyXpCap,0,10_000)||typeof d.allowGuessChange!=='boolean')throw new Error('Detektiv-Einstellungen sind ungültig.');
+    this.store.setConfig('mini_game_settings',value);
+  }
   snapshot(now=Date.now()):Record<string,unknown>{
     const imp=this.store.miniGameQuery(db=>db.prepare(`SELECT id,phase,started_at,phase_ends_at,result_json FROM imposter_rounds WHERE ${liveImposter} ORDER BY started_at DESC LIMIT 1`).get() as any);
     const detective=this.store.miniGameQuery(db=>db.prepare("SELECT r.id,r.phase,r.started_at,r.ends_at,q.text,(SELECT COUNT(*) FROM detective_guesses g WHERE g.round_id=r.id) guesses FROM detective_rounds r JOIN detective_quotes q ON q.id=r.quote_id WHERE r.phase IN ('playing','results') ORDER BY r.started_at DESC LIMIT 1").get() as any);

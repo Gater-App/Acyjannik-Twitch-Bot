@@ -143,7 +143,8 @@ async function runLiveMode(): Promise<void> {
         cooldownMs:settings.cooldownMs??300_000,activeDurationMs:settings.activeDurationMs??0,completionXp:settings.completionXp??25};
     },logger);
     dashboard = new DashboardServer(features, () => ({twitchConnected:eventsub.isConnected,channel:config.channelLogin,startedAt:botStartedAt}),
-      logger,fetch,()=>community.conversationSpark.snapshot(),channelPoints,()=>oauthServer.startUrlFor('channel-points'),community.miniGames,community.arcade);
+      logger,fetch,()=>community.conversationSpark.snapshot(),channelPoints,()=>oauthServer.startUrlFor('channel-points'),community.miniGames,community.arcade,
+      async(message)=>{await queue.enqueue(message);});
     logger.info('OAuth-Server erreichbar unter http://127.0.0.1:3000/oauth/start');
     await dashboard.start();
     eventsub.start();

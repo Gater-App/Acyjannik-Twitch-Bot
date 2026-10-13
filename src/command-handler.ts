@@ -36,6 +36,8 @@ export class CommandHandler {
     const words = message.message.trim().split(/\s+/u);
     const rawCommand = words.shift();
     if (!rawCommand?.startsWith('!')) {
+      const welcome = this.community?.firstChatWelcome(message, now);
+      if (welcome) return reply(welcome);
       const sparkSuggestion = this.community?.observeActivity(message, now);
       return sparkSuggestion ? reply(sparkSuggestion) : [];
     }

@@ -70,7 +70,7 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.equal(callback.status, 303);
     const cookies = callback.headers.getSetCookie();
     const sessionCookie = cookies.find((value) => value.startsWith('community_admin='))?.split(';')[0] || '';
-    assert.match(cookies.find((value) => value.startsWith('community_admin=')) || '', /HttpOnly; Secure; SameSite=Strict/u);
+    assert.match(cookies.find((value) => value.startsWith('community_admin=')) || '', /HttpOnly; Secure; SameSite=Lax/u);
 
     const page = await fetch(`${base}/dashboard`, { headers: { Cookie: sessionCookie } });
     assert.equal(page.status, 200);
@@ -80,6 +80,18 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.ok(csrf);
     assert.match(page.headers.get('content-security-policy') || '', /nonce-/u);
     assert.doesNotMatch(page.headers.get('content-security-policy') || '', /unsafe-inline/u);
+    assert.match(html,/Begrüßung neuer Chatter/u);
+    assert.match(html,/Community-Aktionen/u);
+    assert.match(html,/OBS: Widgets für den Stream/u);
+    assert.match(html,/So fügst du es in OBS ein/u);
+    assert.match(html,/privaten Link/u);
+    assert.match(html,/Erweiterte Einstellungen/u);
+    assert.match(html,/Für Fortgeschrittene: Erkennung einstellen/u);
+    const welcomeBefore=await fetch(`${base}/dashboard/api/welcome`,{headers:{Cookie:sessionCookie}});
+    assert.equal((await welcomeBefore.json() as {enabled:boolean}).enabled,false);
+    const welcomeSave=await fetch(`${base}/dashboard/api/welcome`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({enabled:true,message:'Willkommen, {user}!'})});
+    assert.equal(welcomeSave.status,200);
+    assert.equal((await (await fetch(`${base}/dashboard/api/welcome`,{headers:{Cookie:sessionCookie}})).json() as {enabled:boolean}).enabled,true);
 
     const sparkResponse = await fetch(`${base}/dashboard/api/spark`, { headers: { Cookie: sessionCookie } });
     assert.equal(sparkResponse.status, 200);

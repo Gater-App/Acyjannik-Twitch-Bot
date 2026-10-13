@@ -45,6 +45,18 @@ test('XP ist dedupliziert, Aktivitäts-XP respektiert Cooldown/Spam und Levelkur
   store.close(); f.close();
 });
 
+test('First-chat welcome is opt-in, personalized, deduplicated and stores no chat text',()=>{
+  const f=fixture(),store=new FeatureStore(f.file),config={...loadConfig({testMode:true}),databasePath:f.file};
+  const community=new CommunityFeatures(store,config);
+  const message:ChatMessage={eventId:'welcome-1',broadcasterUserId:config.broadcasterUserId,senderUserId:'new-viewer',senderLogin:'newviewer',senderDisplayName:'NewViewer',message:'private text must not be persisted',sentAt:1};
+  assert.equal(community.firstChatWelcome(message,100),undefined);
+  store.setConfig('first_chat_welcome',{enabled:true,message:'Willkommen, {user}!'});
+  assert.equal(community.firstChatWelcome(message,200),'Willkommen, NewViewer!');
+  assert.equal(community.firstChatWelcome({...message,eventId:'welcome-2'},300),undefined);
+  assert.equal((store.miniGameQuery(db=>db.prepare('SELECT COUNT(*) n FROM first_chat_seen').get()) as {n:number}).n,1);
+  store.close();f.close();
+});
+
 test('Events wechseln exklusiv, werden bei Ende archiviert und können wiederholt beendet werden', () => {
   const f = fixture(); const store = new FeatureStore(f.file);
   assert.equal(store.setEventActive('christmas', true, 10_000), true);

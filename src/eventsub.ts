@@ -1,6 +1,8 @@
 import WebSocket from 'ws';
 import type { Logger } from './logger.js';
 
+const DEFAULT_EVENTSUB_URL = 'wss://eventsub.wss.twitch.tv/ws?keepalive_timeout_seconds=30';
+
 interface EventSubMessage {
   metadata?: { message_type?: string; message_id?: string };
   payload?: {
@@ -28,7 +30,7 @@ export class EventSubClient {
   start(): void {
     this.stopped = false;
     this.retryAttempt = 0;
-    this.connect(this.reconnectUrl || 'wss://eventsub.wss.twitch.tv/ws');
+    this.connect(this.reconnectUrl || DEFAULT_EVENTSUB_URL);
   }
 
   async stop(): Promise<void> {
@@ -84,6 +86,8 @@ export class EventSubClient {
       return;
     }
     if (type === 'notification') {
+      // Twitch resets its keepalive window when it sends a notification too.
+      this.armKeepalive(this.keepaliveTimeoutSeconds);
       await this.onNotification(message as Record<string, unknown>);
       return;
     }
@@ -97,7 +101,8 @@ export class EventSubClient {
     this.keepaliveTimer = setTimeout(() => {
       this.logger.warn('EventSub-Keepalive überschritten; Verbindung wird neu aufgebaut.');
       this.socket?.close();
-    }, Math.max(5, seconds) * 1000);
+    // Leave a little room for network and event-loop scheduling jitter.
+    }, Math.max(5, seconds) * 1000 + 2000);
   }
 
   private scheduleReconnect(): void {
@@ -106,7 +111,7 @@ export class EventSubClient {
     this.logger.warn('EventSub-Verbindung getrennt; Reconnect geplant.', { delayMs: delay });
     this.retryTimer = setTimeout(() => {
       this.retryTimer = undefined;
-      this.connect(this.reconnectUrl || 'wss://eventsub.wss.twitch.tv/ws');
+      this.connect(this.reconnectUrl || DEFAULT_EVENTSUB_URL);
     }, delay);
   }
 }

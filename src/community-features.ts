@@ -46,6 +46,14 @@ export class CommunityFeatures {
       ? `🎮 Im Chat dreht sich gerade viel um ${created[0].topicLabel}! Ein Vorschlag wartet auf Freigabe im Dashboard.` : undefined;
   }
 
+  firstChatWelcome(message:ChatMessage,now=Date.now()):string|undefined {
+    if(message.senderUserId===this.config.botUserId||message.senderUserId===message.broadcasterUserId)return undefined;
+    const settings=this.store.config<{enabled:boolean;message:string}>('first_chat_welcome',{enabled:false,message:'Willkommen im Chat, {user}! 🎮 Schreib !help, wenn du die Community-Befehle sehen möchtest.'});
+    if(!settings.enabled||!this.store.markFirstChat(message.senderUserId,now))return undefined;
+    const text=settings.message.replace(/\{user\}/gu,cleanName(message.senderDisplayName));
+    return clampChatMessage(text,this.config.appChatMessageLength);
+  }
+
   syncLegacyHalloween(now = Date.now()): void { this.store.syncLegacyHalloween(now); }
 
   activeEventId(): string | undefined { return this.store.activeEvent()?.id; }
