@@ -485,6 +485,26 @@ export class FeatureStore {
         INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (9, unixepoch()*1000);
       `))();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 10) {
+      if (currentVersion > 0) this.backupBeforeMigration(10);
+      const challengeColumns = new Set((this.db.prepare('PRAGMA table_info(chaos_wheel_challenges)').all() as Array<{name:string}>).map((column)=>column.name));
+      const spinColumns = new Set((this.db.prepare('PRAGMA table_info(chaos_wheel_spins)').all() as Array<{name:string}>).map((column)=>column.name));
+      const dropColumns = new Set((this.db.prepare('PRAGMA table_info(mystery_drops)').all() as Array<{name:string}>).map((column)=>column.name));
+      this.db.transaction(() => {
+        if (!challengeColumns.has('action_type')) this.db.exec("ALTER TABLE chaos_wheel_challenges ADD COLUMN action_type TEXT NOT NULL DEFAULT 'manual_challenge' CHECK(action_type IN ('manual_challenge','start_mystery_drop','boost_pet'))");
+        if (!spinColumns.has('action_type')) this.db.exec("ALTER TABLE chaos_wheel_spins ADD COLUMN action_type TEXT NOT NULL DEFAULT 'manual_challenge' CHECK(action_type IN ('manual_challenge','start_mystery_drop','boost_pet'))");
+        if (!dropColumns.has('source_spin_id')) this.db.exec('ALTER TABLE mystery_drops ADD COLUMN source_spin_id TEXT');
+        // One-time compatibility mapping for built-in rows created before wheel actions existed;
+        // runtime execution uses only action_type, never challenge text.
+        this.db.exec(`
+          CREATE UNIQUE INDEX IF NOT EXISTS mystery_drop_source_spin ON mystery_drops(source_spin_id) WHERE source_spin_id IS NOT NULL;
+          UPDATE chaos_wheel_challenges SET action_type='start_mystery_drop' WHERE title='Mystery Drop für den Chat' AND action_type='manual_challenge';
+          UPDATE chaos_wheel_challenges SET action_type='boost_pet' WHERE title='Der Drache bekommt einen Energieschub!' AND action_type='manual_challenge';
+          INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (10, unixepoch()*1000);
+        `);
+      })();
+    }
   }
 
   private backupBeforeMigration(version: number): void {
