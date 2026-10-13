@@ -25,6 +25,9 @@ test('tips are off by default, unknown/offline streams never send, and lively re
   const { tips, close } = setup();
   try {
     assert.equal(tips.settings().enabled, false);
+    for(let i=0;i<TIP_ACTIVITY_RULES.normal.messages;i++)tips.observe(message(`Real viewer conversation ${i}`,`disabled-${i}`),100+i);
+    assert.equal(tips.eligibleActivityMessages,TIP_ACTIVITY_RULES.normal.messages,'Aktivitätsmessung unterstützt eigene Nachrichten auch bei ausgeschalteten Community-Tipps');
+    tips.alignStream('new-stream');assert.equal(tips.eligibleActivityMessages,0,'Streamwechsel verwirft Aktivität aus dem vorherigen Stream');
     tips.configure(true);
     assert.equal(tips.maybeSend({ isLive: undefined, streamId: 's', profile: 'lively', availability: available, busy: false, now: 1 }), undefined);
     assert.equal(tips.maybeSend({ isLive: false, streamId: 's', profile: 'lively', availability: available, busy: false, now: 1 }), undefined);

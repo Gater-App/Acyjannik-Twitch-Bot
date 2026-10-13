@@ -547,6 +547,22 @@ export class FeatureStore {
         INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (14, unixepoch()*1000);
       `))();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 15) {
+      if (currentVersion > 0) this.backupBeforeMigration(15);
+      this.db.transaction(() => this.db.exec(`
+        CREATE TABLE IF NOT EXISTS automatic_chat_messages (
+          id TEXT PRIMARY KEY, title TEXT NOT NULL, message TEXT NOT NULL,
+          interval_minutes INTEGER NOT NULL CHECK(interval_minutes BETWEEN 15 AND 1440),
+          enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+          active_chat_only INTEGER NOT NULL DEFAULT 0 CHECK(active_chat_only IN (0,1)),
+          created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+          last_sent_at INTEGER, last_attempt_at INTEGER, last_error_at INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS automatic_chat_messages_due ON automatic_chat_messages(enabled,updated_at);
+        INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (15, unixepoch()*1000);
+      `))();
+    }
   }
 
   private backupBeforeMigration(version: number): void {

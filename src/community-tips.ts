@@ -68,7 +68,6 @@ export class CommunityTips {
     };
   }
   observe(message: ChatMessage, now = Date.now()): void {
-    if (!this.settings().enabled) return;
     if (this.recentEventIds.has(message.eventId)) return;
     this.recentEventIds.add(message.eventId);
     if (this.recentEventIds.size > 2000) this.recentEventIds.delete(this.recentEventIds.values().next().value!);
@@ -76,7 +75,7 @@ export class CommunityTips {
     const command = message.message.trim().match(/^!([a-z0-9_-]+)/iu)?.[1]?.toLowerCase();
     if (command) {
       const topic = FEATURE_COMMANDS[command];
-      if (topic) {
+      if (topic && this.settings().enabled) {
         this.featureUsedAt.set(topic, now);
         this.store.setConfig('community_tip_recent_usage', Object.fromEntries(this.featureUsedAt));
       }
@@ -94,6 +93,11 @@ export class CommunityTips {
   }
 
   preview(availability: TipAvailability): CommunityTip[] { return this.available(availability); }
+  get eligibleActivityMessages():number { return this.activityCount; }
+  consumeActivity():void { this.activityCount=0; }
+  alignStream(streamId:string|null):void {
+    if(this.activeStreamId!==streamId){this.activeStreamId=streamId;this.activityCount=0;}
+  }
   status(profile: ChatProfile, now = Date.now()) {
     const state = this.state(), rules = TIP_ACTIVITY_RULES[profile];
     const recent = this.sentAt.filter(at => now - at < 60 * 60_000).length;

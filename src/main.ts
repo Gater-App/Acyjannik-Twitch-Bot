@@ -17,6 +17,7 @@ import type { ChatMessage } from './types.js';
 import { ChannelPointsService } from './channel-points.js';
 import type { QuestPolicy } from './feature-store.js';
 import { CommunityTips } from './community-tips.js';
+import { AutomaticChatMessages } from './automatic-chat-messages.js';
 
 const isTestMode = process.argv.includes('--test') || process.env.TEST_MODE === 'true';
 
@@ -85,6 +86,7 @@ async function runLiveMode(): Promise<void> {
   const game = new GameService(database, config);
   const chatPolicy = new ChatResponsePolicy(features.config('chat_response_settings', DEFAULT_CHAT_RESPONSE_SETTINGS));
   const communityTips = new CommunityTips(features);
+  const automaticChatMessages = new AutomaticChatMessages(features);
   const handler = new CommandHandler(database, game, config, undefined, community, chatPolicy, communityTips);
   const queue = new SendQueue(
     async (message, replyParentMessageId) => {
@@ -129,6 +131,7 @@ async function runLiveMode(): Promise<void> {
         return;
       }
       let replies;
+      communityTips.observe(chatMessage);
       try { replies = await handler.handle(chatMessage); }
       catch(error){logger.error('Twitch-Chatnachricht konnte im Command-Handler nicht verarbeitet werden.',{error:error instanceof Error?error.message:'unbekannt'});return;}
       const command=chatMessage.message.trim().split(/\s+/u)[0]?.toLowerCase()||'';
@@ -155,19 +158,37 @@ async function runLiveMode(): Promise<void> {
         const arcade = community.arcade.snapshot('drop');
         const wheel = community.arcade.wheelStatus();
         const dropStatus = (arcade.drop as { status?: string } | undefined)?.status;
-        const busy = Boolean(snapshots.imposter || snapshots.detective || ['announced','claiming','resolving'].includes(dropStatus || '') || wheel.active
+        const busy = Boolean(snapshots.imposter || snapshots.detective || features.activeQuest() || features.activePoll(now) || features.activeBoss(now)
+          || ['announced','claiming','resolving'].includes(dropStatus || '') || wheel.active
           || queue.size > 0 || now - lastSpecialAnnouncementAt < 60_000);
         const profile = chatPolicy.snapshot().profile, availability = community.helpAvailability();
-        if (!checkingLive && now - lastTipLiveCheckAt >= 15_000 && communityTips.shouldEvaluate(profile, availability, busy, now)) {
+        const dueMessage=automaticChatMessages.hasDue(now,communityTips.eligibleActivityMessages,busy);
+        const wantsTip=communityTips.shouldEvaluate(profile,availability,busy,now)&&automaticChatMessages.canReserveGlobalSlot(now);
+        if (!checkingLive && now - lastTipLiveCheckAt >= 15_000 && (Boolean(dueMessage)||wantsTip)) {
           checkingLive = true;
           try {
             lastTipLiveCheckAt = Date.now();
             const stream = await api.getStreamStatus(config.broadcasterUserId);
-            if (!stream) communityTips.maybeSend({ isLive: false, profile, availability, busy, now: Date.now() });
+            if (!stream) { communityTips.alignStream(null);communityTips.maybeSend({ isLive: false, profile, availability, busy, now: Date.now() }); }
             else {
-              const tip = communityTips.maybeSend({ isLive: true, streamId: stream.id, profile, availability, busy, now: Date.now(),
-                allowSend: candidate => chatPolicy.shouldSend({ message: candidate.text, now: Date.now() }) });
-              if (tip) void queue.enqueue(tip.text, undefined, 'tip').catch(error=>logger.warn('Community-Tipp konnte nicht in den Chat gestellt werden.',{error:error instanceof Error?error.message:'unbekannt'}));
+              communityTips.alignStream(stream.id);
+              const currentState=community.miniGames.snapshot(),currentDrop=community.arcade.snapshot('drop'),currentWheel=community.arcade.wheelStatus();
+              const currentDropStatus=(currentDrop.drop as {status?:string}|undefined)?.status;
+              const currentBusy=Boolean(currentState.imposter||currentState.detective||features.activeQuest()||features.activePoll(Date.now())||features.activeBoss(Date.now())
+                ||['announced','claiming','resolving'].includes(currentDropStatus||'')||currentWheel.active||queue.size>0||Date.now()-lastSpecialAnnouncementAt<60_000);
+              const currentDue=automaticChatMessages.nextDue(Date.now(),communityTips.eligibleActivityMessages,currentBusy,true);
+              if(currentDue&&chatPolicy.shouldSend({message:currentDue.message,now:Date.now()})&&automaticChatMessages.reserveMessageAttempt(currentDue.id,Date.now())){
+                communityTips.consumeActivity();
+                try{await queue.enqueue(currentDue.message,undefined,'info');automaticChatMessages.markSent(currentDue.id,Date.now());}
+                catch(error){automaticChatMessages.markFailed(currentDue.id,Date.now());logger.warn('Automatische Chatnachricht konnte nicht gesendet werden; nächster Versuch frühestens nach dem Nachrichtenintervall.',{error:error instanceof Error?error.message:'unbekannt'});}
+              }else if(!currentBusy&&wantsTip){
+                const tip = communityTips.maybeSend({ isLive: true, streamId: stream.id, profile, availability, busy:currentBusy, now: Date.now(),
+                  allowSend: candidate => chatPolicy.shouldSend({ message: candidate.text, now: Date.now() }) });
+                if(tip&&automaticChatMessages.reserveGlobalSlot(Date.now())){
+                  communityTips.consumeActivity();
+                  try{await queue.enqueue(tip.text,undefined,'tip');}catch(error){logger.warn('Community-Tipp konnte nicht in den Chat gestellt werden.',{error:error instanceof Error?error.message:'unbekannt'});}
+                }
+              }
             }
           }
           catch (error) {
@@ -204,7 +225,7 @@ async function runLiveMode(): Promise<void> {
     },logger);
     dashboard = new DashboardServer(features, () => ({twitchConnected:eventsub.isConnected,channel:config.channelLogin,startedAt:botStartedAt,...queue.snapshot(),chatResponse:chatPolicy.snapshot()}),
       logger,fetch,()=>community.conversationSpark.snapshot(),channelPoints,()=>oauthServer.startUrlFor('channel-points'),community.miniGames,community.arcade,
-      async(message,category)=>{await queue.enqueue(message,undefined,category);},chatPolicy,communityTips);
+      async(message,category)=>{await queue.enqueue(message,undefined,category);},chatPolicy,communityTips,automaticChatMessages);
     logger.info('OAuth-Server erreichbar unter http://127.0.0.1:3000/oauth/start');
     await dashboard.start();
     eventsub.start();

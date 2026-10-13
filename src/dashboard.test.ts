@@ -10,6 +10,7 @@ import { FeatureStore } from './feature-store.js';
 import { CommunityArcade } from './community-arcade.js';
 import { logger } from './logger.js';
 import { CommunityTips } from './community-tips.js';
+import { AutomaticChatMessages } from './automatic-chat-messages.js';
 
 async function freePort(): Promise<number> {
   const server = net.createServer();
@@ -48,7 +49,8 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
   arcade.updateSettings({...arcade.settings(),wheelEnabled:true,petEnabled:true,dropsEnabled:true});
   const sentChat:string[]=[];
   const communityTips=new CommunityTips(store);
-  const dashboard = new DashboardServer(store, () => ({ twitchConnected: true, channel: 'acyjannik', startedAt: 1 }), logger, fetchImpl,undefined,undefined,undefined,undefined,arcade,async message=>{sentChat.push(message)},undefined,communityTips);
+  const automaticMessages=new AutomaticChatMessages(store);
+  const dashboard = new DashboardServer(store, () => ({ twitchConnected: true, channel: 'acyjannik', startedAt: 1 }), logger, fetchImpl,undefined,undefined,undefined,undefined,arcade,async message=>{sentChat.push(message)},undefined,communityTips,automaticMessages);
   try {
     assert.equal(await dashboard.start(), true);
     const base = `http://127.0.0.1:${port}`;
@@ -99,6 +101,8 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assertInlineScriptsParse(html);
     const csrf = html.match(/name="csrf" content="([a-f0-9]+)"/u)?.[1] || '';
     assert.ok(csrf);
+    assert.match(html,/Eigene Nachrichten/u);assert.match(html,/Community-Tipps/u);assert.match(html,/automatic-chat-form/u);
+    assert.match(html,/@media\(max-width:520px\)/u);
     assert.match(page.headers.get('content-security-policy') || '', /nonce-/u);
     assert.doesNotMatch(page.headers.get('content-security-policy') || '', /unsafe-inline/u);
     assert.match(html,/Begrüßung neuer Chatter/u);
@@ -163,6 +167,25 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.equal(communityTips.settings().enabled,true,'dashboard can opt in community tips');
     const invalidChatSettings=await fetch(`${base}/dashboard/api/chat-messages`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({profile:'quiet',welcomeBots:[]})});
     assert.equal(invalidChatSettings.status,400,'unbekanntes Profil wird abgewiesen');
+
+    const automaticUnauthorized=await fetch(`${base}/dashboard/api/automatic-messages`,{redirect:'manual'});
+    assert.equal(automaticUnauthorized.status,401,'automatische Nachrichten bleiben hinter Dashboard-Login');
+    const autoHeaders={Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'};
+    const automaticNoCsrf=await fetch(`${base}/dashboard/api/automatic-messages`,{method:'POST',headers:{Cookie:sessionCookie,'Content-Type':'application/json'},body:JSON.stringify({action:'save',title:'Test',message:'Testmeldung',intervalMinutes:30})});
+    assert.equal(automaticNoCsrf.status,403,'Änderungen benötigen CSRF-Schutz');
+    const automaticSave=await fetch(`${base}/dashboard/api/automatic-messages`,{method:'POST',headers:autoHeaders,body:JSON.stringify({action:'save',title:'Discord-Hinweis',message:'Kommt zu uns auf Discord!',intervalMinutes:45,enabled:true,activeChatOnly:true})});
+    assert.equal(automaticSave.status,200,await automaticSave.clone().text());
+    const savedAutomatic=await automaticSave.json() as {message:{id:string;preview:string;intervalMinutes:number}};
+    assert.equal(savedAutomatic.message.intervalMinutes,45);assert.match(savedAutomatic.message.preview,/【📢 INFO】/u);
+    assert.equal(((await (await fetch(`${base}/dashboard/api/automatic-messages`,{headers:{Cookie:sessionCookie}})).json()) as {messages:Array<unknown>}).messages.length,1);
+    const automaticPaused=await fetch(`${base}/dashboard/api/automatic-messages`,{method:'POST',headers:autoHeaders,body:JSON.stringify({action:'toggle',id:savedAutomatic.message.id,enabled:false})});
+    assert.equal(automaticPaused.status,200);assert.equal(automaticMessages.list()[0]?.enabled,false);
+    const automaticEdited=await fetch(`${base}/dashboard/api/automatic-messages`,{method:'POST',headers:autoHeaders,body:JSON.stringify({action:'save',id:savedAutomatic.message.id,title:'Discord',message:'Willkommen!',intervalMinutes:60,enabled:true})});
+    assert.equal(automaticEdited.status,200);assert.equal(automaticMessages.list()[0]?.activeChatOnly,true,'nicht übermittelte Optionen bleiben erhalten');
+    const automaticDeleted=await fetch(`${base}/dashboard/api/automatic-messages`,{method:'POST',headers:autoHeaders,body:JSON.stringify({action:'delete',id:savedAutomatic.message.id})});
+    assert.equal(automaticDeleted.status,200);assert.equal(automaticMessages.list().length,0);
+    const invalidInterval=await fetch(`${base}/dashboard/api/automatic-messages`,{method:'POST',headers:autoHeaders,body:JSON.stringify({action:'save',title:'Zu oft',message:'Nein',intervalMinutes:1})});
+    assert.equal(invalidInterval.status,400,'Mindestabstand kann nicht unterschritten werden');
 
     const wheelState=await fetch(`${base}/dashboard/api/arcade`,{headers:{Cookie:sessionCookie}});
     const wheelData=await wheelState.json() as {wheel:{canSpin:boolean;entries:Array<{id:string;probability:number}>}};
