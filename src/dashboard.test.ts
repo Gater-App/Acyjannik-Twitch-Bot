@@ -84,6 +84,17 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.match(html,/Community-Aktionen/u);
     assert.match(html,/OBS: Widgets für den Stream/u);
     assert.match(html,/Schritt für Schritt in OBS einrichten/u);
+    assert.match(html,/Teilnehmer-Link:/u);
+    assert.match(html,/Twitch-Anmeldung für Mitspieler öffnen/u);
+    assert.match(html,/!joinimposter/u);
+    assert.match(html,/!sus @Name/u);
+    assert.match(html,/!savequote Mein Zitat/u);
+    assert.match(html,/Mindestteilnehmer für Imposter/u);
+    assert.match(html,/Diskussion \(Minuten\)/u);
+    assert.match(html,/Geheime Regeln für Mitspieler/u);
+    assert.doesNotMatch(html,/id="mini-config"/u,'normale Minispiel-Einstellungen dürfen kein JSON-Textfeld zeigen');
+    assert.match(html,/Nächster Phasenwechsel in/u,'geführter Imposter-Status zeigt den Countdown');
+    assert.match(html,/Mindestzahl von/u,'Rollenverteilung bleibt gesperrt bis genug Mitspielende angemeldet sind');
     for (const label of ['Übersicht','Spiele starten','Community','OBS-Widgets','Chatbefehle','Einstellungen']) assert.match(html,new RegExp(label,'u'));
     assert.match(html,/Privater OBS-Link/u);
     assert.match(html,/Erweiterte Einstellungen/u);
