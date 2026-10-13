@@ -3,6 +3,7 @@ import path from 'node:path';
 import { randomInt, randomUUID } from 'node:crypto';
 import BetterSqlite3 from 'better-sqlite3';
 import type { Player } from './types.js';
+import { DEFAULT_8BALL_ANSWERS, LEGACY_DEFAULT_8BALL_ANSWERS } from './eight-ball-answers.js';
 
 export interface SeasonalEvent {
   id: string;
@@ -131,16 +132,6 @@ interface CommandRow {
   alias: string | null; expires_at: number | null; mods_may_manage: number;
 }
 
-const DEFAULT_8BALL = [
-  'Auf jeden Fall!', 'Sieht sehr gut aus.', 'Die Zeichen stehen günstig.', 'Ganz klar: ja.',
-  'Darauf kannst du wetten.', 'Ich denke schon.', 'Wahrscheinlich.', 'Frage später noch einmal.',
-  'Konzentriere dich und frag erneut.', 'Das ist gerade schwer zu sagen.', 'Meine Quellen sind uneins.',
-  'Eher nicht.', 'Die Aussichten sind schlecht.', 'Nein.', 'Ganz sicher nicht.',
-  'Nur der Chat kennt die Antwort.', 'Der Würfel sagt: vielleicht.', 'Heute lieber nicht.',
-  'Ein überraschendes Ja!', 'Die Sterne sagen: später.', 'Frag den Boss im nächsten Kampf.',
-  'Das Orakel braucht eine Pause.',
-];
-
 const RESERVED_COMMANDS = new Set([
   'trickortreat', 'pumpkins', 'top', 'halloween', 'starthalloween', 'endhalloween', 'resethalloween',
   'gift', 'egghunt', 'eventscore', 'eventtop', 'startevent', 'endevent', 'level', 'xptop', 'rank',
@@ -256,7 +247,7 @@ export class FeatureStore {
           SELECT 'halloween',user_id,last_played_at FROM cooldowns;
         INSERT OR IGNORE INTO feature_config(key,value) VALUES
           ('modules','{"xp":true,"events":true,"eightBall":true,"rps":true,"guess":true,"duels":true,"boss":true,"customCommands":true}'),
-          ('8ball_answers', '${JSON.stringify(DEFAULT_8BALL)}'),
+          ('8ball_answers', '${JSON.stringify(DEFAULT_8BALL_ANSWERS)}'),
           ('xp_settings', '{"activityXp":5,"activityCooldownMs":60000,"dailyGameCap":100,"rpsWinXp":10,"guessWinXp":20,"duelWinXp":15,"levelBase":100}'),
           ('game_settings', '{"guessMin":1,"guessMax":100,"guessTimeoutMs":120000,"guessAttempts":5,"duelTtlMs":60000,"bossHp":1000,"bossDurationMs":900000,"attackMin":20,"attackMax":60,"attackCooldownMs":10000,"bossWinXp":30,"bossTopBonusXp":10}');
         INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (1, unixepoch()*1000);
@@ -562,6 +553,15 @@ export class FeatureStore {
         CREATE INDEX IF NOT EXISTS automatic_chat_messages_due ON automatic_chat_messages(enabled,updated_at);
         INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (15, unixepoch()*1000);
       `))();
+    }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 16) {
+      if (currentVersion > 0) this.backupBeforeMigration(16);
+      this.db.transaction(() => {
+        this.db.prepare('UPDATE feature_config SET value=? WHERE key=? AND value=?')
+          .run(JSON.stringify(DEFAULT_8BALL_ANSWERS), '8ball_answers', JSON.stringify(LEGACY_DEFAULT_8BALL_ANSWERS));
+        this.db.prepare('INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (16, ?)').run(Date.now());
+      })();
     }
   }
 

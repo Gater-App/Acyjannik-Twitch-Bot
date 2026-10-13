@@ -10,6 +10,7 @@ import { loadConfig } from './config.js';
 import { CommandHandler } from './command-handler.js';
 import { GameService } from './game.js';
 import type { ChatMessage } from './types.js';
+import { DEFAULT_8BALL_ANSWERS } from './eight-ball-answers.js';
 
 function fixture(): { file: string; directory: string; close: () => void } {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'jannik-community-'));
@@ -43,6 +44,36 @@ test('XP ist dedupliziert, Aktivitäts-XP respektiert Cooldown/Spam und Levelkur
   assert.equal(levelForXp(400), 3);
   assert.equal(xpAtLevel(3), 400);
   store.close(); f.close();
+});
+
+test('8-Ball-Standardpool hat mindestens 80 kurze, einzigartige Antworten', () => {
+  assert.ok(DEFAULT_8BALL_ANSWERS.length >= 80);
+  assert.equal(new Set(DEFAULT_8BALL_ANSWERS.map((answer) => answer.toLocaleLowerCase('de-DE'))).size, DEFAULT_8BALL_ANSWERS.length);
+  assert.ok(DEFAULT_8BALL_ANSWERS.every((answer) => answer.trim().length > 0 && Array.from(answer).length <= 80));
+});
+
+test('8-Ball verwendet den erweiterten Standardpool, erhält eigene Antworten und den 10-Sekunden-Cooldown', async () => {
+  const f = fixture(), database = new Database(f.file), store = new FeatureStore(f.file);
+  const config = { ...loadConfig({ testMode: true }), databasePath: f.file };
+  const community = new CommunityFeatures(store, config, async () => undefined, (_min, max) => max);
+  const handler = new CommandHandler(database, new GameService(database, config), config, undefined, community);
+  let sequence = 0;
+  const send = (text: string, now: number, user = 'oracle-viewer') => handler.handle({
+    eventId: `oracle-${++sequence}`, broadcasterUserId: config.broadcasterUserId, senderUserId: user,
+    senderLogin: user, senderDisplayName: 'OrakelFan', message: text, sentAt: now,
+  }, now);
+  try {
+    const defaultReply = (await send('!8ball Wird das klappen?', 1_800_000_000_000))[0];
+    assert.equal(defaultReply?.message, `🎱 ${DEFAULT_8BALL_ANSWERS.at(-1)}`);
+    assert.equal(defaultReply?.category, 'oracle');
+    assert.match((await send('!8ball Noch eine Frage?', 1_800_000_000_001))[0]?.message || '', /warten/u);
+
+    const custom = Array.from({ length: 20 }, (_, index) => `Eigene Orakelantwort ${index + 1}.`);
+    store.setConfig('8ball_answers', custom);
+    const customReply = (await send('!8ball Eigene Antwort?', 1_800_000_010_001, 'another-viewer'))[0];
+    assert.equal(customReply?.message, `🎱 ${custom.at(-1)}`);
+    assert.equal(customReply?.category, 'oracle');
+  } finally { store.close(); database.close(); f.close(); }
 });
 
 test('First-chat welcome is opt-in, personalized, deduplicated and stores no chat text',()=>{

@@ -6,6 +6,7 @@ import { FeatureStore } from './feature-store.js';
 import { CommunityArcade } from './community-arcade.js';
 import { communityWidgetHtml } from './dashboard-community-ui.js';
 import type { ChatMessage } from './types.js';
+import { DEFAULT_8BALL_ANSWERS, LEGACY_DEFAULT_8BALL_ANSWERS } from './eight-ball-answers.js';
 
 function setup(chooseIndex?:(exclusiveMax:number)=>number){const store=new FeatureStore(':memory:');const arcade=new CommunityArcade(store,'broadcaster',chooseIndex);return {store,arcade};}
 function message(user:string,event:string,text:string):ChatMessage{return {eventId:event,messageId:event,broadcasterUserId:'broadcaster',senderUserId:user,senderLogin:user,senderDisplayName:user,message:text,sentAt:1,isModerator:false};}
@@ -36,8 +37,10 @@ test('Elio-Befehle, Katzen-Lebensphasen, Bonus und OBS zeigen keine Drachen-UI',
 test('Versionierte Elio-Migration ersetzt nur den alten Standardnamen und erhält Namen, Level und XP',()=>{
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'elio-pet-migration-'));const sub=path.join(directory,'data');fs.mkdirSync(sub);
   const legacyPath=path.join(sub,'legacy.sqlite');let store=new FeatureStore(legacyPath);new CommunityArcade(store,'broadcaster');
-  store.miniGameTransaction(db=>{db.prepare("UPDATE community_pet SET name='Fünkchen',level=2,xp=125 WHERE id=1").run();db.prepare("UPDATE chaos_wheel_challenges SET id='legacy-generated-id',title='Der Drache bekommt einen Energieschub!',action_type='boost_pet' WHERE id='builtin:pet-energy'").run();db.prepare('DELETE FROM schema_migrations WHERE version IN (13,14,15)').run()});store.close();
+  store.setConfig('8ball_answers', LEGACY_DEFAULT_8BALL_ANSWERS);
+  store.miniGameTransaction(db=>{db.prepare("UPDATE community_pet SET name='Fünkchen',level=2,xp=125 WHERE id=1").run();db.prepare("UPDATE chaos_wheel_challenges SET id='legacy-generated-id',title='Der Drache bekommt einen Energieschub!',action_type='boost_pet' WHERE id='builtin:pet-energy'").run();db.prepare('DELETE FROM schema_migrations WHERE version IN (13,14,15,16)').run()});store.close();
   store=new FeatureStore(legacyPath);assert.equal(new CommunityArcade(store,'broadcaster').pet().name,'Elio');assert.equal(new CommunityArcade(store,'broadcaster').pet().level,2);assert.equal(new CommunityArcade(store,'broadcaster').pet().xp,125);
+  assert.deepEqual(store.config('8ball_answers', []), DEFAULT_8BALL_ANSWERS, 'alter Standardpool wird beim Upgrade ersetzt');
   assert.equal(new CommunityArcade(store,'broadcaster').manageChallenges().find(x=>x.id==='legacy-generated-id')?.title,'Elio bekommt einen Energieschub!');store.close();
   const customPath=path.join(sub,'custom.sqlite');store=new FeatureStore(customPath);store.miniGameTransaction(db=>{db.prepare("UPDATE community_pet SET name='Miez',level=17,xp=1650 WHERE id=1").run();db.prepare('DELETE FROM schema_migrations WHERE version=14').run()});store.close();
   store=new FeatureStore(customPath);const preserved=new CommunityArcade(store,'broadcaster').pet();assert.equal(preserved.name,'Miez');assert.equal(preserved.level,17);assert.equal(preserved.xp,1650);store.close();fs.rmSync(directory,{recursive:true,force:true});

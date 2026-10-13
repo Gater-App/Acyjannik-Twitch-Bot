@@ -9,20 +9,12 @@ import { CommunityArcade } from './community-arcade.js';
 import { categoryForCommand, type ChatCategory } from './chat-message-format.js';
 import type { OutboundChatMessage } from './chat-message-format.js';
 import type { HelpAvailability } from './help.js';
+import { DEFAULT_8BALL_ANSWERS, LEGACY_DEFAULT_8BALL_ANSWERS } from './eight-ball-answers.js';
 
 type UserLookup = (login: string) => Promise<{ id: string; login: string; displayName: string } | undefined>;
 type RandomInclusive = (min: number, max: number) => number;
 
 const LEVEL_TITLES: Record<number, string> = { 1: 'Neueinsteiger', 5: 'Stammgast', 10: 'Community-Mitglied', 20: 'Veteran', 50: 'Legende' };
-const DEFAULT_8BALL = [
-  'Auf jeden Fall!', 'Sieht sehr gut aus.', 'Die Zeichen stehen günstig.', 'Ganz klar: ja.', 'Darauf kannst du wetten.',
-  'Ich denke schon.', 'Wahrscheinlich.', 'Frage später noch einmal.', 'Konzentriere dich und frag erneut.',
-  'Das ist gerade schwer zu sagen.', 'Meine Quellen sind uneins.', 'Eher nicht.', 'Die Aussichten sind schlecht.',
-  'Nein.', 'Ganz sicher nicht.', 'Nur der Chat kennt die Antwort.', 'Der Würfel sagt: vielleicht.',
-  'Heute lieber nicht.', 'Ein überraschendes Ja!', 'Die Sterne sagen: später.', 'Frag den Boss im nächsten Kampf.',
-  'Das Orakel braucht eine Pause.',
-];
-
 export class CommunityFeatures {
   private readonly questPoll: QuestPollFeatures;
   readonly conversationSpark: ConversationSpark;
@@ -208,7 +200,9 @@ export class CommunityFeatures {
     const left = this.store.useCooldown('8ball', userId, now, 10_000);
     if (left) return `🎱 Bitte noch ${Math.ceil(left / 1000)} Sek. warten.`;
     const answers = this.store.config<string[]>('8ball_answers', []);
-    const pool = answers.length >= 20 ? answers : DEFAULT_8BALL;
+    const pool = answers.length && JSON.stringify(answers) !== JSON.stringify(LEGACY_DEFAULT_8BALL_ANSWERS)
+      ? answers
+      : DEFAULT_8BALL_ANSWERS;
     return `🎱 ${pool[this.random(0, pool.length - 1)]}`;
   }
 
