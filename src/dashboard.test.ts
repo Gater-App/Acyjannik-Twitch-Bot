@@ -90,6 +90,8 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.match(html,/Schritt für Schritt in OBS einrichten/u);
     assert.match(html,/Teilnehmer-Link:/u);
     assert.match(html,/Twitch-Anmeldung für Mitspieler öffnen/u);
+    assert.match(html,/Chat-Stil: COMMUNITY/u);
+    assert.match(html,/【🎁 DROP】 Mystery Drop gestartet/u);
     assert.match(html,/!joinimposter/u);
     assert.match(html,/!sus @Name/u);
     assert.match(html,/!savequote Mein Zitat/u);

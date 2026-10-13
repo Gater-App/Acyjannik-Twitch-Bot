@@ -99,4 +99,5 @@ export interface GameOutcome {
 export interface CommandReply {
   message: string;
   replyParentMessageId?: string;
+  category?: import('./chat-message-format.js').ChatCategory;
 }

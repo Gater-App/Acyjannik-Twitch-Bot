@@ -1,5 +1,6 @@
 import { assertChatMessageLength } from './chat.js';
 import type { Logger } from './logger.js';
+import { formatPublicChatMessage, type ChatCategory } from './chat-message-format.js';
 
 interface QueueItem {
   message: string;
@@ -23,7 +24,8 @@ export class SendQueue {
     private readonly maxQueueSize = 100,
   ) {}
 
-  enqueue(message: string, replyParentMessageId?: string): Promise<void> {
+  enqueue(message: string, replyParentMessageId?: string, category: ChatCategory = 'community'): Promise<void> {
+    message = formatPublicChatMessage(message, category, this.maxLength);
     assertChatMessageLength(message, this.maxLength);
     return new Promise<void>((resolve, reject) => {
       const key = `${replyParentMessageId || ''}:${message.trim().toLocaleLowerCase()}`;

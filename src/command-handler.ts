@@ -5,6 +5,7 @@ import { clampChatMessage, eventMessage } from './chat.js';
 import type { CommunityFeatures } from './community-features.js';
 import { helpReply } from './help.js';
 import type { ChatResponsePolicy } from './chat-response-policy.js';
+import { categoryForCommand, type ChatCategory } from './chat-message-format.js';
 
 const RESET_CONFIRMATION = 'confirm';
 const RESET_CONFIRMATION_TTL_MS = 60_000;
@@ -34,21 +35,21 @@ export class CommandHandler {
     if (message.broadcasterUserId !== this.config.broadcasterUserId) return [];
     if (!this.database.markEventProcessed(message.eventId, now)) return [];
     this.community?.tick(now, false);
-    const reply = (text: string): CommandReply[] => [{ message: clampChatMessage(text, this.config.appChatMessageLength), ...(message.messageId ? { replyParentMessageId: message.messageId } : {}) }];
     const words = message.message.trim().split(/\s+/u);
     const rawCommand = words.shift();
     if (!rawCommand?.startsWith('!')) {
       const welcome = this.community?.firstChatWelcome(message, now, this.chatPolicy?.snapshot().welcomeBots);
-      if (welcome) return reply(welcome);
+      if (welcome) return [{ message: clampChatMessage(welcome, this.config.appChatMessageLength), category: 'welcome', ...(message.messageId ? { replyParentMessageId: message.messageId } : {}) }];
       const sparkSuggestion = this.community?.observeActivity(message, now);
-      return sparkSuggestion ? reply(sparkSuggestion) : [];
+      return sparkSuggestion ? [{ message: clampChatMessage(sparkSuggestion, this.config.appChatMessageLength), category: 'ideas', ...(message.messageId ? { replyParentMessageId: message.messageId } : {}) }] : [];
     }
     const command = rawCommand.slice(1).toLowerCase();
     const args = words;
+    const reply = (text: string, category: ChatCategory = categoryForCommand(command)): CommandReply[] => [{ message: clampChatMessage(text, this.config.appChatMessageLength), category, ...(message.messageId ? { replyParentMessageId: message.messageId } : {}) }];
     const name = cleanName(message.senderDisplayName);
     switch (command) {
       case 'help': return reply(helpReply(args, message));
-      case 'trickortreat': return reply(this.trickOrTreat(name, message.senderUserId, now));
+      case 'trickortreat': { const result = this.trickOrTreat(name, message.senderUserId, now); return reply(result.message, result.category); }
       case 'pumpkins': return reply(`🎃 ${name} hat ${this.game.pumpkins(message.senderUserId)} Kürbisse.`);
       case 'top': return reply(this.topMessage());
       case 'halloween': return reply(this.halloweenMessage());
@@ -71,17 +72,17 @@ export class CommandHandler {
     }
   }
 
-  private trickOrTreat(name: string, userId: string, now: number): string {
+  private trickOrTreat(name: string, userId: string, now: number): {message:string;category:ChatCategory} {
     const result = this.game.play(userId, name, now);
     if (!result.ok) {
-      if (result.reason === 'inactive') return '🎃 Halloween ist noch nicht gestartet.';
-      return `⏳ ${name}: Du kannst in ${durationText(result.remainingMs ?? 0)} wieder losziehen.`;
+      if (result.reason === 'inactive') return {message:'🎃 Halloween ist noch nicht gestartet.',category:'hint'};
+      return {message:`${name}: Du kannst in ${durationText(result.remainingMs ?? 0)} wieder losziehen.`,category:'cooldown'};
     }
     const { outcome } = result;
     this.community?.syncLegacyHalloween(now);
     const template = this.templateFor(outcome.event);
     const points = Math.abs(outcome.delta);
-    return `${eventMessage(template, { name, points, pumpkins: outcome.pumpkins })} Gesamt: ${outcome.pumpkins}.`;
+    return {message:`${eventMessage(template, { name, points, pumpkins: outcome.pumpkins })} Gesamt: ${outcome.pumpkins}.`,category:'halloween'};
   }
 
   private topMessage(): string {

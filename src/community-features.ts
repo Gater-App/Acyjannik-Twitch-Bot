@@ -6,6 +6,8 @@ import { QuestPollFeatures } from './quest-poll.js';
 import { ConversationSpark } from './conversation-spark.js';
 import { MiniGames } from './mini-games.js';
 import { CommunityArcade } from './community-arcade.js';
+import { categoryForCommand, type ChatCategory } from './chat-message-format.js';
+import type { OutboundChatMessage } from './chat-message-format.js';
 
 type UserLookup = (login: string) => Promise<{ id: string; login: string; displayName: string } | undefined>;
 type RandomInclusive = (min: number, max: number) => number;
@@ -59,12 +61,16 @@ export class CommunityFeatures {
 
   activeEventId(): string | undefined { return this.store.activeEvent()?.id; }
 
-  tick(now = Date.now(), advanceMiniGames = true): string[] { this.refreshScheduledEvents(now); this.questPoll.tick(now); this.conversationSpark.tick(now); return [...(advanceMiniGames ? this.miniGames.tick(now) : []),...this.arcade.tick(now)]; }
+  tick(now = Date.now(), advanceMiniGames = true): string[] { return this.tickMessages(now, advanceMiniGames).map(item => item.message); }
+  tickMessages(now = Date.now(), advanceMiniGames = true): OutboundChatMessage[] {
+    this.refreshScheduledEvents(now); this.questPoll.tick(now); this.conversationSpark.tick(now);
+    return [...(advanceMiniGames ? this.miniGames.tickMessages(now) : []), ...this.arcade.tickMessages(now)];
+  }
 
   async handle(message: ChatMessage, command: string, args: string[], now = Date.now()): Promise<CommandReply[]> {
     const modules = this.store.config<Record<string, boolean>>('modules', {});
     const name = cleanName(message.senderDisplayName);
-    const say = (value: string): CommandReply[] => [{ message: clampChatMessage(value, this.config.appChatMessageLength),
+    const say = (value: string, category: ChatCategory = categoryForCommand(command)): CommandReply[] => [{ message: clampChatMessage(value, this.config.appChatMessageLength), category,
       ...(message.messageId ? { replyParentMessageId: message.messageId } : {}) }];
 
     const sparkResponse = await this.conversationSpark.handleCommand(message, command, args, now);
@@ -78,7 +84,7 @@ export class CommunityFeatures {
 
     if (modules.events !== false && (['gift', 'egghunt'].includes(command) || ['eventscore', 'eventtop', 'startevent', 'endevent'].includes(command))) {
       const result = this.handleEvents(message, command, args, name, now);
-      if (result !== undefined) return say(result);
+      if (result !== undefined) return say(result, 'season');
     }
 
     if (modules.xp !== false) {
@@ -109,7 +115,7 @@ export class CommunityFeatures {
       if (custom && this.hasPermission(message, custom.permission)) {
         const remaining = this.store.useCooldown(`custom:${custom.name}`, message.senderUserId, now, custom.cooldownMs);
         if (remaining > 0) return [];
-        return say(renderTemplate(custom.response, { user: name, channel: this.config.channelLogin, game: 'unbekannt', uptime: 'unbekannt' }));
+        return say(renderTemplate(custom.response, { user: name, channel: this.config.channelLogin, game: 'unbekannt', uptime: 'unbekannt' }), 'custom');
       }
     }
     return [];

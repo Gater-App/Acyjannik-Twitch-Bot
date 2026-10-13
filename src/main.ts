@@ -132,14 +132,14 @@ async function runLiveMode(): Promise<void> {
       if(command.startsWith('!'))logger.info('Twitch-Chatbefehl verarbeitet.',{command:/^![a-z0-9_-]{1,32}$/u.test(command)?command:'!other',replyCount:replies.length});
       for (const reply of replies) {
         if (!chatPolicy.shouldSend({ command: command.startsWith('!') ? command : '', message: reply.message })) continue;
-        try { await queue.enqueue(reply.message, reply.replyParentMessageId); }
+        try { await queue.enqueue(reply.message, reply.replyParentMessageId, reply.category); }
         catch { /* SendQueue logs the safe transport failure; EventSub stays connected. */ }
       }
     },
   );
   let dashboard:DashboardServer|undefined;
   const featureTicker = setInterval(() => {
-    try { for(const message of community.tick())void queue.enqueue(message); }
+    try { for(const message of community.tickMessages())void queue.enqueue(message.message, undefined, message.category); }
     catch (error) { logger.error('Community-Spiel-Timer konnte nicht aktualisiert werden.', { error: error instanceof Error ? error.message : 'unbekannt' }); }
   }, 1000);
   featureTicker.unref();
@@ -169,7 +169,7 @@ async function runLiveMode(): Promise<void> {
     },logger);
     dashboard = new DashboardServer(features, () => ({twitchConnected:eventsub.isConnected,channel:config.channelLogin,startedAt:botStartedAt,...queue.snapshot(),chatResponse:chatPolicy.snapshot()}),
       logger,fetch,()=>community.conversationSpark.snapshot(),channelPoints,()=>oauthServer.startUrlFor('channel-points'),community.miniGames,community.arcade,
-      async(message)=>{await queue.enqueue(message);},chatPolicy);
+      async(message,category)=>{await queue.enqueue(message,undefined,category);},chatPolicy);
     logger.info('OAuth-Server erreichbar unter http://127.0.0.1:3000/oauth/start');
     await dashboard.start();
     eventsub.start();

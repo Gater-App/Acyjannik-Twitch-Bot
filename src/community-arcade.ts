@@ -113,15 +113,16 @@ export class CommunityArcade {
     }
     return undefined;
   }
-  tick(now=Date.now()):string[] {
-    const out:string[]=[];
+  tick(now=Date.now()):string[] { return this.tickMessages(now).map(item=>item.message); }
+  tickMessages(now=Date.now()):Array<{message:string;category:'wheel'|'drop'|'dragon'}> {
+    const out:Array<{message:string;category:'wheel'|'drop'|'dragon'}>=[];
     const completedChallenge=this.store.miniGameTransaction(db=>{
       const active=db.prepare("SELECT id,title FROM chaos_wheel_spins WHERE status='active' AND ends_at<=? ORDER BY created_at DESC LIMIT 1").get(now) as {id:string;title:string}|undefined;
       if(!active)return undefined;
       db.prepare("UPDATE chaos_wheel_spins SET status='completed',resolved_at=? WHERE id=? AND status='active'").run(now,active.id);
       return active.title;
     });
-    if(completedChallenge)out.push(`⏱️ Die Laufzeit der Community-Challenge „${clean(completedChallenge,80)}“ ist vorbei. Jannick kann das Ergebnis bestätigen; der Bot hat den Erfolg nicht überprüft.`);
+    if(completedChallenge)out.push({message:`⏱️ Die Laufzeit der Community-Challenge „${clean(completedChallenge,80)}“ ist vorbei. Jannick kann das Ergebnis bestätigen; der Bot hat den Erfolg nicht überprüft.`,category:'wheel'});
     const due=this.store.miniGameTransaction(db=>{
       const d=db.prepare("SELECT id,rarity FROM mystery_drops WHERE status IN ('announced','claiming') AND ends_at<=?").get(now) as {id:string;rarity:string}|undefined;
       if(!d)return undefined;
@@ -134,9 +135,9 @@ export class CommunityArcade {
     });
     if(due){
       for(const c of due.claims)this.store.awardXp(`drop:${due.id}:${c.user_id}`,c.user_id,c.display_name,due.amount,'bonus:mystery-drop',now,50);
-      out.push(due.claims.length
+      out.push({message:due.claims.length
         ?`🎁 Der Mystery Drop ist geöffnet! ${due.claims.length} ${due.claims.length===1?'Person erhält':'Personen erhalten'} je ${due.amount} XP. Danke fürs Mitmachen – der Drache freut sich!`
-        :'🎁 Der Mystery Drop ist vorbei – diesmal hat niemand mitgemacht. Beim nächsten Mal mit !claim dabei sein!');
+        :'🎁 Der Mystery Drop ist vorbei – diesmal hat niemand mitgemacht. Beim nächsten Mal mit !claim dabei sein!',category:'drop'});
     }
     const batch=this.store.miniGameTransaction(db=>{
       const oldest=now-2*60_000;
@@ -151,7 +152,7 @@ export class CommunityArcade {
       db.prepare(`UPDATE community_pet_interactions SET announced_at=? WHERE event_id IN (${placeholders}) AND announced_at IS NULL`).run(now,...ids);
       return {participants:participants.size,actions:rows.length};
     });
-    if(batch){this.store.setConfig('pet_chat_batch_last_at',now);out.push(`🐉 Gemeinschafts-Power: ${batch.participants} Zuschauer haben in letzter Zeit ${batch.actions} Aktionen mit dem Community-Pet geteilt. Danke, dass ihr euch gemeinsam um den Drachen kümmert!`);}
+    if(batch){this.store.setConfig('pet_chat_batch_last_at',now);out.push({message:`🐉 Gemeinschafts-Power: ${batch.participants} Zuschauer haben in letzter Zeit ${batch.actions} Aktionen mit dem Community-Pet geteilt. Danke, dass ihr euch gemeinsam um den Drachen kümmert!`,category:'dragon'});}
     this.store.miniGameTransaction(db=>{
       db.prepare("UPDATE community_pet SET hunger=MAX(20,hunger-MIN(5,MAX(0,CAST((?-updated_at)/86400000 AS INTEGER)))),energy=MIN(100,energy+MIN(5,MAX(0,CAST((?-updated_at)/86400000 AS INTEGER)))),updated_at=updated_at+MAX(0,CAST((?-updated_at)/86400000 AS INTEGER))*86400000 WHERE id=1 AND ?-updated_at>=86400000").run(now,now,now,now);
       db.prepare("UPDATE community_pet SET animation=CASE WHEN paused=1 THEN 'sleep' WHEN animation IN ('feed','play','care','happy','drop','levelup','evolution') AND updated_at<? THEN 'idle' ELSE animation END WHERE id=1").run(now-12000);
