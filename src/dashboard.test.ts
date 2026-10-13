@@ -93,8 +93,11 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.match(html,/!joinimposter/u);
     assert.match(html,/!sus @Name/u);
     assert.match(html,/!savequote Mein Zitat/u);
-    assert.match(html,/Auto-Pilot ein\/aus/u);assert.match(html,/Not-Stopp/u);assert.match(html,/Wahrscheinlichkeiten/u);
+    assert.match(html,/Auto-Pilot ein\/aus/u);assert.match(html,/Auto-Pilot stoppen/u);assert.match(html,/Wahrscheinlichkeiten/u);
     assert.match(html,/Jannick spielt selbst/u);assert.doesNotMatch(html,/Jannik entscheidet/u,'nach dem Dreh gibt es keine zusätzliche Genehmigung');
+    assert.match(html,/So funktioniert’s/u);assert.doesNotMatch(html,/Einfach erklärt/u,'lange Hilfetexte sind nicht mehr standardmäßig eingeblendet');
+    assert.match(html,/mini-overlay-status/u);assert.match(html,/arcade-widget-status/u);assert.match(html,/mini-participant-link/u);assert.match(html,/data-drop-status/u);
+    assert.match(html,/b\.hidden=!visible/u,'Spielaktionen werden nach der aktuellen Phase ein- und ausgeblendet');
     assert.match(html,/Mindestteilnehmer für Imposter/u);
     assert.match(html,/Diskussion \(Minuten\)/u);
     assert.match(html,/Geheime Regeln für Mitspieler/u);
