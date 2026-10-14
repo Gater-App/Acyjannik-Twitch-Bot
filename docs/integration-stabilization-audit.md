@@ -61,7 +61,7 @@ Diese Gruppen überschneiden sich in `src/dashboard.ts`, `src/main.ts`, `src/fea
 | 28 | Elio-Ereignishistorie | Migrationsfixture korrigiert; Elio-Zustand und Interaktionen bleiben erhalten. |
 | 29 | Erinnerungen und Reaktionen | Zusätzlicher isolierter v28→v29-Test prüft Tabellen, Versionszeile und Vorab-Backup. |
 | 30 | Community-Ideen und Likes | Vollständige Portal-, Speicher- und Abstimmungstests bestanden. |
-| 31 | Aktive Chatidentitäten und Wheel-Gewinnerdaten | Wheel-/OBS- und idempotente Belohnungstests bestanden. |
+| 31 | Aktive Chatidentitäten und Wheel-Gewinnerdaten | Expliziter isolierter v30→v31-Upgrade-Test prüft Backup, neue Tabellen/Spalten, erhaltene laufende Runde und standardmäßig deaktivierte Segmente. |
 | 32 | VIP-Anfragen, Achievements, Challenges und Elio-Interaktionen | VIP-Backend- und Browsertests bestanden. |
 
 Alle Migrationsprüfungen verwendeten temporäre lokale SQLite-Dateien. Keine Production-Datenbank wurde geöffnet oder verändert.
@@ -90,6 +90,8 @@ Weitere geprüfte Punkte:
 - Gezielte Migration-/Integrationsgruppe (Elio, Wheel, Erinnerungen, Tresor, Pranks, Songwünsche): **46/46 bestanden** vor Ergänzung des separaten v29-Tests; v29-Test zusätzlich **1/1 bestanden**.
 - `npm run test:browser`: **5/5 bestanden**, einschließlich Dashboardnavigation/Logout, Community-Welt mobil, Elio, Chaos-Wheel-OBS und VIP-Lounge/-Freigabe.
 - `git diff --check`: bestanden.
+
+Ein zusätzlicher, eigenständiger Migrationstest für Version 31 wurde nach diesem ursprünglichen Audit ergänzt und lokal mit **1/1 bestanden** verifiziert.
 
 ## Priorisierte offene Arbeit
 
