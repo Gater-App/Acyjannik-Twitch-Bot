@@ -70,7 +70,7 @@ export class CommunityFeatures {
     const mini=this.miniGames.settings(),arcade=this.arcade.settings(),spark=this.conversationSpark.config();
     const events=this.store.events().map(event=>({id:event.id,name:event.name,command:event.command,active:event.active&&(event.id==='halloween'||modules.events!==false)}));
     const activeEnabled=Boolean(active&&(active.id==='halloween'||modules.events!==false));
-    return {xp:modules.xp!==false,events:activeEnabled,...(activeEnabled&&active?{activeEventName:active.name,activeEventCommand:active.command}:{}),seasonalEvents:events,
+    return {xp:modules.xp!==false,events:activeEnabled,...(activeEnabled&&active?{activeEventId:active.id,activeEventName:active.name,activeEventCommand:active.command}:{}),seasonalEvents:events,
       pet:arcade.petEnabled,drops:arcade.dropsEnabled,wheel:arcade.wheelEnabled,imposter:mini.enabled,detective:mini.enabled,vault:this.vault.settings().enabled,
       quests:modules.quests!==false&&eventSettings.enabled!==false,spark:spark.enabled,
       eightBall:modules.eightBall!==false,rps:modules.rps!==false,guess:modules.guess!==false,duels:modules.duels!==false};

@@ -237,8 +237,8 @@ async function runLiveMode(): Promise<void> {
                 catch(error){automaticChatMessages.markFailed(currentDue.id,Date.now());logger.warn('Automatische Chatnachricht konnte nicht gesendet werden; nächster Versuch frühestens nach dem Nachrichtenintervall.',{error:error instanceof Error?error.message:'unbekannt'});}
               }else if(!currentBusy&&wantsTip){
                 const tip = communityTips.maybeSend({ isLive: true, streamId: stream.id, profile, availability, busy:currentBusy, now: Date.now(),
-                  allowSend: candidate => chatPolicy.shouldSend({ message: candidate.text, now: Date.now() }) });
-                if(tip&&automaticChatMessages.reserveGlobalSlot(Date.now())){
+                  allowSend: candidate => chatPolicy.shouldSend({ message: candidate.text, now: Date.now() })&&automaticChatMessages.reserveGlobalSlot(Date.now()) });
+                if(tip){
                   communityTips.consumeActivity();
                   try{await queue.enqueue(tip.text,undefined,'tip');}catch(error){logger.warn('Community-Tipp konnte nicht in den Chat gestellt werden.',{error:error instanceof Error?error.message:'unbekannt'});}
                 }

@@ -3,12 +3,13 @@ import type { ChatMessage } from './types.js';
 import type { FeatureStore } from './feature-store.js';
 import type { ChatProfile } from './chat-response-policy.js';
 
-export interface CommunityTipSettings { enabled: boolean; portalEnabled: boolean; }
+export type HalloweenTipFrequency = 'normal' | 'frequent';
+export interface CommunityTipSettings { enabled: boolean; portalEnabled: boolean; halloweenEnabled: boolean; halloweenFrequency: HalloweenTipFrequency; }
 export interface CommunityTipState { lastSentAt: number; streamId: string | null; sentInStream: string[]; sentHistory: number[]; }
 export interface TipAvailability {
   events?: boolean; eightBall?: boolean; rps?: boolean; duels?: boolean; pet?: boolean; detective?: boolean;
   quests?: boolean; xp?: boolean; drops?: boolean; imposter?: boolean; wheel?: boolean;
-  activeEventCommand?: string; activeEventName?: string;
+  activeEventCommand?: string; activeEventName?: string; activeEventId?: string;
   communityPortal?: boolean;
 }
 export interface CommunityTip { id: string; category: string; text: string; requiresActiveGame?: boolean; }
@@ -17,6 +18,17 @@ export const TIP_ACTIVITY_RULES: Record<ChatProfile, { spacingMs: number; messag
   normal: { spacingMs: 30 * 60_000, messages: 6, hourly: 2 },
   lively: { spacingMs: 20 * 60_000, messages: 5, hourly: 3 },
 };
+
+export const HALLOWEEN_TIP_INTERVALS: Record<HalloweenTipFrequency, number> = { normal: 45 * 60_000, frequent: 30 * 60_000 };
+export const HALLOWEEN_TIP_MINIMUM_GAP_MS = 20 * 60_000;
+export const HALLOWEEN_TIP_HOURLY_LIMIT = 2;
+export const HALLOWEEN_TIP_MESSAGES = [
+  '🎃 Süßes oder Saures? Trau dich! Mit !trickortreat kannst du beim Halloween-Event mitmachen. 👻',
+  '👻 Schon deine Halloween-Runde gespielt? Mit !trickortreat warten Süßigkeiten, Streiche und vielleicht eine Überraschung auf dich! 🎃',
+  '🍬 Wer hat heute Halloween-Glück? Probier !trickortreat aus und entdecke, was hinter der nächsten Tür wartet!',
+  '🎃 Sammelst du schon Kürbisse? Schau mit !pumpkins nach, wie viele du hast!',
+  '🦇 Die Halloween-Saison läuft! Mit !trickortreat kannst du mitspielen und mit !pumpkins deinen Kürbisstand prüfen.',
+] as const;
 
 const TIPS: CommunityTip[] = [
   { id: 'eightball', category: 'oracle', text: 'Du hast eine Frage? Stell sie dem Orakel mit !8ball FRAGE.' },
@@ -31,7 +43,7 @@ const TIPS: CommunityTip[] = [
 const FEATURE_COMMANDS: Record<string, string> = {
   '8ball': 'eightball', rps: 'rps', duel: 'duel', accept: 'duel',
   pet: 'pet', feed: 'pet', play: 'pet', petcare: 'pet', savequote: 'quote', quest: 'quest',
-  trickortreat: 'season-trickortreat', gift: 'season-gift', egghunt: 'season-egghunt', eventscore: 'season-eventscore',
+  trickortreat: 'season-trickortreat', pumpkins: 'season-trickortreat', gift: 'season-gift', egghunt: 'season-egghunt', eventscore: 'season-eventscore',
   level: 'xp', xptop: 'xp', rank: 'xp',
   help: 'community-portal', community: 'community-portal',
 };
@@ -55,13 +67,18 @@ export class CommunityTips {
   settings(): CommunityTipSettings {
     const raw = this.store.config<unknown>('community_tip_settings', { enabled: false, portalEnabled: false });
     const value=raw&&typeof raw==='object'?raw as Record<string,unknown>:{};
-    return { enabled: value.enabled===true, portalEnabled:value.portalEnabled===true };
+    return { enabled: value.enabled===true, portalEnabled:value.portalEnabled===true,
+      halloweenEnabled:value.halloweenEnabled!==false, halloweenFrequency:value.halloweenFrequency==='normal'?'normal':'frequent' };
   }
   configure(enabled: boolean): CommunityTipSettings {
     this.store.setConfig('community_tip_settings', { ...this.settings(), enabled });
     return this.settings();
   }
   configurePortal(enabled:boolean):CommunityTipSettings { this.store.setConfig('community_tip_settings',{...this.settings(),portalEnabled:enabled});return this.settings(); }
+  configureHalloween(enabled:boolean,frequency:HalloweenTipFrequency=this.settings().halloweenFrequency):CommunityTipSettings {
+    if(typeof enabled!=='boolean'||(frequency!=='normal'&&frequency!=='frequent'))throw new Error('Halloween-Einstellung ungültig.');
+    this.store.setConfig('community_tip_settings',{...this.settings(),halloweenEnabled:enabled,halloweenFrequency:frequency});return this.settings();
+  }
   state() {
     const raw = this.store.config<unknown>('community_tip_state', { lastSentAt: 0, streamId: null, sentInStream: [], sentHistory: [] });
     const value = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
@@ -108,12 +125,18 @@ export class CommunityTips {
   alignStream(streamId:string|null):void {
     if(this.activeStreamId!==streamId){this.activeStreamId=streamId;this.activityCount=0;}
   }
-  status(profile: ChatProfile, now = Date.now()) {
+  status(profile: ChatProfile, now = Date.now(), availability:TipAvailability = {}) {
     const state = this.state(), rules = TIP_ACTIVITY_RULES[profile];
     const recent = this.sentAt.filter(at => now - at < 60 * 60_000).length;
+    const halloween=this.halloweenState(),active=this.halloweenAvailable(availability);
+    const halloweenInterval=Math.max(HALLOWEEN_TIP_MINIMUM_GAP_MS,HALLOWEEN_TIP_INTERVALS[this.settings().halloweenFrequency]);
     return { ...this.settings(), profile, lastTipAt: state.lastSentAt || null,
       nextEarliestAt: state.lastSentAt ? state.lastSentAt + rules.spacingMs : null,
-      activityMessages: this.activityCount, requiredMessages: rules.messages, hourlyLimit: rules.hourly, sentThisHour: recent };
+      activityMessages: this.activityCount, requiredMessages: rules.messages, hourlyLimit: rules.hourly, sentThisHour: recent,
+      halloweenActive:active,halloweenLastSentAt:halloween.lastSentAt||null,
+      halloweenNextEarliestAt:active?Math.max(halloween.lastSentAt?halloween.lastSentAt+halloweenInterval:now,state.lastSentAt?state.lastSentAt+rules.spacingMs:now):null,
+      halloweenSentThisHour:halloween.history.filter(at=>now-at<60*60_000).length,halloweenMinimumGapMs:HALLOWEEN_TIP_MINIMUM_GAP_MS,
+      halloweenHourlyLimit:HALLOWEEN_TIP_HOURLY_LIMIT,halloweenPreviews:HALLOWEEN_TIP_MESSAGES };
   }
 
   shouldEvaluate(profile: ChatProfile, availability: TipAvailability, busy: boolean, now = Date.now()): boolean {
@@ -122,6 +145,7 @@ export class CommunityTips {
     if (state.lastSentAt && now - state.lastSentAt < rules.spacingMs) return false;
     if (this.sentAt.filter(at => now - at < 60 * 60_000).length >= rules.hourly) return false;
     const usedInStream = this.activeStreamId === undefined || state.streamId === this.activeStreamId ? state.sentInStream : [];
+    if(this.halloweenDue(profile,availability,now))return true;
     return this.available(availability).some(tip => !usedInStream.includes(tip.id)
       && (!this.featureUsedAt.has(tip.id) || now - this.featureUsedAt.get(tip.id)! > 15 * 60_000));
   }
@@ -141,14 +165,17 @@ export class CommunityTips {
     const sentInStream = state.streamId === input.streamId ? state.sentInStream : [];
     const candidates = this.available(input.availability).filter(tip => !sentInStream.includes(tip.id)
       && (!this.featureUsedAt.has(tip.id) || now - this.featureUsedAt.get(tip.id)! > 15 * 60_000));
-    if (!candidates.length) return undefined;
-    const selected = candidates[(input.random ?? secureRandom)(candidates.length)];
+    const halloweenDue=this.halloweenDue(input.profile,input.availability,now),random=input.random??secureRandom;
+    if (!candidates.length&&!halloweenDue) return undefined;
+    const chooseHalloween=halloweenDue&&(!candidates.length||random(3)<2);
+    const selected:CommunityTip|undefined=chooseHalloween?{id:'halloween-reminder',category:'halloween',text:this.nextHalloweenMessage()}:candidates[random(candidates.length)];
     if (!selected) return undefined;
     if (this.featureUsedAt.has(selected.id) && now - this.featureUsedAt.get(selected.id)! < 15 * 60_000) return undefined;
     if (input.allowSend && !input.allowSend(selected)) return undefined;
     this.store.setConfig('community_tip_state', { lastSentAt: now, streamId: input.streamId,
-      sentInStream: [...sentInStream, selected.id], sentHistory: [...this.sentAt.filter(at => now - at < 60 * 60_000), now].slice(-24) });
+      sentInStream: selected.id==='halloween-reminder'?sentInStream:[...sentInStream, selected.id], sentHistory: [...this.sentAt.filter(at => now - at < 60 * 60_000), now].slice(-24) });
     this.sentAt.push(now);
+    if(selected.id==='halloween-reminder')this.recordHalloweenReminder(now);
     this.activityCount = 0;
     return { ...selected, streamId: input.streamId };
   }
@@ -164,10 +191,33 @@ export class CommunityTips {
       if (tip.id === 'quest') return a.quests === true;
       if (tip.id === 'xp') return a.xp === true;
       return false;
-    }).concat(a.events && a.activeEventCommand ? [{
+    }).concat(a.events && a.activeEventCommand && a.activeEventId!=='halloween' ? [{
       id: `season-${a.activeEventCommand}`, category: a.activeEventCommand === 'trickortreat' ? 'halloween' : 'season',
       text: `Beim ${a.activeEventName || 'Saison-Event'} kannst du mit !${a.activeEventCommand} mitmachen und Punkte sammeln.`,
     }] : []);
+  }
+
+  private halloweenAvailable(a:TipAvailability):boolean {
+    const s=this.settings();return s.enabled&&s.halloweenEnabled&&a.events===true&&a.activeEventId==='halloween'&&a.activeEventCommand==='trickortreat';
+  }
+  private halloweenState():{lastSentAt:number;history:number[];nextVariant:number} {
+    const raw=this.store.config<unknown>('community_halloween_tip_state',{lastSentAt:0,history:[],nextVariant:0}),v=raw&&typeof raw==='object'?raw as Record<string,unknown>:{};
+    return {lastSentAt:typeof v.lastSentAt==='number'&&Number.isFinite(v.lastSentAt)?Math.max(0,v.lastSentAt):0,
+      history:Array.isArray(v.history)?v.history.filter((at):at is number=>typeof at==='number'&&Number.isFinite(at)&&at>0).slice(-24):[],
+      nextVariant:typeof v.nextVariant==='number'&&Number.isInteger(v.nextVariant)?Math.max(0,v.nextVariant)%HALLOWEEN_TIP_MESSAGES.length:0};
+  }
+  private halloweenDue(profile:ChatProfile,a:TipAvailability,now:number):boolean {
+    if(!this.halloweenAvailable(a))return false;
+    const h=this.halloweenState(),interval=Math.max(HALLOWEEN_TIP_MINIMUM_GAP_MS,HALLOWEEN_TIP_INTERVALS[this.settings().halloweenFrequency]),lastTip=this.state().lastSentAt;
+    const commandUsed=this.featureUsedAt.get('season-trickortreat');
+    return h.history.filter(at=>now-at<60*60_000).length<HALLOWEEN_TIP_HOURLY_LIMIT
+      &&now>=h.lastSentAt+interval&&(!lastTip||now-lastTip>=TIP_ACTIVITY_RULES[profile].spacingMs)
+      &&(!commandUsed||now-commandUsed>=15*60_000);
+  }
+  private nextHalloweenMessage():string { return HALLOWEEN_TIP_MESSAGES[this.halloweenState().nextVariant]||HALLOWEEN_TIP_MESSAGES[0]; }
+  private recordHalloweenReminder(now:number):void {
+    const h=this.halloweenState();this.store.setConfig('community_halloween_tip_state',{lastSentAt:now,
+      history:[...h.history.filter(at=>now-at<60*60_000),now].slice(-24),nextVariant:(h.nextVariant+1)%HALLOWEEN_TIP_MESSAGES.length});
   }
 }
 

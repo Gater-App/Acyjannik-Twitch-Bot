@@ -196,15 +196,21 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.equal(welcomeSave.status,200);
     assert.equal((await (await fetch(`${base}/dashboard/api/welcome`,{headers:{Cookie:sessionCookie}})).json() as {enabled:boolean}).enabled,true);
     const chatSettingsBefore=await fetch(`${base}/dashboard/api/chat-messages`,{headers:{Cookie:sessionCookie}});
-    const initialChatSettings=await chatSettingsBefore.json() as {profile:string;communityTips:{enabled:boolean;portalEnabled:boolean}};
+    const initialChatSettings=await chatSettingsBefore.json() as {profile:string;communityTips:{enabled:boolean;portalEnabled:boolean;halloweenEnabled:boolean;halloweenFrequency:string;halloweenActive:boolean;halloweenPreviews:string[]}};
     assert.equal(initialChatSettings.profile,'normal');
     assert.equal(initialChatSettings.communityTips.enabled,false,'old installations remain opted out');
     assert.equal(initialChatSettings.communityTips.portalEnabled,false,'Portal-Tipp bleibt auf bestehenden Installationen aus');
-    const chatSettingsSave=await fetch(`${base}/dashboard/api/chat-messages`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({profile:'calm',welcomeBots:['StreamElements','nightbot'],communityTipsEnabled:true,communityPortalTipsEnabled:true})});
+    assert.equal(initialChatSettings.communityTips.halloweenEnabled,true,'Häufigere Erinnerung ist Standard, sofern Community-Tipps und Event aktiv sind');
+    assert.equal(initialChatSettings.communityTips.halloweenFrequency,'frequent');
+    assert.equal(initialChatSettings.communityTips.halloweenActive,false,'inaktives Event wird nicht beworben');
+    assert.equal(initialChatSettings.communityTips.halloweenPreviews.length,5);
+    const chatSettingsSave=await fetch(`${base}/dashboard/api/chat-messages`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({profile:'calm',welcomeBots:['StreamElements','nightbot'],communityTipsEnabled:true,communityPortalTipsEnabled:true,communityHalloweenEnabled:false,communityHalloweenFrequency:'normal'})});
     assert.equal(chatSettingsSave.status,200,await chatSettingsSave.clone().text());
     assert.deepEqual(store.config('chat_response_settings',{}),{profile:'calm',welcomeBots:['streamelements','nightbot']});
     assert.equal(communityTips.settings().enabled,true,'dashboard can opt in community tips');
     assert.equal(communityTips.settings().portalEnabled,true,'Dashboard kann Portal-Hinweise getrennt aktivieren');
+    assert.equal(communityTips.settings().halloweenEnabled,false,'Halloween-Erinnerungsschalter wird gespeichert');
+    assert.equal(communityTips.settings().halloweenFrequency,'normal','Häufigkeit wird gespeichert');
     const invalidChatSettings=await fetch(`${base}/dashboard/api/chat-messages`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({profile:'quiet',welcomeBots:[]})});
     assert.equal(invalidChatSettings.status,400,'unbekanntes Profil wird abgewiesen');
 

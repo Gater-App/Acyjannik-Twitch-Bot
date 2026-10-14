@@ -14,6 +14,7 @@ import { logger } from '../src/logger.js';
 import { CommunityFeatures } from '../src/community-features.js';
 import { ViewerCommunityPortal } from '../src/community-portal.js';
 import { CommunityVault } from '../src/community-vault.js';
+import { CommunityTips } from '../src/community-tips.js';
 
 async function freePort(): Promise<number> {
   const server = net.createServer();
@@ -50,7 +51,8 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
   assert.equal(communityFeatures.vault.startManual(Date.now()).ok,true);
   store.miniGameQuery(db=>db.prepare("UPDATE community_vault_rounds SET secret_code='042' WHERE status='active'").run());
   const portal = new ViewerCommunityPortal(store, communityFeatures, testConfig(), fetchImpl);
-  const dashboard = new DashboardServer(store, () => ({ twitchConnected: true, channel: 'acyjannik', startedAt: 1 }), logger, fetchImpl, undefined, undefined, undefined, miniGames, arcade, async()=>{}, undefined, undefined, undefined, undefined, portal, communityFeatures.vault, async()=>true, communityFeatures.moderatorPranks,async(login)=>({id:'123456',login,displayName:'Testviewer'}));
+  const communityTips=new CommunityTips(store);
+  const dashboard = new DashboardServer(store, () => ({ twitchConnected: true, channel: 'acyjannik', startedAt: 1 }), logger, fetchImpl, undefined, undefined, undefined, miniGames, arcade, async()=>{}, undefined, communityTips, undefined, undefined, portal, communityFeatures.vault, async()=>true, communityFeatures.moderatorPranks,async(login)=>({id:'123456',login,displayName:'Testviewer'}));
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
   try {
     assert.equal(await dashboard.start(), true);
@@ -111,6 +113,19 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     assert.match(await page.locator('#home-status').innerText(), /Bot antwortet[\s\S]*Twitch-Verbindung/u, 'Kompaktstatus zeigt Bot und Twitch');
     assert.match(await page.locator('#setup-checklist').innerText(), /Chat kann Nachrichten empfangen[\s\S]*OBS-Widget-Link/u, 'Checkliste zeigt Chat-Nachweis und optionale OBS-Einrichtung');
     await screenshot('acy-dashboard-setup-checklist');
+
+    await navigate('settings');
+    await page.locator('[data-setting-target="messages"]').click();
+    const halloweenPanel=page.locator('#chat-response-settings');
+    await halloweenPanel.getByRole('heading',{name:'🎃 Halloween-Event bewerben'}).waitFor({state:'visible'});
+    assert.equal(await halloweenPanel.locator('.chat-preview').count(),5,'fünf echte Halloween-Nachrichtenvorschauen');
+    assert.match(await halloweenPanel.innerText(),/Halloween-Event ist aktuell nicht aktiv/u,'inaktives Event wird im Dashboard erklärt');
+    assert.equal(await halloweenPanel.locator('select').nth(1).inputValue(),'frequent','Häufiger ist die gewählte Vorgabe');
+    await screenshot('acy-dashboard-halloween-reminders');
+    await halloweenPanel.getByLabel('Halloween-Erinnerungen aktivieren').uncheck();
+    await halloweenPanel.locator('select').nth(1).selectOption('normal');
+    await halloweenPanel.getByRole('button',{name:'Speichern'}).click();
+    await page.waitForFunction(async()=>{const d=await(await fetch('/dashboard/api/chat-messages')).json();return d.communityTips?.halloweenEnabled===false&&d.communityTips?.halloweenFrequency==='normal'});
 
     await navigate('obs');
     assert.equal(await page.getByRole('heading', { name: 'OBS-Einrichtung' }).isVisible(), true, 'OBS wird als geführter Einrichtungsschritt dargestellt');

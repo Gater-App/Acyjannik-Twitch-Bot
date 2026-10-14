@@ -20,6 +20,8 @@ function message(text: string, eventId: string, extra: Partial<ChatMessage> = {}
 }
 const available = { events: true, activeEventCommand: 'trickortreat', eightBall: true, rps: true, duels: true,
   pet: true, detective: true, quests: true, xp: true };
+const halloweenActive = {...available,activeEventId:'halloween'};
+const halloweenOnly = {events:true,activeEventId:'halloween',activeEventCommand:'trickortreat'};
 
 test('tips are off by default, unknown/offline streams never send, and lively requires its activity threshold', () => {
   const { tips, close } = setup();
@@ -99,5 +101,72 @@ test('Community-Portal-Tipp nutzt nur den vorhandenen Aktivitäts- und Profilpla
     tips.configure(false);
     assert.equal(tips.settings().portalEnabled,true,'Schalter bleibt gesetzt, wird aber durch deaktivierte Community-Tipps nicht aktiv');
     assert.equal(tips.preview({...onlyPortal,communityPortal:true}).some(x=>x.id==='community-portal'),false);
+  }finally{close()}
+});
+
+test('Halloween erinnert abwechslungsreich mit Live-Event, echter Aktivität, 30-Minuten-Abstand und höchstens zwei Tipps pro Stunde',()=>{
+  const {tips,store,file,close}=setup();
+  try{
+    tips.configure(true);tips.alignStream('halloween-stream');
+    const start=1_000_000_000;
+    const addActivity=(collector:CommunityTips,base:number,prefix:string)=>{for(let i=0;i<6;i++)collector.observe(message(`Genuine Halloween chat ${prefix} ${i}`,`${prefix}-${i}`),base+i)};
+    addActivity(tips,start,'first');
+    assert.equal(tips.shouldEvaluate('normal',available,false,start+10),true,'ohne aktive Halloween-ID bleiben andere Community-Tipps möglich');
+    const first=tips.maybeSend({isLive:true,streamId:'halloween-stream',profile:'normal',availability:halloweenActive,busy:false,now:start+100,random:()=>0});
+    assert.equal(first?.id,'halloween-reminder');assert.match(first?.text||'',/!trickortreat|!pumpkins/u);
+    assert.equal(tips.status('normal',start+100,halloweenActive).halloweenSentThisHour,1);
+
+    const restoredStore=new FeatureStore(file),restored=new CommunityTips(restoredStore);restored.alignStream('halloween-stream');
+    addActivity(restored,start+30*60_000,'second');
+    const second=restored.maybeSend({isLive:true,streamId:'halloween-stream',profile:'normal',availability:halloweenActive,busy:false,now:start+30*60_000+100,random:()=>0});
+    assert.equal(second?.id,'halloween-reminder');assert.notEqual(second?.text,first?.text,'Textrotation bleibt nach Neustart erhalten');
+    assert.equal(restored.status('normal',start+30*60_000+100,halloweenActive).halloweenSentThisHour,2);
+    addActivity(restored,start+59*60_000,'third');
+    assert.equal(restored.shouldEvaluate('normal',halloweenActive,false,start+59*60_000+100),false,'Mindestabstand hält eine dritte Erinnerung im selben Stundenfenster zurück');
+    assert.equal(restored.maybeSend({isLive:true,streamId:'halloween-stream',profile:'normal',availability:halloweenActive,busy:false,now:start+59*60_000+100}),undefined);
+    restoredStore.close();
+  }finally{close()}
+});
+
+test('Halloween-Erinnerung pausiert bei Offline-Stream, beendetem Event, deaktivierten Tipps oder ausgeschaltetem Schalter',()=>{
+  const {tips,close}=setup();
+  try{
+    tips.configure(true);tips.alignStream('halloween-stream');const now=2_000_000_000;
+    for(let i=0;i<6;i++)tips.observe(message(`Active event activity ${i}`,`active-${i}`),now+i);
+    assert.notEqual(tips.maybeSend({isLive:true,streamId:'halloween-stream',profile:'normal',availability:{...halloweenOnly,events:false},busy:false,now:now+10,random:()=>0})?.id,'halloween-reminder','inaktives Event darf keine Halloween-Erinnerung erzeugen');
+    assert.equal(tips.maybeSend({isLive:false,streamId:'halloween-stream',profile:'normal',availability:halloweenOnly,busy:false,now:now+11}),undefined);
+    tips.alignStream('halloween-stream');for(let i=0;i<6;i++)tips.observe(message(`More active event activity ${i}`,`more-${i}`),now+20+i);
+    tips.configureHalloween(false);
+    assert.equal(tips.shouldEvaluate('normal',halloweenOnly,false,now+100),false);
+    tips.configureHalloween(true,'normal');tips.configure(false);
+    assert.equal(tips.shouldEvaluate('normal',halloweenOnly,false,now+200),false);
+  }finally{close()}
+});
+
+test('Halloween-Hinweis konkurriert fair mit anderen Tipps und bewahrt Sendegrenzen',()=>{
+  const {tips,close}=setup();
+  try{
+    tips.configure(true);tips.alignStream('mixed-stream');const now=2_500_000_000;
+    for(let i=0;i<6;i++)tips.observe(message(`Mixed community chat ${i}`,`mix-${i}`),now+i);
+    const result=tips.maybeSend({isLive:true,streamId:'mixed-stream',profile:'normal',availability:{...halloweenActive,pet:true},busy:false,now:now+100,random:()=>2});
+    assert.ok(result);assert.notEqual(result.id,'halloween-reminder','mögliche Community-Tipps werden nicht vollständig verdrängt');
+    const next= tips.status('normal',now+100,halloweenActive);
+    assert.equal(next.halloweenHourlyLimit,2);assert.ok(next.halloweenNextEarliestAt!>=now+30*60_000);
+  }finally{close()}
+});
+
+test('Halloween-Häufigkeit Normal wartet 45 Minuten und ein kürzlich genutzter Eventbefehl verschiebt den Hinweis',()=>{
+  const {tips,close}=setup();
+  try{
+    tips.configure(true);tips.configureHalloween(true,'normal');tips.alignStream('frequency-stream');const now=3_000_000_000;
+    for(let i=0;i<6;i++)tips.observe(message(`First event conversation ${i}`,`normal-first-${i}`),now+i);
+    tips.observe(message('!trickortreat','recent-event-command'),now+10);
+    assert.equal(tips.shouldEvaluate('normal',halloweenOnly,false,now+11),false,'direkt nach dem Spielbefehl wird nicht erneut dafür geworben');
+    assert.equal(tips.shouldEvaluate('normal',halloweenOnly,false,now+15*60_000+11),true,'nach dem Befehlsabstand darf die Erinnerung wieder eingeplant werden');
+    const first=tips.maybeSend({isLive:true,streamId:'frequency-stream',profile:'normal',availability:halloweenOnly,busy:false,now:now+15*60_000+11,random:()=>0});
+    assert.equal(first?.id,'halloween-reminder');
+    for(let i=0;i<6;i++)tips.observe(message(`Second event conversation ${i}`,`normal-second-${i}`),now+45*60_000+i);
+    assert.equal(tips.shouldEvaluate('normal',halloweenOnly,false,now+45*60_000+20),false,'Normal wartet mindestens 45 Minuten');
+    assert.equal(tips.shouldEvaluate('normal',halloweenOnly,false,now+60*60_000+11),true,'nach 45 Minuten plus globalem Tippabstand ist die Erinnerung wieder möglich');
   }finally{close()}
 });

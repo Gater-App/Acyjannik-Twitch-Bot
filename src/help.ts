@@ -3,6 +3,7 @@ import type { ChatMessage } from './types.js';
 export interface HelpAvailability {
   xp: boolean;
   events: boolean;
+  activeEventId?: string;
   activeEventName?: string;
   activeEventCommand?: string;
   seasonalEvents?: Array<{id:string;name:string;command:string;active:boolean}>;
