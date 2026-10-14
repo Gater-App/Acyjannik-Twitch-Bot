@@ -471,7 +471,7 @@ test('Elio-Aktionen geben Browserfeedback, aktualisieren Werte und sperren den C
     await page.waitForFunction(()=>!(document.querySelector('[data-pet-action="feed"]') as HTMLButtonElement).disabled,undefined,{timeout:3000});
     await page.route('**/community/api/pet',route=>route.abort());await feed.click();await page.locator('#pet-action-status').getByText(/Verbindung ist fehlgeschlagen/u).waitFor({timeout:3000});assert.equal(await feed.isDisabled(),false,'nach einem Netzwerkfehler bleibt die Schaltfläche nicht blockiert');await page.unroute('**/community/api/pet');
     await feed.click();await page.locator('#pet-action-status').getByText(/Elio wurde gefüttert/u).waitFor({timeout:3000});
-    await page.waitForFunction(()=>/Hunger\s*78%/u.test(document.querySelector('#pet .item:nth-child(2)')?.textContent||''),undefined,{timeout:3000});
+    await page.waitForFunction(()=>/Hunger\s*78%/u.test(document.querySelectorAll('#pet .item')[1]?.textContent||''),undefined,{timeout:3000});
     store.miniGameQuery(db=>db.prepare('UPDATE community_pet SET paused=1 WHERE id=1').run());await page.reload({waitUntil:'domcontentloaded'});
     await page.locator('#pet-action-status').getByText(/Pflegepause/u).waitFor({timeout:3000});assert.equal(await feed.isDisabled(),true,'pausierte Pflege deaktiviert die Aktion');
     assert.deepEqual(pageErrors,[],'Elio-Aktionen dürfen keine JavaScript-Fehler auslösen');

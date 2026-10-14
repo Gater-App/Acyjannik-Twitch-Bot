@@ -717,6 +717,27 @@ export class FeatureStore {
         this.db.prepare('INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (25, ?)').run(Date.now());
       })();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 26) {
+      if (currentVersion > 0) this.backupBeforeMigration(26);
+      this.db.transaction(() => {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS community_world_badges (
+            user_id TEXT NOT NULL, badge_id TEXT NOT NULL, unlocked_at INTEGER NOT NULL,
+            PRIMARY KEY(user_id,badge_id)
+          );
+          CREATE INDEX IF NOT EXISTS community_world_badges_user ON community_world_badges(user_id,unlocked_at DESC);
+          CREATE TABLE IF NOT EXISTS community_world_mission_claims (
+            user_id TEXT NOT NULL, mission_id TEXT NOT NULL, period_key TEXT NOT NULL,
+            claimed_at INTEGER NOT NULL, reward_xp INTEGER NOT NULL CHECK(reward_xp >= 0),
+            PRIMARY KEY(user_id,mission_id,period_key)
+          );
+          CREATE INDEX IF NOT EXISTS community_world_mission_claims_user ON community_world_mission_claims(user_id,claimed_at DESC);
+          INSERT OR IGNORE INTO feature_config(key,value) VALUES ('community_world_started_at','${Date.now()}');
+        `);
+        this.db.prepare('INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (26, ?)').run(Date.now());
+      })();
+    }
   }
 
   private backupBeforeMigration(version: number): void {

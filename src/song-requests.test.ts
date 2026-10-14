@@ -54,7 +54,7 @@ test('Neustart markiert uneindeutige Playlist-Schreibvorgänge zur Prüfung und 
 test('Preisstandard wird sicher auf 1.000 migriert, eigener Preis bleibt erhalten und UI bietet keine Wiedergabesteuerung',()=>{
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'song-price-migration-'));
   for(const [label,cost,expected] of [['default',500,1000],['custom',1200,1200]] as const){const file=path.join(dir,`${label}.sqlite`);let store=new FeatureStore(file);
-    store.setConfig('song_request_settings',{enabled:false,rewardId:null,rewardTitle:'🎵 Song wünschen',cost,playlistId:null,playlistName:null});store.miniGameTransaction(db=>db.prepare('DELETE FROM schema_migrations WHERE version IN (19,20,21,22,23,24,25)').run());store.close();
+    store.setConfig('song_request_settings',{enabled:false,rewardId:null,rewardTitle:'🎵 Song wünschen',cost,playlistId:null,playlistName:null});store.miniGameTransaction(db=>db.prepare('DELETE FROM schema_migrations WHERE version IN (19,20,21,22,23,24,25,26)').run());store.close();
     store=new FeatureStore(file);assert.equal(store.config<{cost:number}>('song_request_settings',{cost:0}).cost,expected);store.close();}
   assert.match(SONG_REQUESTS_CARD,/1\.000 Kanalpunkte/u);assert.doesNotMatch(SONG_REQUESTS_CARD,/skip|Wiedergabe starten/u);fs.rmSync(dir,{recursive:true,force:true});
 });
