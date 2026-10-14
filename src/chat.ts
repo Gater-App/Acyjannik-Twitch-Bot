@@ -49,5 +49,6 @@ export function parseEventSubChatMessage(payload: Record<string, unknown>): Chat
     message: String((event.message as Record<string, unknown> | undefined)?.text ?? ''),
     sentAt: Date.parse(String(event.sent_at ?? new Date().toISOString())),
     isModerator: badges.some((badge) => badge.set_id === 'moderator'),
+    isVip: badges.some((badge) => badge.set_id === 'vip'),
   };
 }
