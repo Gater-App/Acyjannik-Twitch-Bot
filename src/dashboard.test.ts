@@ -251,6 +251,16 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.equal(afterWheel.canSpin,false,'Cooldown blockiert einen unmittelbaren weiteren Spin');
     assert.equal(afterWheel.activeAction,null,'automatische Aktion wartet nicht auf eine manuelle Auflösung');
     assert.ok(afterWheel.entries.every(entry=>entry.actionType!=='manual_challenge'));
+    const wheelTokenResponse=await fetch(`${base}/dashboard/api/widgets/token`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({type:'wheel',action:'rotate'})});
+    assert.equal(wheelTokenResponse.status,201);
+    const wheelToken=new URL((await wheelTokenResponse.json() as {url:string}).url).searchParams.get('token')||'';
+    const wheelPage=await fetch(`${base}/widgets/wheel?token=${wheelToken}`),wheelHtml=await wheelPage.text();
+    assert.equal(wheelPage.status,200);assert.match(wheelHtml,/<svg id="wheel"/u,'OBS zeigt ein echtes SVG-Rad');assert.match(wheelHtml,/cubic-bezier\(\.10,\.02,\.12,1\)/u,'Drehung bremst weich ab');assert.match(wheelHtml,/prefers-reduced-motion/u,'reduzierte Bewegung wird beachtet');assertInlineScriptsParse(wheelHtml);
+    const wheelSnapshot=await fetch(`${base}/widgets/api/wheel?token=${wheelToken}`),wheelWidget=await wheelSnapshot.json() as {visible:boolean;wheel:{id:string;title:string;selectedKey:string;fields:Array<{id:string;title:string;weight:number}>}};
+    assert.equal(wheelWidget.visible,true);assert.ok(wheelWidget.wheel.fields.length>=2);
+    const selectedField=wheelWidget.wheel.fields.find(field=>field.id===wheelWidget.wheel.selectedKey);
+    assert.ok(selectedField,'ausgewähltes Backend-Feld ist im gewichteten Rad enthalten');assert.equal(selectedField.title,wheelWidget.wheel.title,'Titel stimmt mit dem tatsächlich gespeicherten Gewinner überein');
+    assert.equal('createdBy' in wheelWidget.wheel,false,'keine internen oder persönlichen Spin-Daten werden veröffentlicht');
     const manualWheelAction=await fetch(`${base}/dashboard/api/arcade`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({action:'challenge',title:'Manuell',weight:1,actionType:'manual_challenge'})});
     assert.equal(manualWheelAction.status,400,'Dashboard-API lehnt manuelle Radfelder ab');
 

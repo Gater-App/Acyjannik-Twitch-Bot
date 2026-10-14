@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
+import { createHash, randomBytes } from 'node:crypto';
 import test from 'node:test';
 import { chromium } from 'playwright';
 import { DashboardServer } from '../src/dashboard.js';
@@ -396,6 +397,33 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     for (const [key, value] of Object.entries(env)) process.env[key] = value;
     for (const key of Object.keys(process.env)) if (!(key in env)) delete process.env[key];
   }
+});
+
+test('Chaos-Wheel-OBS-Widget zeigt das festgelegte gewichtete Ergebnis und landet exakt am Zeiger',async()=>{
+  const env={...process.env},directory=fs.mkdtempSync(path.join(os.tmpdir(),'acy-wheel-browser-')),store=new FeatureStore(path.join(directory,'state.sqlite')),port=await freePort();
+  process.env.TWITCH_CLIENT_ID='test-client';process.env.TWITCH_CLIENT_SECRET='test-secret';process.env.DASHBOARD_REDIRECT_URI=`http://127.0.0.1:${port}/dashboard/oauth/callback`;process.env.DASHBOARD_ADMIN_IDS='admin-id';process.env.DASHBOARD_HOST='127.0.0.1';process.env.DASHBOARD_PORT=String(port);
+  const base=`http://127.0.0.1:${port}`,arcade=new CommunityArcade(store,'admin-id',()=>0);arcade.updateSettings({...arcade.settings(),wheelEnabled:true,petEnabled:true,dropsEnabled:true});
+  const fetchImpl:typeof fetch=async input=>String(input).endsWith('/oauth2/token')?Response.json({access_token:'ephemeral-wheel-token'}):String(input).endsWith('/oauth2/validate')?Response.json({client_id:'test-client',user_id:'admin-id'}):String(input).endsWith('/helix/users')?Response.json({data:[{id:'admin-id',login:'admin',display_name:'Admin'}]}):Response.error();
+  const dashboard=new DashboardServer(store,()=>({twitchConnected:true,channel:'acyjannik',startedAt:Date.now()}),logger,fetchImpl,undefined,undefined,undefined,undefined,arcade);
+  let browser:Awaited<ReturnType<typeof chromium.launch>>|undefined;
+  try{
+    assert.equal(await dashboard.start(),true);
+    const rawToken=randomBytes(32).toString('base64url');store.rotateWidgetToken('wheel',createHash('sha256').update(rawToken).digest('hex'),Date.now(),'admin-id');
+    browser=await chromium.launch({headless:true});const page=await browser.newPage({viewport:{width:900,height:900}});const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
+    await page.goto(`${base}/widgets/wheel?token=${rawToken}`,{waitUntil:'domcontentloaded'});
+    await page.waitForFunction(()=>document.querySelector('#root')?.dataset.ready==='true');
+    arcade.spinAdmin('admin-id',Date.now());
+    await page.waitForFunction(()=>document.querySelector('#root')?.dataset.spinId!==''&&document.querySelector('#root')?.dataset.spinId!==undefined,{timeout:5000});
+    await page.waitForFunction(()=>document.querySelector('#rotor')?.getAnimations().length===1,{timeout:3000});
+    const timing=await page.locator('#rotor').evaluate(node=>node.getAnimations()[0]?.effect?.getTiming());assert.equal(timing?.duration,6000);assert.match(String(timing?.easing),/cubic-bezier/u);
+    assert.ok(await page.locator('#rotor .segment').count()>=2);assert.equal(await page.locator('#winner').innerText(),(await (await fetch(`${base}/widgets/api/wheel?token=${rawToken}`)).json() as {wheel:{title:string}}).wheel.title);
+    await page.waitForFunction(()=>document.querySelector('#root')?.classList.contains('result')===true,{timeout:7000});
+    const screenshotDir=path.join(process.cwd(),'docs','verification');fs.mkdirSync(screenshotDir,{recursive:true});await page.screenshot({path:path.join(screenshotDir,'chaos-wheel-2.png'),fullPage:true});
+    const landing=await page.locator('#wheel').evaluate(node=>{const svg=node as SVGSVGElement,angle=Number(svg.dataset.selectedCenter),transform=getComputedStyle(document.querySelector('#rotor')!).transform,m=new DOMMatrixReadOnly(transform),rotation=((Math.atan2(m.b,m.a)*180/Math.PI)%360+360)%360;return {angle,rotation,error:Math.abs((((angle+rotation+90)%360)+360)%360)}});
+    assert.ok(landing.error<0.2,`Gewinnersegment landet am festen Zeiger: ${JSON.stringify(landing)}`);assert.deepEqual(errors,[]);
+    const mobile=await browser.newPage({viewport:{width:390,height:844},reducedMotion:'reduce'});await mobile.goto(`${base}/widgets/wheel?token=${rawToken}`,{waitUntil:'domcontentloaded'});await mobile.waitForSelector('#root:not([hidden])');
+    assert.ok(await mobile.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth+1),'Wheel-Widget passt mobil ohne horizontales Scrollen');assert.equal(await mobile.locator('#rotor').evaluate(node=>node.getAnimations().length),0,'später Einstieg und reduzierte Bewegung lösen keine alte Dreh-Animation aus');
+  }finally{await browser?.close();await dashboard.stop();store.close();fs.rmSync(directory,{recursive:true,force:true});for(const [key,value] of Object.entries(env))process.env[key]=value;for(const key of Object.keys(process.env))if(!(key in env))delete process.env[key];}
 });
 
 test('Elio-Aktionen geben Browserfeedback, aktualisieren Werte und sperren den Cooldown',async()=>{

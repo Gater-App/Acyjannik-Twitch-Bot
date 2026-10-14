@@ -708,6 +708,15 @@ export class FeatureStore {
         this.db.exec("UPDATE community_pet_interactions SET source='portal' WHERE event_id LIKE 'viewer:%'; INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (24, unixepoch()*1000);");
       })();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 25) {
+      if (currentVersion > 0) this.backupBeforeMigration(25);
+      this.db.transaction(() => {
+        const spinColumns=new Set((this.db.prepare('PRAGMA table_info(chaos_wheel_spins)').all() as Array<{name:string}>).map(x=>x.name));
+        if(!spinColumns.has('wheel_fields_json'))this.db.exec('ALTER TABLE chaos_wheel_spins ADD COLUMN wheel_fields_json TEXT');
+        this.db.prepare('INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (25, ?)').run(Date.now());
+      })();
+    }
   }
 
   private backupBeforeMigration(version: number): void {

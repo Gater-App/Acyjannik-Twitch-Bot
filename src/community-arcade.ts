@@ -340,6 +340,7 @@ export class CommunityArcade {
         pool=[...available,...taskAvailable];
       }
       const total=pool.reduce((a,x)=>a+x.weight,0);if(pool.length<2||total<=0)return '🎡 Es sind nicht genügend aktuell verfügbare Rad-Felder vorhanden.';
+      const wheelFieldsJson=JSON.stringify(pool.map(({id,title,weight,wheelKey})=>({id,title,weight,wheelKey})));
       let point=this.chooseIndex(total);if(!Number.isInteger(point)||point<0||point>=total)throw new Error('Wheel-Auswahl außerhalb des gültigen Bereichs.');
       const selected=pool.find(x=>(point-=x.weight)<0)!;
       const id=randomUUID();
@@ -355,11 +356,11 @@ export class CommunityArcade {
         }else if(selected.wheelKey==='pistols_timer'){
           endsAt=now+300_000;status='active';message='🎡 Jannicks Aufgabe: Fünf Minuten nur Pistolen! Der Countdown läuft; der Bot prüft nicht, welche Waffen im Spiel verwendet werden.';
         }else{status='active';message='🎡 Jannicks Aufgabe: Eine Runde ohne Springen! OBS zeigt die Aufgabe bis zum Beenden mit !cancelwheel. Der Bot kann die Einhaltung nicht prüfen.';}
-        db.prepare("INSERT INTO chaos_wheel_spins(id,challenge_id,title,status,created_by,created_at,action_type,ends_at,resolved_at,wheel_key,task_ref) VALUES(?,?,?, ?,?,?,?, ?,?, ?,?)")
-          .run(id,selected.id,selected.title,status,actor,now,selected.actionType,endsAt,status==='completed'?now:null,selected.wheelKey,taskRef);
+        db.prepare("INSERT INTO chaos_wheel_spins(id,challenge_id,title,status,created_by,created_at,action_type,ends_at,resolved_at,wheel_key,task_ref,wheel_fields_json) VALUES(?,?,?, ?,?,?,?, ?,?, ?,?,?)")
+          .run(id,selected.id,selected.title,status,actor,now,selected.actionType,endsAt,status==='completed'?now:null,selected.wheelKey,taskRef,wheelFieldsJson);
         return message;
       }
-      db.prepare("INSERT INTO chaos_wheel_spins(id,challenge_id,title,status,created_by,created_at,action_type,ends_at,resolved_at,wheel_key) VALUES(?,?,?,'completed',?,?,?,NULL,?,?)").run(id,selected.id,selected.title,actor,now,selected.actionType,now,selected.wheelKey);
+      db.prepare("INSERT INTO chaos_wheel_spins(id,challenge_id,title,status,created_by,created_at,action_type,ends_at,resolved_at,wheel_key,wheel_fields_json) VALUES(?,?,?,'completed',?,?,?,NULL,?,?,?)").run(id,selected.id,selected.title,actor,now,selected.actionType,now,selected.wheelKey,wheelFieldsJson);
       if(selected.actionType==='boost_pet'){
         db.prepare("UPDATE community_pet SET energy=MIN(100,energy+10),happiness=MIN(100,happiness+5),animation='happy',updated_at=? WHERE id=1").run(now);
         return `Ergebnis: ${selected.title}! Elio erhält automatisch +10 Energie und +5 Zufriedenheit.`;

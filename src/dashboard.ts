@@ -364,6 +364,18 @@ export class DashboardServer {
 
   private widgetSnapshot(type: WidgetType): Record<string, unknown> {
     const snapshot=this.store.widgetSnapshot(type, Date.now());
+    if(type==='wheel'&&this.arcade){
+      const arcade=this.arcade;
+      const now=Date.now();
+      const spin=this.store.miniGameQuery(db=>db.prepare("SELECT s.id,s.challenge_id challengeId,s.title,s.status,s.created_at createdAt,s.resolved_at resolvedAt,s.action_type actionType,s.wheel_key wheelKey,s.wheel_fields_json wheelFieldsJson FROM chaos_wheel_spins s WHERE s.status IN ('active','completed','canceled') ORDER BY s.created_at DESC LIMIT 1").get() as {id:string;challengeId:string;title:string;status:string;createdAt:number;resolvedAt:number|null;actionType:string;wheelKey:string|null;wheelFieldsJson:string|null}|undefined);
+      const status=arcade.wheelStatus(now) as {entries?:Array<{id:string;title:string;weight:number;wheelKey:string|null}>;taskEntries?:Array<{id:string;title:string;weight:number;wheelKey:string|null}>};
+      const recent=spin&&now-(spin.resolvedAt??spin.createdAt)<15_000;
+      let fields=[...(status.entries||[]),...(status.taskEntries||[])];
+      if(spin?.wheelFieldsJson){try{const saved=JSON.parse(spin.wheelFieldsJson) as unknown;if(Array.isArray(saved))fields=saved.filter((field):field is {id:string;title:string;weight:number;wheelKey:string|null}=>Boolean(field)&&typeof field==='object'&&typeof (field as {id?:unknown}).id==='string'&&typeof (field as {title?:unknown}).title==='string'&&Number.isInteger((field as {weight?:unknown}).weight)&&(field as {weight:number}).weight>0);}catch{}}
+      return {type,visible:Boolean(spin&&arcade.settings().wheelEnabled&&((spin.status==='active')||recent)),wheel:spin?{id:spin.id,title:spin.title,status:spin.status,createdAt:spin.createdAt,resolvedAt:spin.resolvedAt,actionType:spin.actionType,wheelKey:spin.wheelKey,
+        fields:fields.map(({id,title,weight,wheelKey})=>({id,title,weight,wheelKey})),
+        selectedKey:spin.challengeId}:null};
+    }
     if(type==='pet'&&this.moderatorPranks){const prank=this.moderatorPranks.snapshot().active as {kind?:string;remainingMs?:number}|null;
       return {...snapshot,prank:prank&&['chief','vault-alarm'].includes(prank.kind||'')?{kind:prank.kind,remainingMs:prank.remainingMs}:null};}
     return snapshot;
