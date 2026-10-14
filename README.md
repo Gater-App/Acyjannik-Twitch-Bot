@@ -364,8 +364,8 @@ Aktueller Implementierungsumfang: Elio ist die virtuelle Community-Katze mit beg
 | `!eventscore [event-id]`, `!eventtop [event-id]` | Punktestand bzw. Event-Rangliste |
 | `!startevent ID`, `!endevent ID` | Jannik oder Mods; beendet Events archiviert statt sie zu löschen |
 | `!level [@user]`, `!xptop`, `!rank` | XP-Stand, Topliste und Rang |
-| `!8ball FRAGE`, `!rps schere\|stein\|papier` | Chat-Minispiele; Cooldowns, serverseitige Zufallswahl und XP-Tageslimit |
-| `!startguess`, `!guess ZAHL` | Mod startet eine persistente Zahlenrunde; Teilnehmer haben begrenzte Versuche |
+| `!8ball FRAGE`, `!rps schere\|stein\|papier` | 8-Ball mit 40 % JA, 40 % NEIN, 20 % VIELLEICHT; 30 Sekunden persönlich und 5 Sekunden global (Standard) |
+| `!startguess`, `!guess ZAHL` | Jannik, Moderatoren und Twitch-VIPs starten eine persistente Zahlenrunde; alle Zuschauer können mit begrenzten Versuchen mitraten |
 | `!duel @user`, `!accept`, `!cancelduel` | Zufälliges Duell ohne Einsatz; Annahme läuft ab |
 | `!startboss [Name]`, `!attack`, `!boss`, `!bosstop`, `!endboss` | Kooperativer Bosskampf; Start/Ende nur Jannik oder Mods |
 | `!addcommand name \| Antwort` | Nur Jannik; eigene Antwort mit sicheren Platzhaltern |
