@@ -35,6 +35,7 @@ const ALIASES: Record<string,string> = {
   basics:'start', start:'start', games:'spiele', game:'spiele', drops:'drop', wheel:'gluecksrad',
   halloween:'event-halloween', weihnachten:'event-christmas', christmas:'event-christmas', ostern:'event-easter', easter:'event-easter',
   detektiv:'detektiv', detective:'detektiv', pet:'pet', quests:'quests', spark:'ideen', 'chat-ideen':'ideen',
+  community:'community-portal', portal:'community-portal',
 };
 
 export function helpReply(args: string[], message: ChatMessage, availability: HelpAvailability = DEFAULT_HELP_AVAILABILITY): string {
@@ -49,7 +50,7 @@ export function helpReply(args: string[], message: ChatMessage, availability: He
 
   const normalized = ALIASES[topic] || topic;
   switch (normalized) {
-    case 'start': return '🎮 !help spiele | 🎃 !help events | 🏆 !help xp | 📜 !help quests | 📖 Alle Befehle: twitch.gater-app.de/hilfe';
+    case 'start': return '🎮 !help spiele | 🎃 !help events | 🏆 !help xp | 📜 !help quests | 📖 Alle Befehle: https://twitch.gater-app.de/hilfe | 💜 Portal: https://twitch.gater-app.de/community';
     case 'spiele': return gameHelp(availability);
     case 'event-halloween': return seasonalHelp('halloween',availability);
     case 'event-christmas': return seasonalHelp('christmas',availability);
@@ -65,7 +66,8 @@ export function helpReply(args: string[], message: ChatMessage, availability: He
     case 'pet': return availability.pet ? '🐱 Elio ist die Community-Katze: !pet zeigt den Zustand, !feed gibt Katzenfutter, !play startet Spielangel- oder Wollknäuel-Spiel, !petcare kümmert sich um ihn und !petstats zeigt Werte.' : '🐱 Elio macht Pause und ist derzeit nicht verfügbar.';
     case 'drop': return availability.drops ? '🎁 Jannick startet eine Belohnungsrunde. Während des Drops schreibe !claim; das Ergebnis wird automatisch bekannt gegeben.' : '🎁 Mystery Drops sind derzeit deaktiviert.';
     case 'gluecksrad': return availability.wheel ? '🎡 Jannick dreht das Glücksrad. Das Ergebnis startet automatisch; bei einer Challenge spielt Jannick die Aufgabe. Status: !wheel.' : '🎡 Das Chaos Wheel ist derzeit deaktiviert.';
-    default: return '🎮 !help spiele | 🎃 !help events | 🏆 !help xp | 📜 !help quests | 📖 Alle Befehle: twitch.gater-app.de/hilfe';
+    case 'community-portal': return '💜 XP, Elio 🐱, Quest-Ideen und Community-Spiele: https://twitch.gater-app.de/community';
+    default: return '🎮 !help spiele | 🎃 !help events | 🏆 !help xp | 📜 !help quests | 📖 Alle Befehle: https://twitch.gater-app.de/hilfe | 💜 Portal: https://twitch.gater-app.de/community';
   }
 }
 
@@ -77,7 +79,7 @@ function gameHelp(a: HelpAvailability): string {
   return games.length ? `🎮 Weitere Chatspiele: ${games.join(' · ')}.` : '🎮 Weitere Chatspiele sind derzeit deaktiviert. Für Community-Runden: !help imposter oder !help detective.';
 }
 
-export const HELP_TOPICS = ['start','spiele','events','xp','quests','ideen','imposter','detektiv','pet','drop','gluecksrad'];
+export const HELP_TOPICS = ['start','spiele','events','xp','quests','ideen','imposter','detektiv','pet','drop','gluecksrad','community'];
 
 function seasonalHelp(id:string,availability:HelpAvailability):string {
   const event=availability.seasonalEvents?.find(item=>item.id===id);

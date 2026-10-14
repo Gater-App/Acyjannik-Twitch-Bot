@@ -139,7 +139,7 @@ const RESERVED_COMMANDS = new Set([
   'boss', 'bosstop', 'endboss', 'addcommand', 'setcommand', 'delcommand', 'help',
   'quest', 'quests', 'myquest', 'questhelp', 'questqueue', 'approvequest', 'rejectquest', 'skipquest', 'poll', 'vote', 'pollresults',
   'spark','sparks','sparkhelp','sparkapprove','sparkreject','sparkpause','sparkresume','sparktopics',
-  'imposter','imposterstatus','joinimposter','leaveimposter','startimposter','closeimposter','cancelimposter','sus',
+  'imposter','imposterstatus','joinimposter','leaveimposter','startimposter','closeimposter','cancelimposter','sus','community',
   'quoteoptin','quoteoptout','savequote','myquotes','deletequote','detektiv','startdetektiv','wer','quote','skipdetektiv','enddetektiv',
   'pet','feed','play','petcare','petstats','petname','pethelp','petevolution','setpetname','petpause','petresume',
   'claim','drop','dropstats','drops','startdrop','canceldrop','dropconfig','wheel','spin','wheelstatus','startwheel','cancelwheel','wheelpause','wheelresume',

@@ -10,7 +10,7 @@ function msg(id:string,name:string,text='hello there'):ChatMessage{return {event
 function fixture(){const store=new FeatureStore(':memory:'),game=new MiniGames(store,testConfig(),()=>0);game.updateSettings({...game.settings(),enabled:true,imposter:{...game.settings().imposter,minPlayers:4,maxPlayers:5,registrationMs:1000,playMs:1000,votingMs:1000,cooldownMs:0,rules:[{id:'uppercase',name:'Caps',description:'Nur GROSSBUCHSTABEN.',enabled:true}]},detective:{...game.settings().detective,roundMs:1000}});return {store,game};}
 
 test('Imposter-Runde braucht Mindestzahl, begrenzt Plätze, weist genau eine Rolle zu und schützt fremde Rollen',()=>{
-  const {store,game}=fixture();const t=1000;assert.match(game.startImposter('broadcaster-1',t),/Anmeldung offen/u);
+  const {store,game}=fixture();const t=1000;const announcement=game.startImposter('broadcaster-1',t);assert.match(announcement,/Anmeldung offen/u);assert.match(announcement,/!joinimposter.*Community-Portal.*https:\/\/twitch\.gater-app\.de\/community/u);
   for(let i=1;i<=6;i++)game.join(msg(`u${i}`,`Viewer${i}`),t+i);
   const db=store.miniGameQuery(d=>d);assert.equal((db.prepare('SELECT COUNT(*) n FROM imposter_players').get() as {n:number}).n,5);
   const response=game.startRoles('broadcaster-1',t+10);assert.match(response,/Mit Twitch anmelden/u);

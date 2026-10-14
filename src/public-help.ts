@@ -16,6 +16,7 @@ export function renderPublicHelpPage(status:HelpAvailability, query:string, nonc
     condition:event.active?'Event aktiv':'Wird erst nach dem Start durch Jannick spielbar',
   }));
   const cards:HelpCard[]=[
+    {title:'Community-Portal',emoji:'💜',description:'Sieh deine XP und Level an, besuche Elio 🐱 und entdecke Community-Spiele.',commands:['!community'],example:'Öffne das öffentliche Portal; für persönliche Werte oder geheime Spielrollen ist eine Twitch-Anmeldung nötig.',condition:'Öffentlich erreichbar'},
     ...seasonal,
     {title:'XP & Level',emoji:'🏆',description:'Sammle Erfahrung durch Community-Aktivität und Spiele.',commands:status.xp?['!level','!rank']:[],example:status.xp?'Schreibe !level, um deinen Fortschritt anzusehen.':'XP und Level können derzeit nicht genutzt werden.',condition:status.xp?'Aktiv':'Derzeit deaktiviert'},
     {title:'Mystery Drops',emoji:'🎁',description:'Bei einer Belohnungsrunde können alle Chatteilnehmenden mitmachen.',commands:status.drops?['!claim']:[],example:status.drops?'Wenn Jannick einen Drop startet, schreibe !claim vor Ablauf des Countdowns.':'Mystery Drops sind momentan ausgeschaltet.',condition:status.drops?'Aktiv; Teilnahme nur während eines Drops':'Derzeit deaktiviert'},

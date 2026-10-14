@@ -76,3 +76,28 @@ test('busy games, unavailable/used features, spacing, per-hour caps and global-s
     assert.equal(tips.state().lastSentAt, 0, 'global message policy denial must not consume/persist a tip');
   } finally { close(); }
 });
+
+test('Community-Portal-Tipp nutzt nur den vorhandenen Aktivitäts- und Profilplan und respektiert !help/!community',()=>{
+  const {tips,close}=setup();
+  try{
+    tips.configure(true);tips.configurePortal(true);
+    const onlyPortal={communityPortal:true};
+    assert.equal(tips.preview({...onlyPortal,communityPortal:false}).some(x=>x.id==='community-portal'),false,'nicht erreichbares Portal wird nicht beworben');
+    tips.alignStream('portal-stream');
+    tips.maybeSend({isLive:true,streamId:'portal-stream',profile:'normal',availability:onlyPortal,busy:false,now:1});
+    for(let i=0;i<5;i++)tips.observe(message(`Chatbeitrag ${i}`,`portal-chat-${i}`),100+i);
+    assert.equal(tips.maybeSend({isLive:true,streamId:'portal-stream',profile:'normal',availability:onlyPortal,busy:false,now:1_000}),undefined,'Normal benötigt sechs echte Chatbeiträge');
+    tips.observe(message('Chatbeitrag sechs','portal-chat-6'),200);
+    tips.observe(message('!help','portal-help'),201);
+    assert.equal(tips.maybeSend({isLive:true,streamId:'portal-stream',profile:'normal',availability:onlyPortal,busy:false,now:1_000,random:()=>0})?.id,undefined,'unmittelbar nach !help wird derselbe Portal-Link nicht gesendet');
+    tips.observe(message('!help','portal-mod-help',{isModerator:true}),1_000_000);
+    for(let i=0;i<6;i++)tips.observe(message(`mod-help aftermath ${i}`,`mod-after-${i}`),1_000_001+i);
+    assert.equal(tips.maybeSend({isLive:true,streamId:'portal-stream',profile:'normal',availability:onlyPortal,busy:false,now:1_000_010,random:()=>0}),undefined,'auch eine öffentliche Mod-Hilfeantwort unterdrückt denselben Link');
+    for(let i=0;i<6;i++)tips.observe(message(`fresh discussion ${i}`,`fresh-${i}`),1_900_000+i);
+    assert.equal(tips.maybeSend({isLive:true,streamId:'portal-stream',profile:'normal',availability:onlyPortal,busy:false,now:1_900_010,random:()=>0})?.id,'community-portal');
+    assert.equal(tips.maybeSend({isLive:true,streamId:'portal-stream',profile:'normal',availability:onlyPortal,busy:false,now:1_900_011,random:()=>0}),undefined,'derselbe Tipp wird innerhalb des Cooldowns nicht wiederholt');
+    tips.configure(false);
+    assert.equal(tips.settings().portalEnabled,true,'Schalter bleibt gesetzt, wird aber durch deaktivierte Community-Tipps nicht aktiv');
+    assert.equal(tips.preview({...onlyPortal,communityPortal:true}).some(x=>x.id==='community-portal'),false);
+  }finally{close()}
+});

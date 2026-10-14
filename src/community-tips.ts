@@ -3,12 +3,13 @@ import type { ChatMessage } from './types.js';
 import type { FeatureStore } from './feature-store.js';
 import type { ChatProfile } from './chat-response-policy.js';
 
-export interface CommunityTipSettings { enabled: boolean; }
+export interface CommunityTipSettings { enabled: boolean; portalEnabled: boolean; }
 export interface CommunityTipState { lastSentAt: number; streamId: string | null; sentInStream: string[]; sentHistory: number[]; }
 export interface TipAvailability {
   events?: boolean; eightBall?: boolean; rps?: boolean; duels?: boolean; pet?: boolean; detective?: boolean;
   quests?: boolean; xp?: boolean; drops?: boolean; imposter?: boolean; wheel?: boolean;
   activeEventCommand?: string; activeEventName?: string;
+  communityPortal?: boolean;
 }
 export interface CommunityTip { id: string; category: string; text: string; requiresActiveGame?: boolean; }
 export const TIP_ACTIVITY_RULES: Record<ChatProfile, { spacingMs: number; messages: number; hourly: number }> = {
@@ -25,12 +26,14 @@ const TIPS: CommunityTip[] = [
   { id: 'quote', category: 'detective', text: 'Freiwillig ein Zitat einreichen? Erst !quoteoptin, dann !savequote TEXT.' },
   { id: 'quest', category: 'quest', text: 'Hast du eine Spielidee für alle? Schlage sie mit !quest TEXT vor.' },
   { id: 'xp', category: 'xp', text: 'Mit !level siehst du deinen Community-Fortschritt und deine XP.' },
+  { id: 'community-portal', category: 'communityPortal', text: 'Kennst du schon unser Community-Portal? Schau deine XP an, besuche Elio 🐱 und entdecke die Community-Spiele: https://twitch.gater-app.de/community' },
 ];
 const FEATURE_COMMANDS: Record<string, string> = {
   '8ball': 'eightball', rps: 'rps', duel: 'duel', accept: 'duel',
   pet: 'pet', feed: 'pet', play: 'pet', petcare: 'pet', savequote: 'quote', quest: 'quest',
   trickortreat: 'season-trickortreat', gift: 'season-gift', egghunt: 'season-egghunt', eventscore: 'season-eventscore',
   level: 'xp', xptop: 'xp', rank: 'xp',
+  help: 'community-portal', community: 'community-portal',
 };
 
 /** Optional, activity-gated tips. Stores only aggregate counters and public send timestamps, never chat text or user IDs. */
@@ -50,13 +53,15 @@ export class CommunityTips {
   }
 
   settings(): CommunityTipSettings {
-    const raw = this.store.config<unknown>('community_tip_settings', { enabled: false });
-    return { enabled: Boolean(raw && typeof raw === 'object' && (raw as Record<string, unknown>).enabled === true) };
+    const raw = this.store.config<unknown>('community_tip_settings', { enabled: false, portalEnabled: false });
+    const value=raw&&typeof raw==='object'?raw as Record<string,unknown>:{};
+    return { enabled: value.enabled===true, portalEnabled:value.portalEnabled===true };
   }
   configure(enabled: boolean): CommunityTipSettings {
-    this.store.setConfig('community_tip_settings', { enabled });
+    this.store.setConfig('community_tip_settings', { ...this.settings(), enabled });
     return this.settings();
   }
+  configurePortal(enabled:boolean):CommunityTipSettings { this.store.setConfig('community_tip_settings',{...this.settings(),portalEnabled:enabled});return this.settings(); }
   state() {
     const raw = this.store.config<unknown>('community_tip_state', { lastSentAt: 0, streamId: null, sentInStream: [], sentHistory: [] });
     const value = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
@@ -71,11 +76,16 @@ export class CommunityTips {
     if (this.recentEventIds.has(message.eventId)) return;
     this.recentEventIds.add(message.eventId);
     if (this.recentEventIds.size > 2000) this.recentEventIds.delete(this.recentEventIds.values().next().value!);
-    if (message.isModerator) return;
     const command = message.message.trim().match(/^!([a-z0-9_-]+)/iu)?.[1]?.toLowerCase();
+    if(command==='help'||command==='community'){
+      this.featureUsedAt.set('community-portal',now);
+      this.store.setConfig('community_tip_recent_usage',Object.fromEntries(this.featureUsedAt));
+      return;
+    }
+    if (message.isModerator) return;
     if (command) {
       const topic = FEATURE_COMMANDS[command];
-      if (topic && this.settings().enabled) {
+      if (topic && (this.settings().enabled||topic==='community-portal')) {
         this.featureUsedAt.set(topic, now);
         this.store.setConfig('community_tip_recent_usage', Object.fromEntries(this.featureUsedAt));
       }
@@ -145,6 +155,7 @@ export class CommunityTips {
 
   private available(a: TipAvailability): CommunityTip[] {
     return TIPS.filter(tip => {
+      if (tip.id === 'community-portal') return this.settings().enabled&&this.settings().portalEnabled&&a.communityPortal===true;
       if (tip.id === 'eightball') return a.eightBall === true;
       if (tip.id === 'rps') return a.rps === true;
       if (tip.id === 'duel') return a.duels === true;

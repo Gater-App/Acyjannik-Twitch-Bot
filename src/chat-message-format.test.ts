@@ -19,7 +19,7 @@ test('bekannte Chatbefehle erhalten ausdrücklich zugeordnete Kategorien', () =>
     '!petname': 'pet', '!petevolution': 'pet', '!setpetname': 'pet', '!imposter': 'imposter', '!wer': 'detective', '!quest': 'quest',
     '!spark': 'ideas', '!poll': 'poll', '!8ball': 'oracle', '!duel': 'duel',
     '!guess': 'guess', '!rps': 'rps', '!level': 'xp', '!help': 'help',
-    '!addcommand': 'custom',
+    '!addcommand': 'custom', '!community':'communityPortal',
   };
   for (const [command, category] of Object.entries(expected)) assert.equal(categoryForCommand(command), category, command);
   assert.equal(categoryForCommand('!unregistered-command'), 'community');

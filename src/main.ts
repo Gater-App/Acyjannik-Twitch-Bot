@@ -20,6 +20,7 @@ import { CommunityTips } from './community-tips.js';
 import { AutomaticChatMessages } from './automatic-chat-messages.js';
 import { SpotifySongRequests } from './song-requests.js';
 import { ViewerCommunityPortal } from './community-portal.js';
+import { CommunityPortalHealth } from './portal-health.js';
 
 const isTestMode = process.argv.includes('--test') || process.env.TEST_MODE === 'true';
 
@@ -147,7 +148,7 @@ async function runLiveMode(): Promise<void> {
       const command=chatMessage.message.trim().split(/\s+/u)[0]?.toLowerCase()||'';
       if(command.startsWith('!'))logger.info('Twitch-Chatbefehl verarbeitet.',{command:/^![a-z0-9_-]{1,32}$/u.test(command)?command:'!other',replyCount:replies.length});
       for (const reply of replies) {
-        if (['drop','wheel','imposter','detective','quest','poll','season','pet','boss','attack'].includes(reply.category || '')) lastSpecialAnnouncementAt = Date.now();
+        if (['drop','wheel','imposter','detective','quest','poll','season','pet','boss','attack','help','communityPortal'].includes(reply.category || '')) lastSpecialAnnouncementAt = Date.now();
         if (!chatPolicy.shouldSend({ command: command.startsWith('!') ? command : '', message: reply.message })) continue;
         try { await queue.enqueue(reply.message, reply.replyParentMessageId, reply.category); }
         catch { /* SendQueue logs the safe transport failure; EventSub stays connected. */ }
@@ -157,6 +158,7 @@ async function runLiveMode(): Promise<void> {
   let dashboard:DashboardServer|undefined;
   let lastTipLiveCheckAt = 0;
   let checkingLive = false;
+  const communityPortalHealth=new CommunityPortalHealth(new URL('/community',config.redirectUri).toString());
   let lastWheelLiveCheckAt = 0;
   let checkingWheelLive = false;
   const featureTicker = setInterval(() => {
@@ -173,7 +175,7 @@ async function runLiveMode(): Promise<void> {
         const busy = Boolean(snapshots.imposter || snapshots.detective || features.activeQuest() || features.activePoll(now) || features.activeBoss(now)
           || ['announced','claiming','resolving'].includes(dropStatus || '') || wheel.active
           || queue.size > 0 || now - lastSpecialAnnouncementAt < 60_000);
-        const profile = chatPolicy.snapshot().profile, availability = community.helpAvailability();
+        const profile = chatPolicy.snapshot().profile, availability = {...community.helpAvailability(),communityPortal:communityTips.settings().portalEnabled};
         const dueMessage=automaticChatMessages.hasDue(now,communityTips.eligibleActivityMessages,busy);
         const wantsTip=communityTips.shouldEvaluate(profile,availability,busy,now)&&automaticChatMessages.canReserveGlobalSlot(now);
         const wheelReady=community.arcade.wheelStatus(now) as {enabled:boolean;autoPilotEnabled:boolean;canSpin:boolean;autoSpinDue:boolean};
@@ -202,6 +204,7 @@ async function runLiveMode(): Promise<void> {
             if (!stream) { communityTips.alignStream(null);communityTips.maybeSend({ isLive: false, profile, availability, busy, now: Date.now() }); }
             else {
               communityTips.alignStream(stream.id);
+              if(communityTips.settings().portalEnabled)availability.communityPortal=await communityPortalHealth.isAvailable();
               const currentState=community.miniGames.snapshot(),currentDrop=community.arcade.snapshot('drop'),currentWheel=community.arcade.wheelStatus();
               const currentDropStatus=(currentDrop.drop as {status?:string}|undefined)?.status;
               const currentBusy=Boolean(currentState.imposter||currentState.detective||features.activeQuest()||features.activePoll(Date.now())||features.activeBoss(Date.now())

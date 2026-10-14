@@ -46,6 +46,13 @@ test('shared automatic-message spacing survives restart and limits the hourly bu
   restartedStore.close();fs.rmSync(f.dir,{recursive:true,force:true});
 });
 
+test('parallel scheduled senders can reserve only one shared chat slot',async()=>{
+  const f=fixture();
+  const reservations=await Promise.all(Array.from({length:12},(_,index)=>Promise.resolve().then(()=>f.service.reserveGlobalSlot(100_000+index))));
+  assert.equal(reservations.filter(Boolean).length,1,'ein gemeinsamer SQLite-Guard verhindert parallele doppelte automatische Nachrichten');
+  f.close();
+});
+
 test('existing community-tip cooldown is folded into the shared plan',()=>{
   const f=fixture();f.store.setConfig('community_tip_state',{lastSentAt:5_000,streamId:'stream',sentInStream:['xp'],sentHistory:[5_000]});
   const shared=new AutomaticChatMessages(f.store);

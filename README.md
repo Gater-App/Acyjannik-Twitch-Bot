@@ -1,6 +1,6 @@
 # Jannik Twitch Community Bot 🎃⭐
 
-Die vollständige Chat-Befehlsübersicht steht in [COMMANDS.md](COMMANDS.md). Im Chat zeigt `!help` das Themenmenü, z. B. `!help games` oder `!help detective` die Details.
+Die vollständige Chat-Befehlsübersicht steht in [COMMANDS.md](COMMANDS.md). Im Chat zeigt `!help` das Themenmenü, z. B. `!help games` oder `!help detective` die Details. `!community` führt zum öffentlichen [Community-Portal](https://twitch.gater-app.de/community); die öffentliche Hilfe bleibt unter `/hilfe` verfügbar.
 
 Ein einzelner, modularer Node.js-Prozess für Janniks Twitch-Chat: Das bestehende
 Halloween-Spiel bleibt erhalten; saisonale Sammel-Events, XP, Minispiele,

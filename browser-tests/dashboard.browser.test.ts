@@ -173,6 +173,7 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
       await assertSubpage(`[data-setting-page="${name}"]`, true);
       const settingText = (await page.locator(`[data-setting-page="${name}"]`).innerText()).trim();
       assert.ok(settingText.length > 20, `${name} zeigt zugehörige Einstellungen und bleibt keine leere Seite: ${settingText.slice(0, 180)}`);
+      if(name==='messages')assert.equal(await page.getByText('Community-Portal gelegentlich im Chat vorstellen').isVisible(),true,'Portal-Tipp ist über den verständlichen Schalter erreichbar');
       if (name === 'integrations') assert.match(settingText, /nicht eingerichtet/u, 'Fehlende optionale Kanalpunkte-Anbindung wird erklärt statt die Seite leer zu lassen');
       for (const other of ['general', 'messages', 'commands', 'functions', 'integrations', 'moderation', 'diagnostics']) {
         if (other !== name) await assertSubpage(`[data-setting-page="${other}"]`, false);

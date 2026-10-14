@@ -8,6 +8,8 @@ test('öffentliche Hilfe zeigt deaktivierte Spiele ohne Mitmachbefehle und bleib
   assert.match(html,/name="viewport"/u);
   assert.match(html,/@media\(max-width:520px\)/u);
   assert.match(html,/Mystery Drops/u);
+  assert.match(html,/Community-Portal/u);
+  assert.match(html,/<code>!community<\/code>/u);
   assert.match(html,/Derzeit deaktiviert/u);
   assert.doesNotMatch(html,/<code>!claim<\/code>/u);
   assert.doesNotMatch(html,/<script\b/iu,'die öffentliche Seite enthält keine Skripte');

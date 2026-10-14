@@ -88,6 +88,8 @@ test('!help bietet kurze Themenhilfe und schützt die Admin-Übersicht', async (
   const { config, database, handler } = setup({ appChatMessageLength: 450 });
   const menu = await handler.handle(message(config, '!help', 'viewer-1'), 1_000);
   assert.match(menu[0]?.message || '', /!help spiele/u);
+  assert.match(menu[0]?.message || '', /https:\/\/twitch\.gater-app\.de\/hilfe/u);
+  assert.match(menu[0]?.message || '', /https:\/\/twitch\.gater-app\.de\/community/u);
   const pet = await handler.handle(message(config, '!help pet', 'viewer-2'), 1_001);
   assert.equal(pet[0]?.category,'pet');
   assert.equal(menu[0]?.category,'help');
@@ -102,6 +104,12 @@ test('!help bietet kurze Themenhilfe und schützt die Admin-Übersicht', async (
   const owner = await handler.handle(message(config, '!help admin'), 19_000);
   assert.match(owner[0]?.message || '', /Dashboard/u);
   assert.ok((owner[0]?.message.length||0)<200);
+  const portal=await handler.handle(message(config,'!community','viewer-3'),20_000);
+  assert.equal(portal[0]?.category,'communityPortal');
+  assert.match(portal[0]?.message||'',/XP und Level.*Elio.*Quest-Ideen.*Imposter/u);
+  assert.match(portal[0]?.message||'',/https:\/\/twitch\.gater-app\.de\/community/u);
+  assert.deepEqual(await handler.handle(message(config,'!help community','viewer-3'),20_001),[],'Community-Befehl und Hilfe teilen Cooldown und verhindern doppelte Links');
+  assert.match((await handler.handle(message(config,'!help community','viewer-3'),26_000))[0]?.message||'',/\/community/u);
   database.close();
 });
 

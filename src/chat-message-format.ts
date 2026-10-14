@@ -2,6 +2,7 @@ import { clampChatMessage } from './chat.js';
 
 export const CHAT_CATEGORIES = {
   community: { emoji: '🤖', label: 'COMMUNITY' },
+  communityPortal: { emoji: '💜', label: 'COMMUNITY' },
   tip: { emoji: '💡', label: 'COMMUNITY-TIPP' },
   info: { emoji: '📢', label: 'INFO' },
   attack: { emoji: '⚔️', label: 'ANGRIFF' },
@@ -48,6 +49,7 @@ const COMMAND_CATEGORY_ENTRIES: Array<[string[], ChatCategory]> = [
   [['level','rank','xptop'], 'xp'], [['help'], 'help'],
   [['addcommand','setcommand','delcommand'], 'custom'],
   [['welcome'], 'welcome'],
+  [['community'], 'communityPortal'],
 ];
 const COMMAND_CATEGORIES: Record<string, ChatCategory> = Object.fromEntries(
   COMMAND_CATEGORY_ENTRIES.flatMap(([commands, category]) => commands.map(command => [command, category] as const)),
