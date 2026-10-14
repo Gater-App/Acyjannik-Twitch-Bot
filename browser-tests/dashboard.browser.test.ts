@@ -72,6 +72,17 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     await page.goto(`${base}/dashboard`, { waitUntil: 'domcontentloaded', timeout: 10000 });
     const view = (name: string) => page.locator(`[data-dashboard-view="${name}"]`);
     await view('overview').waitFor({ state: 'visible' });
+    const ux50ScreenshotDir = process.env.DASHBOARD_UX50_SCREENSHOT_DIR;
+    const screenshot = async (name: string) => {
+      if (!ux50ScreenshotDir) return;
+      fs.mkdirSync(ux50ScreenshotDir, { recursive: true });
+      await page.screenshot({ path: path.join(ux50ScreenshotDir, `${name}.png`), fullPage: true });
+    };
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    assert.equal(await page.getByRole('link', { name: 'Streamer-Steuerung öffnen' }).getAttribute('href'), '/streamer');
+    assert.equal(await page.getByRole('link', { name: 'Öffentliches Community-Portal öffnen' }).getAttribute('href'), '/community');
+    assert.match((await page.locator('.main-nav [aria-current="page"]').innerText()).replace(/\s+/gu, ' '), /Übersicht/u);
+    await screenshot('acy-ux50-desktop-overview');
     const navigate = async (name: string) => {
       await page.locator(`[data-view-target="${name}"]`).click();
       await page.waitForFunction((key) => document.querySelector(`[data-dashboard-view="${key}"]`)?.getAttribute('data-active') === 'true', name, { timeout: 2000 }).catch(async () => {
@@ -81,12 +92,22 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
         if (other !== name) assert.equal(await view(other).isVisible(), false, `${other} darf bei Ansicht ${name} nicht sichtbar sein`);
       }
     };
-    for (const name of ['games', 'community', 'obs', 'settings', 'overview']) await navigate(name);
+    for (const name of ['games', 'community', 'obs', 'settings', 'overview']) {
+      await navigate(name);
+      await screenshot(`acy-ux50-desktop-${name}`);
+    }
 
     await navigate('games');
     await page.getByRole('button', { name: /Chat-Imposter/u }).click();
     await assertSubpage('[data-game-page="imposter"]', true);
+    assert.match(await page.locator('[data-game-page="imposter"] .subpage-guide').innerText(), /Zuschauer melden sich mit !joinimposter an/u);
+    assert.equal(await page.locator('#game-catalog').isVisible(), false, 'Detailseite blendet den Spielekatalog aus');
+    await screenshot('acy-ux50-desktop-game-imposter');
     await assertSubpage('[data-game-page="detective"]', false);
+    await page.locator('[data-game-page="imposter"] .subpage-back').click();
+    assert.equal(await page.locator('#game-catalog').isVisible(), true, 'Zurück zu Alle Spiele zeigt wieder den Katalog');
+    await page.getByRole('button', { name: /Chat-Imposter/u }).click();
+    await assertSubpage('[data-game-page="imposter"]', true);
     await page.locator('[data-view-target="games"]').click();
     assert.equal(await page.locator('#game-catalog').isVisible(), true, 'erneuter Wechsel zu Spiele zeigt wieder den Katalog');
     await page.getByRole('button', { name: /Chat-Detektiv/u }).click();
@@ -101,6 +122,11 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
         if (other !== name) await assertSubpage(`[data-community-page="${other}"]`, false);
       }
     }
+    await page.locator('[data-community-target="elio"]').click();
+    assert.match(await page.locator('[data-community-page="elio"] .subpage-guide').innerText(), /Status zeigt Lebensphase/u);
+    await screenshot('acy-ux50-desktop-community-elio');
+    await page.locator('[data-community-page="elio"] .subpage-back').click();
+    await assertSubpage('[data-community-page="events"]', true);
     await page.locator('[data-community-target="elio"]').click();
     const elioStatus = page.locator('#pet-status');
     await elioStatus.getByText(/Elio.*Level.*Hunger.*Energie.*Zufriedenheit/u).waitFor({ state: 'visible', timeout: 3000 }).catch(async () => {
@@ -141,13 +167,46 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     assert.equal(await page.locator('#sr-setup').isVisible(), false, 'Einrichtungsfelder bleiben nach Neuladen verborgen');
 
     await navigate('settings');
-    for (const name of ['messages', 'commands', 'advanced']) {
+    assert.equal(await page.locator('#automatic-chat-form label[name="custom"]').isVisible(), false, 'optionales Intervallfeld bleibt verborgen, bis „Eigenes Intervall“ gewählt wird');
+    for (const name of ['general', 'messages', 'commands', 'functions', 'integrations', 'moderation', 'diagnostics']) {
       await page.locator(`[data-setting-target="${name}"]`).click();
       await assertSubpage(`[data-setting-page="${name}"]`, true);
-      for (const other of ['messages', 'commands', 'advanced']) {
+      const settingText = (await page.locator(`[data-setting-page="${name}"]`).innerText()).trim();
+      assert.ok(settingText.length > 20, `${name} zeigt zugehörige Einstellungen und bleibt keine leere Seite: ${settingText.slice(0, 180)}`);
+      if (name === 'integrations') assert.match(settingText, /nicht eingerichtet/u, 'Fehlende optionale Kanalpunkte-Anbindung wird erklärt statt die Seite leer zu lassen');
+      for (const other of ['general', 'messages', 'commands', 'functions', 'integrations', 'moderation', 'diagnostics']) {
         if (other !== name) await assertSubpage(`[data-setting-page="${other}"]`, false);
       }
     }
+
+    // Check the primary navigation and page width at tablet and iPhone sizes.
+    for (const [label, width, height] of [['tablet', 768, 1024], ['iphone', 390, 844]] as const) {
+      await page.setViewportSize({ width, height });
+      for (const name of ['overview', 'games', 'community', 'obs', 'settings']) {
+        await navigate(name);
+        assert.ok(await view(name).isVisible(), `${name} bleibt bei ${label} sichtbar`);
+        const widthCheck = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, content: document.documentElement.scrollWidth, overflowing: [...document.querySelectorAll('body *')].map((node) => ({ tag: node.tagName, id: (node as HTMLElement).id, className: typeof (node as HTMLElement).className === 'string' ? (node as HTMLElement).className : '', right: Math.round(node.getBoundingClientRect().right), width: Math.round(node.getBoundingClientRect().width) })).filter((node) => node.right > document.documentElement.clientWidth + 1 && node.width > 0).sort((a, b) => b.right - a.right).slice(0, 5) }));
+        assert.ok(widthCheck.content <= widthCheck.viewport + 1, `${name} hat bei ${label} keinen horizontalen Seitenüberlauf: ${JSON.stringify(widthCheck)}`);
+        await screenshot(`acy-ux50-${label}-${name}`);
+      }
+    }
+
+    const streamerPage = await browser.newPage();
+    await streamerPage.context().addCookies([{ name: 'community_admin', value: sessionCookie.split('=')[1], domain: '127.0.0.1', path: '/', httpOnly: true, secure: true, sameSite: 'Lax' }]);
+    streamerPage.on('pageerror', (error) => pageErrors.push(error.message));
+    await streamerPage.goto(`${base}/streamer`, { waitUntil: 'domcontentloaded', timeout: 10000 });
+    assert.equal(await streamerPage.getByRole('heading', { name: /Streamer-Steuerung/u }).isVisible(), true);
+    assert.equal(await streamerPage.locator('form, input, select, textarea').count(), 0, 'Streamer-Modus bleibt eine Bedienoberfläche ohne Konfigurationsformulare');
+    for (const [label, width, height] of [['desktop', 1440, 1000], ['tablet', 768, 1024], ['iphone', 390, 844]] as const) {
+      await streamerPage.setViewportSize({ width, height });
+      const size = await streamerPage.evaluate(() => ({ viewport: document.documentElement.clientWidth, content: document.documentElement.scrollWidth }));
+      assert.ok(size.content <= size.viewport + 1, `Streamer-Modus hat bei ${label} keinen horizontalen Überlauf: ${JSON.stringify(size)}`);
+      if (ux50ScreenshotDir) {
+        fs.mkdirSync(ux50ScreenshotDir, { recursive: true });
+        await streamerPage.screenshot({ path: path.join(ux50ScreenshotDir, `acy-ux50-${label}-streamer.png`), fullPage: true });
+      }
+    }
+    await streamerPage.close();
 
     const logoutResponse = page.waitForResponse((response) => new URL(response.url()).pathname === '/dashboard/api/logout');
     await page.locator('#logout').click();
