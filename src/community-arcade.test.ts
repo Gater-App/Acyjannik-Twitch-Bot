@@ -74,6 +74,24 @@ test('Mystery-Drop nimmt pro Twitch-ID einen Claim an und vergibt XP genau einma
   store.close();
 });
 
+test('Mystery-Drop setzt eine unterbrochene XP-Auswertung nach Neustart idempotent fort',()=>{
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'drop-recovery-')),database=path.join(directory,'state.sqlite');
+  let store=new FeatureStore(database),arcade=new CommunityArcade(store,'broadcaster');
+  arcade.updateSettings({...arcade.settings(),dropsEnabled:true,dropDurationMs:10_000});
+  arcade.startDropAdmin('broadcaster','rare',1_000);
+  arcade.handle(message('viewer','claim','!claim'),'claim',[],2_000);
+  store.miniGameTransaction(db=>db.prepare("UPDATE mystery_drops SET status='resolving',result_json=? WHERE status='claiming'").run(JSON.stringify({participants:1,rewardXp:10})));
+  assert.equal(store.xp('viewer').xp,0);
+  store.close();
+  store=new FeatureStore(database);arcade=new CommunityArcade(store,'broadcaster');
+  assert.match(arcade.tick(11_001)[0]||'',/1 Person erhält je 10 XP/u);
+  assert.equal(store.xp('viewer').xp,10);
+  assert.equal(store.miniGameQuery(db=>(db.prepare("SELECT status FROM mystery_drops").get() as {status:string}).status),'completed');
+  assert.equal(arcade.tick(11_002).length,0);
+  assert.equal(store.xp('viewer').xp,10,'Wiederholung darf weder XP noch Abschlussnachricht doppeln');
+  store.close();fs.rmSync(directory,{recursive:true,force:true});
+});
+
 test('Mystery-Drop-Texte sind einheitlich deutsch, Null-Teilnahme verspricht keine XP und Widget-Stufen sind übersetzt',()=>{
   const stages=['common','rare','epic','legendary','community'];
   const labels=['Gewöhnlicher Drop','Seltener Drop','Epischer Drop','Legendärer Drop','Community-Drop'];

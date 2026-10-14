@@ -137,19 +137,23 @@ export class CommunityArcade {
       return rows.length;
     });
     if(expiredTasks)out.push({message:'🎡 Die 5-Minuten-Challenge ist abgelaufen. Der Bot bestätigt nicht, ob die Regel eingehalten wurde.',category:'wheel'});
+    // Keep a resolving drop recoverable until every idempotent XP award has been
+    // recorded. A crash can then safely resume this work on the next tick.
     const due=this.store.miniGameTransaction(db=>{
-      const d=db.prepare("SELECT id,rarity FROM mystery_drops WHERE status IN ('announced','claiming') AND ends_at<=?").get(now) as {id:string;rarity:string}|undefined;
+      const d=db.prepare("SELECT id,rarity,status,result_json FROM mystery_drops WHERE status IN ('announced','claiming','resolving') AND ends_at<=? ORDER BY created_at LIMIT 1").get(now) as {id:string;rarity:string;status:string;result_json:string|null}|undefined;
       if(!d)return undefined;
-      db.prepare("UPDATE mystery_drops SET status='resolving' WHERE id=? AND status IN ('announced','claiming')").run(d.id);
+      const newlyResolving=d.status!=='resolving'&&db.prepare("UPDATE mystery_drops SET status='resolving' WHERE id=? AND status IN ('announced','claiming')").run(d.id).changes===1;
       const claims=db.prepare('SELECT user_id,display_name FROM mystery_claims WHERE drop_id=? ORDER BY claimed_at').all(d.id) as Array<{user_id:string;display_name:string}>;
       const amount=LIMITS[d.rarity]||5;
-      const result={participants:claims.length,rewardXp:amount};db.prepare("UPDATE mystery_drops SET status='completed',result_json=?,resolved_at=? WHERE id=? AND status='resolving'").run(JSON.stringify(result),now,d.id);
-      db.prepare("UPDATE community_pet SET animation='drop',happiness=MIN(100,happiness+?),xp=xp+?,updated_at=? WHERE id=1").run(claims.length?3:0,claims.length?2:0,now);
-      return {claims:claims,rarity:d.rarity,id:d.id,amount};
+      const result=d.result_json?JSON.parse(d.result_json) as {participants:number;rewardXp:number}:{participants:claims.length,rewardXp:amount};
+      if(newlyResolving){db.prepare('UPDATE mystery_drops SET result_json=? WHERE id=? AND status=\'resolving\'').run(JSON.stringify(result),d.id);
+        db.prepare("UPDATE community_pet SET animation='drop',happiness=MIN(100,happiness+?),xp=xp+?,updated_at=? WHERE id=1").run(claims.length?3:0,claims.length?2:0,now);}
+      return {claims,id:d.id,amount:result.rewardXp,result};
     });
     if(due){
       for(const c of due.claims)this.store.awardXp(`drop:${due.id}:${c.user_id}`,c.user_id,c.display_name,due.amount,'bonus:mystery-drop',now,50);
-      out.push({message:due.claims.length
+      const completed=this.store.miniGameTransaction(db=>db.prepare("UPDATE mystery_drops SET status='completed',result_json=?,resolved_at=? WHERE id=? AND status='resolving'").run(JSON.stringify(due.result),now,due.id).changes===1);
+      if(completed)out.push({message:due.claims.length
         ?`🎁 Der Mystery Drop ist geöffnet! ${due.claims.length} ${due.claims.length===1?'Person erhält':'Personen erhalten'} je ${due.amount} XP. Danke fürs Mitmachen – Elio schnurrt schon!`
         :'🎁 Der Mystery Drop ist vorbei – diesmal hat niemand mitgemacht. Beim nächsten Mal mit !claim dabei sein!',category:'drop'});
     }
