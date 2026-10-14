@@ -11,6 +11,7 @@ import { CommunityArcade } from './community-arcade.js';
 import { logger } from './logger.js';
 import { CommunityTips } from './community-tips.js';
 import { AutomaticChatMessages } from './automatic-chat-messages.js';
+import { ModeratorPranks } from './moderator-pranks.js';
 
 async function freePort(): Promise<number> {
   const server = net.createServer();
@@ -395,4 +396,28 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     for (const [key, value] of Object.entries(env)) process.env[key] = value;
     for (const key of Object.keys(process.env)) if (!(key in env)) delete process.env[key];
   }
+});
+
+test('Moderator-OAuth öffnet nur die Prank-Oberfläche und serverseitig nur deren API',async()=>{
+  const env={...process.env},directory=fs.mkdtempSync(path.join(os.tmpdir(),'acy-prank-dashboard-')),store=new FeatureStore(path.join(directory,'features.sqlite')),port=await freePort();
+  process.env.TWITCH_CLIENT_ID='test-client';process.env.TWITCH_CLIENT_SECRET='test-secret';process.env.DASHBOARD_REDIRECT_URI='https://bot.example.test/dashboard/oauth/callback';process.env.DASHBOARD_ADMIN_IDS='admin-id';process.env.AUTHORIZED_MODERATOR_IDS='mod-id';process.env.DASHBOARD_HOST='127.0.0.1';process.env.DASHBOARD_PORT=String(port);
+  let verifiedUserId='mod-id';const fetchImpl:typeof fetch=async(input,init)=>{const url=String(input);if(url.endsWith('/oauth2/token'))return Response.json({access_token:'temporary'});if(url.endsWith('/oauth2/validate'))return Response.json({client_id:'test-client',user_id:verifiedUserId,login:verifiedUserId==='mod-id'?'mod':'admin'});if(url.endsWith('/helix/users'))return Response.json({data:[{id:verifiedUserId,login:verifiedUserId==='mod-id'?'mod':'admin',display_name:'Test User'}]});throw Error(`Unexpected URL ${url}`)};
+  const pranks=new ModeratorPranks(store,()=>false,()=>false);
+  const dashboard=new DashboardServer(store,()=>({twitchConnected:false,channel:'acyjannik',startedAt:1}),logger,fetchImpl,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,pranks,async(login)=>login==='target'?{id:'123456',login:'target',displayName:'Target'}:undefined);
+  try{
+    assert.equal(await dashboard.start(),true);const base=`http://127.0.0.1:${port}`;
+    const login=await fetch(`${base}/dashboard/login`,{redirect:'manual'}),state=new URL(login.headers.get('location')||'').searchParams.get('state')||'',stateCookie=login.headers.get('set-cookie')?.split(';')[0]||'';
+    const callback=await fetch(`${base}/dashboard/oauth/callback?code=x&state=${state}`,{headers:{Cookie:stateCookie},redirect:'manual'});assert.equal(callback.status,303);
+    const session=callback.headers.getSetCookie().find(x=>x.startsWith('community_admin='))?.split(';')[0]||'';
+    const page=await fetch(`${base}/dashboard`,{headers:{Cookie:session}});assert.equal(page.status,200);const html=await page.text();assert.match(html,/Chaos &amp; Pranks/u);assert.doesNotMatch(html,/data-dashboard-view="overview"|DASHBOARD_ADMIN/u);
+    const csrf=html.match(/<meta name="csrf" content="([^"]+)/u)?.[1]||'';assert.ok(csrf);
+    assert.equal((await fetch(`${base}/dashboard/api/overview`,{headers:{Cookie:session}})).status,403);
+    assert.equal((await fetch(`${base}/streamer`,{headers:{Cookie:session}})).status,403);
+    assert.equal((await fetch(`${base}/dashboard/api/fairness`,{headers:{Cookie:session}})).status,403);
+    assert.equal((await fetch(`${base}/dashboard/api/pranks`,{headers:{Cookie:session}})).status,200);
+    await fetch(`${base}/dashboard/api/pranks`,{method:'POST',headers:{Cookie:session,Origin:'https://bot.example.test','X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({action:'settings',settings:{enabled:{chief:true}}})});
+    const start=await fetch(`${base}/dashboard/api/pranks`,{method:'POST',headers:{Cookie:session,Origin:'https://bot.example.test','X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({action:'start',kind:'chief'})});assert.equal(start.status,200);
+    assert.equal((await fetch(`${base}/dashboard/api/minigames`,{headers:{Cookie:session}})).status,403);
+    assert.equal((await fetch(`${base}/dashboard/api/pranks`)).status,401);
+  }finally{await dashboard.stop();store.close();fs.rmSync(directory,{recursive:true,force:true});for(const key of Object.keys(process.env))if(!(key in env))delete process.env[key];for(const [key,value] of Object.entries(env))process.env[key]=value}
 });

@@ -35,7 +35,7 @@ function positiveInt(name: string, fallback: number): number {
   const raw = stringValue(name);
   if (!raw) return fallback;
   const value = Number.parseInt(raw, 10);
-  if (!Number.isInteger(value) || value < 0) throw new Error(`${name} muss eine ganze Zahl >= 0 sein.`);
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${name} muss eine sichere ganze Zahl >= 0 sein.`);
   return value;
 }
 
@@ -68,6 +68,7 @@ function range(minName: string, maxName: string, defaultMin: number, defaultMax:
   const min = positiveInt(minName, defaultMin);
   const max = positiveInt(maxName, defaultMax);
   if (max < min) throw new Error(`${maxName} darf nicht kleiner als ${minName} sein.`);
+  if(max-min+1>=2**48)throw new Error(`${maxName} überschreitet den unterstützten Bereich für Zufallswerte.`);
   return { min, max };
 }
 
@@ -77,10 +78,12 @@ function validateWeights(weights: EventWeights): EventWeights {
   ];
   for (const key of keys) {
     const value = weights[key];
-    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
-      throw new Error(`EVENT_WEIGHTS_JSON.${key} muss eine Zahl >= 0 sein.`);
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`EVENT_WEIGHTS_JSON.${key} muss eine ganze Zahl >= 0 sein.`);
     }
   }
+  const total=keys.reduce((sum, key) => sum + weights[key], 0);
+  if (!Number.isSafeInteger(total)||total>=2**48) throw new Error('Die Summe der Ereignisgewichte ist zu groß für eine sichere Zufallsauswahl.');
   if (keys.every((key) => weights[key] === 0)) throw new Error('Mindestens ein Ereignisgewicht muss größer als 0 sein.');
   return weights;
 }

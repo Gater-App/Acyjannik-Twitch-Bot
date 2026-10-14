@@ -50,7 +50,7 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
   assert.equal(communityFeatures.vault.startManual(Date.now()).ok,true);
   store.miniGameQuery(db=>db.prepare("UPDATE community_vault_rounds SET secret_code='042' WHERE status='active'").run());
   const portal = new ViewerCommunityPortal(store, communityFeatures, testConfig(), fetchImpl);
-  const dashboard = new DashboardServer(store, () => ({ twitchConnected: true, channel: 'acyjannik', startedAt: 1 }), logger, fetchImpl, undefined, undefined, undefined, miniGames, arcade, async()=>{}, undefined, undefined, undefined, undefined, portal, communityFeatures.vault, async()=>true);
+  const dashboard = new DashboardServer(store, () => ({ twitchConnected: true, channel: 'acyjannik', startedAt: 1 }), logger, fetchImpl, undefined, undefined, undefined, miniGames, arcade, async()=>{}, undefined, undefined, undefined, undefined, portal, communityFeatures.vault, async()=>true, communityFeatures.moderatorPranks,async(login)=>({id:'123456',login,displayName:'Testviewer'}));
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
   try {
     assert.equal(await dashboard.start(), true);
@@ -84,6 +84,7 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     const ux50ScreenshotDir = process.env.DASHBOARD_UX50_SCREENSHOT_DIR;
     const screenshot = async (name: string) => {
       if (!ux50ScreenshotDir) return;
+      await page.evaluate(()=>{window.scrollTo(0,0);const notice=document.querySelector('#notice');if(notice)notice.textContent=''});
       fs.mkdirSync(ux50ScreenshotDir, { recursive: true });
       await page.screenshot({ path: path.join(ux50ScreenshotDir, `${name}.png`), fullPage: true });
     };
@@ -111,7 +112,9 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     await assertSubpage('[data-game-page="vault"]', true);
     await page.getByRole('heading', { name: '🔐 Community-Tresor' }).waitFor({ state: 'visible' });
     await page.waitForFunction(() => document.querySelector('#vault-status')?.textContent?.includes('Tresor offen'));
-    assert.equal(JSON.stringify(await page.evaluate(async()=>await (await fetch('/dashboard/api/vault')).json())).includes('042'),false,'Dashboard-Snapshot gibt den Geheimcode während des Spiels nicht aus');
+    const dashboardVault=await page.evaluate(async()=>await (await fetch('/dashboard/api/vault')).json());
+    assert.equal(dashboardVault.snapshot.vault.resultCode,null,'Dashboard-Snapshot liefert während der Runde keinen Code');
+    assert.equal(JSON.stringify(dashboardVault).includes('secret_code'),false,'Dashboard-API gibt keine Geheimcode-Spalte aus');
     const duplicateStart=await page.evaluate(async()=>{const csrf=(document.querySelector('meta[name=csrf]') as HTMLMetaElement).content;return (await fetch('/dashboard/api/vault/action',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify({action:'start'})})).status});
     assert.equal(duplicateStart,409,'eine zweite Tresor-Runde wird abgewiesen');
     await screenshot('acy-community-vault-desktop');
@@ -245,6 +248,25 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     assert.ok(savedSpark.some((topic: { label: string }) => topic.label === 'Browser-Testthema'), 'Themenformular speichert eigene Themen dauerhaft über die API');
     await screenshot('acy-ux50-desktop-community-spark');
 
+    await page.locator('[data-community-target="pranks"]').click();
+    await assertSubpage('[data-community-page="pranks"]',true);
+    for(const title of ['Elio übernimmt die Macht 👑','Elio verdächtigt jemanden 🕵️','Tresor-Fehlalarm 🚨','Das unseriöse Orakel 🔮'])assert.equal(await page.getByRole('heading',{name:title}).isVisible(),true);
+    await screenshot('acy-chaos-pranks-desktop');
+    await page.setViewportSize({width:390,height:844});
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth+1),'Chaos & Pranks passt mobil ohne horizontalen Überlauf');
+    await screenshot('acy-chaos-pranks-mobile');
+    await page.setViewportSize({width:1440,height:1000});
+    await page.getByLabel('Aktivieren',{exact:true}).first().check();
+    await page.getByRole('button',{name:'Für 60 Sekunden starten'}).click();
+    await page.getByText(/Elio als Stream-Chef läuft noch/u).waitFor({state:'visible'});
+    await screenshot('acy-chaos-pranks-active-desktop');
+    await page.getByRole('button',{name:'Laufenden Prank beenden'}).click();
+    await page.locator('#prank-result').getByText('Prank beendet.').waitFor({state:'visible'});
+    await page.locator('[data-community-target="fairness"]').click();
+    await assertSubpage('[data-community-page="fairness"]',true);
+    await page.getByText(/Theoretisch: Gewinn 62\.00 % · Verlust 33\.00 % · neutral 5\.00 %/u).waitFor({state:'visible'});
+    await screenshot('acy-halloween-fairness-desktop');
+
     // Check the primary navigation and page width at tablet and iPhone sizes.
     for (const [label, width, height] of [['tablet', 768, 1024], ['iphone', 390, 844]] as const) {
       await page.setViewportSize({ width, height });
@@ -286,7 +308,8 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     const publicVaultState=await portalPage.evaluate(async()=>await(await fetch('/community/api/state',{cache:'no-store'})).json());
     assert.equal(publicVaultState.public.vault.status,'active','Community-Portal zeigt den laufenden Tresor');
     assert.equal(publicVaultState.personal,null,'unangemeldete Zuschauer erhalten keine persönlichen Tipps');
-    assert.equal(JSON.stringify(publicVaultState).includes('042'),false,'Community-API gibt den laufenden Geheimcode nicht aus');
+    assert.equal(publicVaultState.public.vault.resultCode,null,'Community-API zeigt während einer aktiven Runde kein Ergebnis');
+    assert.equal(Object.hasOwn(publicVaultState.public.vault,'secretCode'),false,'Community-API gibt kein Geheimcode-Feld aus');
     assert.equal(await portalPage.getByRole('link', { name: /Dashboard/u }).count(), 0, 'öffentliches Portal verweist nicht auf die Admin-Verwaltung');
     for (const [label, width, height] of [['desktop', 1440, 1000], ['iphone', 390, 844]] as const) {
       await portalPage.setViewportSize({ width, height });

@@ -7,6 +7,7 @@ import { ConversationSpark } from './conversation-spark.js';
 import { MiniGames } from './mini-games.js';
 import { CommunityArcade } from './community-arcade.js';
 import { CommunityVault } from './community-vault.js';
+import { ModeratorPranks } from './moderator-pranks.js';
 import { categoryForCommand, type ChatCategory } from './chat-message-format.js';
 import type { OutboundChatMessage } from './chat-message-format.js';
 import type { HelpAvailability } from './help.js';
@@ -22,13 +23,21 @@ export class CommunityFeatures {
   readonly miniGames: MiniGames;
   readonly arcade: CommunityArcade;
   readonly vault: CommunityVault;
+  readonly moderatorPranks: ModeratorPranks;
 
   constructor(
     private readonly store: FeatureStore,
     private readonly config: AppConfig,
     private readonly lookupUser: UserLookup = async () => undefined,
     private readonly random: RandomInclusive = secureRandomInclusive,
-  ) { this.questPoll = new QuestPollFeatures(store, config); this.conversationSpark = new ConversationSpark(store, config.broadcasterUserId); this.miniGames = new MiniGames(store, config); this.arcade = new CommunityArcade(store,config.broadcasterUserId); this.vault = new CommunityVault(store,config.botUserId); }
+  ) { this.questPoll = new QuestPollFeatures(store, config); this.conversationSpark = new ConversationSpark(store, config.broadcasterUserId); this.miniGames = new MiniGames(store, config); this.arcade = new CommunityArcade(store,config.broadcasterUserId); this.vault = new CommunityVault(store,config.botUserId); this.moderatorPranks = new ModeratorPranks(store,()=>((this.vault.publicSnapshot().vault as {status?:string}|undefined)?.status==='active'),()=>this.isMajorGameBusy()); }
+
+  private isMajorGameBusy():boolean {
+    const now=Date.now(),mini=this.miniGames.snapshot(),drop=this.arcade.snapshot('drop'),wheel=this.arcade.wheelStatus();
+    const status=(drop.drop as {status?:string}|undefined)?.status;
+    return Boolean(mini.imposter||mini.detective||this.store.activeQuest()||this.store.activePoll(now)||this.store.activeBoss(now)
+      ||['announced','claiming','resolving'].includes(status||'')||wheel.active);
+  }
 
   observeActivity(message: ChatMessage, now = Date.now()): string | undefined {
     if (message.senderUserId === this.config.botUserId || message.senderLogin.toLowerCase() === this.config.botLogin.toLowerCase()) return undefined;
@@ -69,7 +78,7 @@ export class CommunityFeatures {
 
   tick(now = Date.now(), advanceMiniGames = true): string[] { return this.tickMessages(now, advanceMiniGames).map(item => item.message); }
   tickMessages(now = Date.now(), advanceMiniGames = true): OutboundChatMessage[] {
-    this.refreshScheduledEvents(now); this.questPoll.tick(now); this.conversationSpark.tick(now);
+    this.refreshScheduledEvents(now); this.questPoll.tick(now); this.conversationSpark.tick(now); this.moderatorPranks.tick(now);
     return [...(advanceMiniGames ? this.miniGames.tickMessages(now) : []), ...this.arcade.tickMessages(now), ...this.vault.tickMessages(now)];
   }
 
@@ -80,6 +89,9 @@ export class CommunityFeatures {
       ...(message.messageId ? { replyParentMessageId: message.messageId } : {}) }];
 
     if(command==='code') { this.vault.guess(message,args,now); return []; }
+
+    const prankReply=this.moderatorPranks.handle(message,command,args,now);
+    if(prankReply!==undefined)return say(prankReply,command==='orakel'?'oracle':'pet');
 
     const sparkResponse = await this.conversationSpark.handleCommand(message, command, args, now);
     if (sparkResponse !== undefined) return say(sparkResponse);

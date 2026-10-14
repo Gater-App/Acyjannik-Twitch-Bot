@@ -25,7 +25,7 @@ export const DEFAULT_HELP_AVAILABILITY: HelpAvailability = {
   quests:false, spark:false, eightBall:false, rps:false, guess:false, duels:false,
 };
 
-const MOD_TOPICS = '🛡️ Mod-Hilfe: !help mods spiele · !help mods community · !help mods events.';
+const MOD_TOPICS = '🛡️ Mod-Hilfe: !help mods spiele · !help mods community · !help mods events · Dashboard: twitch.gater-app.de/dashboard (nur Chaos & Pranks).';
 const MOD_SECTIONS: Record<string,string> = {
   spiele:'🛡️ Spiele steuern: Imposter !startimposter / !closeimposter / !cancelimposter · Detektiv !startdetektiv / !enddetektiv · Drop !startdrop / !canceldrop · Glücksrad !startwheel / !cancelwheel.',
   community:'🛡️ Community verwalten: Questvorschläge !questqueue / !approvequest ID / !rejectquest ID · Chat-Ideen !sparks / !sparkapprove ID / !sparkreject ID.',

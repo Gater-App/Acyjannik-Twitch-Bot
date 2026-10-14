@@ -143,7 +143,7 @@ const RESERVED_COMMANDS = new Set([
   'quoteoptin','quoteoptout','savequote','myquotes','deletequote','detektiv','startdetektiv','wer','quote','skipdetektiv','enddetektiv',
   'pet','feed','play','petcare','petstats','petname','pethelp','petevolution','setpetname','petpause','petresume',
   'claim','drop','dropstats','drops','startdrop','canceldrop','dropconfig','wheel','spin','wheelstatus','startwheel','cancelwheel','wheelpause','wheelresume',
-  'code',
+  'code','orakel','unschuldig','prankoptout','prankoptin',
 ]);
 
 export class FeatureStore {

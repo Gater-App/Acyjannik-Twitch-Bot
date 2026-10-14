@@ -129,6 +129,12 @@ Ein Neustart meldet bestehende Dashboard-Sitzungen ab. Dashboard-Änderungen
 werden in `admin_audit` protokolliert. Das Dashboard ist standardmäßig an
 `127.0.0.1` gebunden und nicht für das öffentliche Netz gedacht.
 
+`AUTHORIZED_MODERATOR_IDS` kann numerische Twitch-IDs berechtigter Mods
+enthalten. Diese Konten erhalten nach Twitch-OAuth ausschließlich die separate
+Ansicht „Chaos & Pranks“; Admin-APIs, Fairnessdaten und Streamer-Steuerung bleiben
+gesperrt. Die vier Pranks sind standardmäßig ausgeschaltet und müssen dort einzeln
+aktiviert werden.
+
 Die Oberfläche umfasst Statusanzeige und Aktualisierung, Modul-Schalter,
 Eventstart/-ende und Eventanlage, XP-Korrekturen, Nutzer-XP-Suche und
 Custom-Command-Verwaltung sowie erweiterte JSON-Einstellungen für XP-Kurve,
