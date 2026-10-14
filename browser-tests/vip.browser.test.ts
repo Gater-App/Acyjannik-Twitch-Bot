@@ -1,0 +1,73 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import net from 'node:net';
+import { createHash, randomBytes } from 'node:crypto';
+import test from 'node:test';
+import { chromium } from 'playwright';
+import { CommunityFeatures } from '../src/community-features.js';
+import { ViewerCommunityPortal } from '../src/community-portal.js';
+import { DashboardServer } from '../src/dashboard.js';
+import { FeatureStore } from '../src/feature-store.js';
+import { logger } from '../src/logger.js';
+import { testConfig } from '../src/test-config.js';
+import { VipExperience } from '../src/vip-experience.js';
+import type { TwitchVipService } from '../src/twitch-vip.js';
+
+async function freePort():Promise<number>{const server=net.createServer();await new Promise<void>((resolve,reject)=>server.once('error',reject).listen(0,'127.0.0.1',resolve));const port=(server.address() as net.AddressInfo).port;await new Promise<void>(resolve=>server.close(()=>resolve()));return port;}
+const sha=(value:string)=>createHash('sha256').update(value).digest('hex');
+
+test('VIP Lounge and dashboard settings work through real browser clicks on desktop and mobile',async()=>{
+  const env={...process.env},directory=fs.mkdtempSync(path.join(os.tmpdir(),'acy-vip-browser-')),database=path.join(directory,'state.sqlite'),store=new FeatureStore(database),port=await freePort(),base=`http://127.0.0.1:${port}`;
+  process.env.TWITCH_CLIENT_ID='vip-browser-client';process.env.TWITCH_CLIENT_SECRET='vip-browser-secret';process.env.DASHBOARD_REDIRECT_URI=`${base}/dashboard/oauth/callback`;process.env.DASHBOARD_ADMIN_IDS='admin-1';process.env.DASHBOARD_HOST='127.0.0.1';process.env.DASHBOARD_PORT=String(port);
+  const cfg=testConfig({clientId:'vip-browser-client',clientSecret:'vip-browser-secret',redirectUri:`${base}/dashboard/oauth/callback`}),features=new CommunityFeatures(store,cfg),experience=new VipExperience(store);
+  experience.updateSettings({enabled:true,loungeEnabled:true,elioEnabled:true,chaosEnabled:true,challengesEnabled:true,achievementsEnabled:true});
+  features.arcade.updateSettings({...features.arcade.settings(),petEnabled:true});
+  features.moderatorPranks.configure({enabled:{chief:true}});
+  store.setConfig('quest_settings',{enabled:true,chatEnabled:true,maxLength:180,queueLimit:100,maxOpenPerUser:2,cooldownMs:60_000,activeDurationMs:0,completionXp:25,channelPointsEnabled:false,modsCanModerate:false,modsCanSkip:false,moderatorUserIds:[]});
+  const vipService={isVip:async(userId:string)=>userId==='123456',status:async()=>({state:'ready',authorized:true,scopeGranted:true,checkedAt:Date.now()})} as unknown as TwitchVipService;
+  const petToken=randomBytes(32).toString('base64url');store.rotateWidgetToken('pet',sha(petToken),Date.now(),'admin-1');
+  const portal=new ViewerCommunityPortal(store,features,cfg,async input=>{const url=String(input);if(url.endsWith('/oauth2/token'))return Response.json({access_token:'admin-token'});if(url.endsWith('/oauth2/validate'))return Response.json({client_id:'vip-browser-client',user_id:'admin-1'});if(url.endsWith('/helix/users'))return Response.json({data:[{id:'admin-1',login:'admin',display_name:'Admin'}]});throw new Error(`Unexpected external call ${url}`);},vipService,experience,()=>({id:'test-stream',live:true}));
+  const dashboard=new DashboardServer(store,()=>({twitchConnected:true,channel:'acyjannik',startedAt:1,streamLive:true}),logger,async input=>{const url=String(input);if(url.endsWith('/oauth2/token'))return Response.json({access_token:'admin-token'});if(url.endsWith('/oauth2/validate'))return Response.json({client_id:'vip-browser-client',user_id:'admin-1'});if(url.endsWith('/helix/users'))return Response.json({data:[{id:'admin-1',login:'admin',display_name:'Admin'}]});throw new Error(`Unexpected external call ${url}`);},undefined,undefined,undefined,features.miniGames,features.arcade,async()=>{},undefined,undefined,undefined,undefined,portal,undefined,undefined,features.moderatorPranks,undefined,undefined,undefined,undefined,vipService,experience,()=>`${base}/oauth/vips/start`);
+  const rawViewer=randomBytes(32).toString('base64url'),csrf=randomBytes(32).toString('base64url'),now=Date.now();
+  store.createViewerSession({sessionHash:sha(rawViewer),userId:'123456',login:'vipviewer',displayName:'Kronenfan',profileImageUrl:null,csrfToken:csrf,createdAt:now,expiresAt:now+60*60_000});
+  const rawNonVip=randomBytes(32).toString('base64url');store.createViewerSession({sessionHash:sha(rawNonVip),userId:'123457',login:'viewer',displayName:'Zuschauer',profileImageUrl:null,csrfToken:randomBytes(32).toString('base64url'),createdAt:now,expiresAt:now+60*60_000});
+  let browser:Awaited<ReturnType<typeof chromium.launch>>|undefined;
+  try{
+    assert.equal(await dashboard.start(),true);
+    const login=await fetch(base+'/dashboard/login',{redirect:'manual'}),state=new URL(login.headers.get('location')||'').searchParams.get('state')||'',stateCookie=login.headers.get('set-cookie')?.split(';')[0]||'';
+    const callback=await fetch(`${base}/dashboard/oauth/callback?code=admin&state=${state}`,{headers:{cookie:stateCookie},redirect:'manual'});assert.equal(callback.status,303);
+    const adminCookie=callback.headers.getSetCookie().find(value=>value.startsWith('community_admin='))?.split(';')[0]||'';assert.ok(adminCookie);
+    const request=async(url:string,body?:unknown,cookieValue=`community_viewer=${rawViewer}`,csrfValue=csrf)=>{const response=await fetch(base+url,{method:body?'POST':'GET',headers:{cookie:cookieValue,...(body?{'Content-Type':'application/json','X-CSRF-Token':csrfValue}:{})},...(body?{body:JSON.stringify(body)}:{})});return response;};
+    assert.equal((await request('/community/api/vip')).status,200);
+    assert.equal((await request('/community/api/vip/elio',{action:'royal-play'},`community_viewer=${rawNonVip}`,store.viewerSession(sha(rawNonVip),Date.now())?.csrfToken||'')).status,403,'normale Zuschauer können die privilegierte API nicht durch direkten Aufruf nutzen');
+    browser=await chromium.launch({headless:true});const context=await browser.newContext({viewport:{width:1440,height:1000}});
+    await context.addCookies([{name:'community_viewer',value:rawViewer,domain:'127.0.0.1',path:'/'},{name:'community_admin',value:adminCookie.split('=')[1]||'',domain:'127.0.0.1',path:'/'}]);
+    const page=await context.newPage(),errors:string[]=[],responses:string[]=[];page.on('pageerror',error=>errors.push(error.message));page.on('response',response=>{if(response.url().includes('/community/api/vip/'))responses.push(`${response.status()} ${new URL(response.url()).pathname}`)});
+    await page.goto(base+'/community/vip',{waitUntil:'networkidle'});
+    await page.getByText('Kronenfan · offizieller Twitch-VIP').waitFor();
+    await page.getByRole('button',{name:'Mit Elio spielen'}).click();
+    await page.locator('#elio-state').getByText(/königliche Federangel|besonders vornehm|Krone auf/u).waitFor();
+    assert.equal(features.arcade.pet().xp,5,'VIP-Elio nutzt die normale Elio-XP, ohne Bonus');
+    await page.locator('#chaos-action').selectOption('elio-crown');await page.getByRole('button',{name:'Freigabe anfragen'}).click();
+    await page.getByText('Deine Anfrage wartet auf die Freigabe von Jannik oder der Moderation.').waitFor({timeout:4000}).catch(async()=>assert.fail(`VIP-Chaos wurde nicht bestätigt: notice=${await page.locator('#notice').innerText()}; responses=${responses.join(',')}`));
+    await page.locator('#challenge').fill('Gewinne eine Runde mit nur einer Ausrüstung');await page.getByRole('button',{name:'Challenge einreichen'}).click();
+    await page.getByText('Deine VIP-Challenge wurde eingereicht und wartet wie alle Quests auf Moderation.').waitFor();
+    const submittedQuest=store.lastQuestForUser('123456');assert.ok(submittedQuest);assert.equal(experience.challengeForQuest(submittedQuest.id)?.submitterUserId,'123456','VIP-Challenge ist dieselbe gespeicherte Quest und erhält nur Metadaten');
+    const desktopScreenshot=path.join(process.cwd(),'docs/verification/vip-lounge-desktop-local.png');await page.screenshot({path:desktopScreenshot,fullPage:true});
+    await page.setViewportSize({width:390,height:844});await page.reload({waitUntil:'networkidle'});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'VIP-Lounge bleibt mobil ohne horizontales Überlaufen');
+    const mobileScreenshot=path.join(process.cwd(),'docs/verification/vip-lounge-mobile-local.png');await page.screenshot({path:mobileScreenshot,fullPage:true});
+    await page.goto(base+'/dashboard',{waitUntil:'domcontentloaded'});await page.locator('[data-view-target="community"]').click();await page.locator('[data-community-target="vip"]').click();
+    await page.getByText('✅ Twitch bestätigt die Broadcaster-Autorisierung und channel:read:vips.').waitFor();
+    assert.equal(await page.locator('[data-community-page="vip"]').count(),1,'VIP-Verwaltung wird genau einmal eingebunden');
+    assert.equal(await page.locator('body').innerText().then(text=>text.includes('+VIP_ADMIN_CARD+')),false,'kein Template-Platzhalter wird sichtbar ausgegeben');
+    await page.setViewportSize({width:1440,height:1000});assert.equal(await page.evaluate(()=>innerWidth),1440,'Desktop-Screenshot wird tatsächlich am Desktop aufgenommen');await page.screenshot({path:path.join(process.cwd(),'docs/verification/vip-dashboard-desktop-local.png'),fullPage:true});await page.setViewportSize({width:390,height:844});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'VIP-Verwaltung bleibt mobil ohne horizontales Überlaufen');await page.screenshot({path:path.join(process.cwd(),'docs/verification/vip-dashboard-mobile-local.png'),fullPage:true});await page.setViewportSize({width:1440,height:1000});
+    const chaosRequest=page.locator('#vip-requests .quest-row').filter({hasText:'Elio trägt eine Krone'});await chaosRequest.getByRole('button',{name:'Freigeben'}).click();await page.getByText('VIP-Chaos wurde freigegeben und ausgelöst.').waitFor();
+    assert.equal((features.moderatorPranks.snapshot().active as {kind?:string}|null)?.kind,'chief','die genehmigte Aktion erreicht das bestehende Prank-System');
+    const petOverlay=await(await fetch(`${base}/widgets/api/pet?token=${petToken}`)).json() as {prank?:{kind?:string}};assert.equal(petOverlay.prank?.kind,'chief','bestehendes OBS-Pet-Widget zeigt den freigegebenen kosmetischen VIP-Effekt');
+    await page.locator('[data-vip="enabled"]').uncheck();await page.getByRole('button',{name:'VIP-Einstellungen speichern'}).click();await page.getByText('VIP-Einstellungen gespeichert.').waitFor();assert.equal(experience.settings().enabled,false,'Dashboard-Einstellung wird dauerhaft gespeichert');
+    assert.deepEqual(errors,[],'keine JavaScript-Ausnahmen im Browser');
+    await browser.close();browser=undefined;
+  }finally{if(browser)await browser.close();await dashboard.stop();store.close();process.env=env;fs.rmSync(directory,{recursive:true,force:true});}
+});
