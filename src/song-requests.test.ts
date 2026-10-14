@@ -29,6 +29,7 @@ test('Song Requests bleiben standardmäßig aus; OAuth-Callback und Playlist-Ein
   };
   try{
     let service=new SpotifySongRequests(store,twitch,twitchOAuth,'channel-1',logger,fetchMock,tokenPath);
+    assert.equal(service.broadcasterConnected(),true,'Broadcasterstatus hängt an vorhandenem Token und erforderlichem Kanalpunkte-Scope');
     const auth=new URL(service.authorizationUrl()),state=auth.searchParams.get('state')!;await service.handleCallback(new URL(`https://twitch.gater-app.de/dashboard/spotify/callback?code=auth-code&state=${state}`));
     assert.equal(fs.statSync(tokenPath).mode&0o777,0o600);assert.equal(service.connected(),true);
     await assert.rejects(()=>service.saveSettings({enabled:true,rewardId:'reward-song',playlistId:'playlist-1',cost:500}),/1.000/u);

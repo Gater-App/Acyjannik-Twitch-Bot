@@ -178,7 +178,7 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.equal(optionalChannelPointsData.connected,false);
     assert.match(optionalChannelPointsData.message,/nicht eingerichtet/u);
     const songRequests=await fetch(`${base}/dashboard/api/song-requests`,{headers:{Cookie:sessionCookie}});
-    assert.equal(songRequests.status,200);assert.equal((await songRequests.json() as {available:boolean}).available,false);
+    assert.equal(songRequests.status,200);const songRequestStatus=await songRequests.json() as {available:boolean;broadcasterConnected:boolean};assert.equal(songRequestStatus.available,false);assert.equal(songRequestStatus.broadcasterConnected,false);
     const privateSongRequests=await fetch(`${base}/dashboard/api/song-requests`);assert.equal(privateSongRequests.status,401,'Song-Request-Daten bleiben dashboardgeschützt');
     const emptyWidgetStatus=await fetch(`${base}/dashboard/api/widgets/status`,{headers:{Cookie:sessionCookie}});
     assert.equal((await emptyWidgetStatus.json() as {widgets:Record<string,boolean>}).widgets.quest,false);

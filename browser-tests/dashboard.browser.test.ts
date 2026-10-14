@@ -7,6 +7,9 @@ import test from 'node:test';
 import { chromium } from 'playwright';
 import { DashboardServer } from '../src/dashboard.js';
 import { FeatureStore } from '../src/feature-store.js';
+import { CommunityArcade } from '../src/community-arcade.js';
+import { MiniGames } from '../src/mini-games.js';
+import { testConfig } from '../src/test-config.js';
 import { logger } from '../src/logger.js';
 
 async function freePort(): Promise<number> {
@@ -36,7 +39,9 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     if (url.endsWith('/helix/users')) return Response.json({ data: [{ id: 'admin-id', login: 'admin', display_name: 'Admin' }] });
     throw new Error(`Unerwarteter externer Aufruf: ${url}`);
   };
-  const dashboard = new DashboardServer(store, () => ({ twitchConnected: true, channel: 'acyjannik', startedAt: 1 }), logger, fetchImpl);
+  const arcade = new CommunityArcade(store, 'channel-1');
+  const miniGames = new MiniGames(store, testConfig());
+  const dashboard = new DashboardServer(store, () => ({ twitchConnected: true, channel: 'acyjannik', startedAt: 1 }), logger, fetchImpl, undefined, undefined, undefined, miniGames, arcade);
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
   try {
     assert.equal(await dashboard.start(), true);
@@ -54,7 +59,9 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     const page = await browser.newPage();
     await page.context().addCookies([{ name: 'community_admin', value: sessionCookie.split('=')[1], domain: '127.0.0.1', path: '/', httpOnly: true, secure: true, sameSite: 'Lax' }]);
     const pageErrors: string[] = [];
+    const apiResponses: string[] = [];
     page.on('pageerror', (error) => pageErrors.push(error.message));
+    page.on('response', (response) => { if (new URL(response.url()).pathname.startsWith('/dashboard/api/')) apiResponses.push(`${response.status()} ${new URL(response.url()).pathname}`); });
     const assertSubpage = async (selector: string, active: boolean) => {
       const state = await page.locator(selector).evaluate((node) => ({ hidden: (node as HTMLElement).hidden, display: getComputedStyle(node).display, active: (node as HTMLElement).dataset.active === 'true' }));
       assert.equal(state.hidden, !active, `${selector} hidden-Flag`);
@@ -94,6 +101,44 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
         if (other !== name) await assertSubpage(`[data-community-page="${other}"]`, false);
       }
     }
+    await page.locator('[data-community-target="elio"]').click();
+    const elioStatus = page.locator('#pet-status');
+    await elioStatus.getByText(/Elio.*Level.*Hunger.*Energie.*Zufriedenheit/u).waitFor({ state: 'visible', timeout: 3000 }).catch(async () => {
+      assert.fail(`Elio-Status fehlt: ${JSON.stringify(await page.evaluate(() => ({ petStatus: document.querySelector('#pet-status')?.textContent, arcadeState: document.querySelector('#arcade-state')?.textContent, arcadeCard: document.querySelector('#dashboard-community')?.textContent, arcadeCount: document.querySelectorAll('#arcade-state').length, arcadeButtonCount: document.querySelectorAll('#arcade-drop').length, arcadeLoad: typeof (window as unknown as {arcadeLoad?:unknown}).arcadeLoad, inlineHasArcade: [...document.scripts].some(s=>s.textContent.includes('arcadeLoad')) })))}, pageErrors=${pageErrors.join(' | ')}, api=${apiResponses.join(', ')}`);
+    });
+    assert.match(await elioStatus.innerText(), /Kätzchen/u, 'Elio zeigt seine Lebensphase');
+    const screenshotDir = process.env.DASHBOARD_SCREENSHOT_DIR;
+    if (screenshotDir) { fs.mkdirSync(screenshotDir, { recursive: true }); await page.screenshot({ path: path.join(screenshotDir, 'acy-dashboard-elio.png'), fullPage: true }); }
+    await page.locator('[data-community-target="music"]').click();
+    await assertSubpage('[data-community-page="music"]', true);
+    assert.equal(await page.locator('#sr-setup').isVisible(), true, 'Song-Setup ist bei fehlenden Verbindungen sichtbar');
+    assert.equal(await page.locator('#sr-manage').isVisible(), false, 'Verwaltung erscheint erst nach vollständiger Einrichtung');
+    if (screenshotDir) await page.screenshot({ path: path.join(screenshotDir, 'acy-dashboard-song-setup.png'), fullPage: true });
+    await page.locator('#sr-playlist-select').click();
+    assert.equal(await page.locator('#sr-error').isVisible(), true, 'fehlende Playlist-Auswahl zeigt eine verständliche Validierung');
+    let songEnabled = false;
+    const songRequest = { createdAt: 1_797_000_000_000, displayName: 'Viewer', status: 'added', userInput: 'Daft Punk - One More Time', trackName: 'One More Time', trackArtist: 'Daft Punk', lastError: null };
+    await page.route('**/dashboard/api/song-requests**', async (route) => {
+      if (route.request().method() === 'POST') songEnabled = Boolean((route.request().postDataJSON() as { enabled?: boolean }).enabled);
+      await route.fulfill({ json: { available: true, settings: { enabled: songEnabled, rewardId: 'mock-reward', rewardTitle: '🎵 Song wünschen', cost: 1000, playlistId: 'mock-playlist', playlistName: 'Stream-Songs' }, spotifyConnected: true, broadcasterConnected: true, message: 'Einrichtung vollständig.', requests: [songRequest] } });
+    });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await navigate('community');
+    await page.locator('[data-community-target="music"]').click();
+    await page.locator('#sr-enable').click();
+    await page.waitForFunction(() => document.querySelector('[data-sr-step="enable"]')?.getAttribute('data-state') === 'done', undefined, { timeout: 3000 });
+    assert.equal(await page.locator('#sr-setup').isVisible(), false, `abgeschlossene Einrichtung wird nach Aktivierung ausgeblendet: enabled=${songEnabled} state=${JSON.stringify(await page.evaluate(()=>({setupHidden:(document.querySelector('#sr-setup') as HTMLElement).hidden,steps:[...document.querySelectorAll('[data-sr-step]')].map(x=>(x as HTMLElement).dataset.state),manageHidden:(document.querySelector('#sr-manage') as HTMLElement).hidden})))} status=${await page.locator('#sr-status').innerText()} error=${await page.locator('#sr-error').innerText()} api=${apiResponses.filter(x=>x.includes('song-requests')).join(',')}`);
+    assert.equal(await page.locator('#sr-manage').isVisible(), true, 'Verwaltung wird nach Einrichtung angezeigt');
+    assert.doesNotMatch(await page.locator('#sr-manage').innerText(), /mock-reward|mock-playlist/u, 'technische Twitch-/Spotify-IDs werden nicht angezeigt');
+    await page.locator('#sr-requests').getByText(/One More Time/u).first().waitFor({ state: 'visible' });
+    if (screenshotDir) await page.screenshot({ path: path.join(screenshotDir, 'acy-dashboard-song-management.png'), fullPage: true });
+    await page.locator('#sr-manage-connections').click();
+    assert.equal(await page.locator('#sr-setup').isVisible(), true, 'Verbindungen lassen sich aus der Verwaltung heraus ändern');
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await navigate('community');
+    await page.locator('[data-community-target="music"]').click();
+    assert.equal(await page.locator('#sr-manage').isVisible(), true, 'aktivierter Status bleibt nach Neuladen sichtbar');
+    assert.equal(await page.locator('#sr-setup').isVisible(), false, 'Einrichtungsfelder bleiben nach Neuladen verborgen');
 
     await navigate('settings');
     for (const name of ['messages', 'commands', 'advanced']) {
@@ -113,7 +158,8 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     assert.ok(logoutRequestHeaders['x-csrf-token'], 'Logout sendet CSRF-Token');
     assert.equal(logoutRequestHeaders.origin, base, 'Logout sendet Browser-Origin');
     await page.waitForURL((url) => url.hostname === 'id.twitch.tv' && url.pathname === '/oauth2/authorize', { waitUntil: 'commit', timeout: 5000 });
-    assert.deepEqual(pageErrors, [], `Dashboard darf bei Navigation und Logout keine JavaScript-Ausnahmen werfen: ${pageErrors.join('; ')}`);
+    assert.deepEqual(pageErrors, [], `Dashboard darf bei Navigation, Elio, Song-Wünschen und Logout keine JavaScript-Ausnahmen werfen: ${pageErrors.join('; ')}`);
+    assert.equal(apiResponses.filter((response) => response.startsWith('429 ')).length, 0, 'die geprüfte Navigation und Einrichtung erzeugen keine Rate-Limit-Antworten');
   } finally {
     await browser?.close();
     await dashboard.stop();
