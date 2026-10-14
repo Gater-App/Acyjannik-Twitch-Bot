@@ -13,7 +13,7 @@ test('Imposter-Runde braucht Mindestzahl, begrenzt Plätze, weist genau eine Rol
   const {store,game}=fixture();const t=1000;const announcement=game.startImposter('broadcaster-1',t);assert.match(announcement,/Anmeldung offen/u);assert.match(announcement,/!joinimposter.*Community-Portal.*https:\/\/twitch\.gater-app\.de\/community/u);
   for(let i=1;i<=6;i++)game.join(msg(`u${i}`,`Viewer${i}`),t+i);
   const db=store.miniGameQuery(d=>d);assert.equal((db.prepare('SELECT COUNT(*) n FROM imposter_players').get() as {n:number}).n,5);
-  const response=game.startRoles('broadcaster-1',t+10);assert.match(response,/Mit Twitch anmelden/u);
+  const response=game.startRoles('broadcaster-1',t+10);assert.match(response,/geheime Regel ist verteilt/u);assert.match(response,/!sus @Name/u);assert.match(response,/community\/imposter/u);
   const players=db.prepare('SELECT user_id,role FROM imposter_players').all() as Array<{user_id:string;role:string}>;
   assert.equal(players.filter(p=>p.role==='imposter').length,1);
   assert.deepEqual(game.roleFor('intruder'),undefined);
@@ -22,6 +22,15 @@ test('Imposter-Runde braucht Mindestzahl, begrenzt Plätze, weist genau eine Rol
   assert.equal(JSON.stringify(store.widgetSnapshot('imposter',t)).includes('Nur GROSSBUCHSTABEN'),false);
   assert.match(game.beginVote(t+20),/Abstimmung/u);
   const voter=players.find(p=>p.user_id!==assigned.user_id)!;assert.match(game.vote(msg(voter.user_id,'Viewer2'),'@u1',t+30),/Stimme .* gespeichert/u);
+  store.close();
+});
+
+test('Twitch-VIPs dürfen Imposter starten, erhalten dadurch aber keine Moderationsrechte',()=>{
+  const {store,game}=fixture();
+  const vip={...msg('vip-user','VipUser','!startimposter'),isVip:true};
+  assert.match(game.handle(vip,'startimposter',[],100)||'',/Anmeldung offen/u);
+  assert.match(game.handle({...vip,eventId:'vip-close',messageId:'vip-close'},'closeimposter',[],101)||'',/Nur Jannik oder Mods/u);
+  assert.match(game.handle(msg('regular-user','Viewer','!startimposter'),'startimposter',[],102)||'',/Jannik, Mods oder Twitch-VIPs/u);
   store.close();
 });
 
@@ -62,7 +71,7 @@ test('Minispiele default OFF, Rundenzustand bleibt nach erneutem Store-Start erh
 test('Abmeldung und Mindestzahl werden geprüft; der automatische Timer bricht leere Runden sicher ab',()=>{
   const {store,game}=fixture();game.startImposter('admin',100);game.join(msg('a','Ada'),110);game.join(msg('b','Bea'),120);
   assert.match(game.leave('b'),/verlassen/u);assert.match(game.startRoles('admin',130),/Mindestens 4/u);
-  assert.match(game.handle(msg('viewer','Viewer'),'startimposter',[],140)||'',/Nur Jannik oder Mods/u);
+  assert.match(game.handle(msg('viewer','Viewer'),'startimposter',[],140)||'',/Jannik, Mods oder Twitch-VIPs/u);
   const timed=game.tick(1200);assert.match(timed.join(' '),/Zu wenige Teilnehmende/u);
   assert.equal((game.snapshot(1201).imposter),null);store.close();
 });

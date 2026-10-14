@@ -13,6 +13,8 @@ import { CommunityTips } from './community-tips.js';
 import { AutomaticChatMessages } from './automatic-chat-messages.js';
 import { ModeratorPranks } from './moderator-pranks.js';
 import { BotLifecycle } from './bot-lifecycle.js';
+import { VipExperience } from './vip-experience.js';
+import type { TwitchVipService } from './twitch-vip.js';
 
 async function freePort(): Promise<number> {
   const server = net.createServer();
@@ -123,6 +125,15 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.match(html,/dashboardPollVisible/u);assert.match(html,/Retry-After/u);assert.doesNotMatch(html,/setInterval\(refreshMini,3000\)|setInterval\(update,3000\)/u,'veraltete aggressive Minispiel-/Streamer-Polls sind nicht mehr aktiv');
     const csrf = html.match(/name="csrf" content="([a-f0-9]+)"/u)?.[1] || '';
     assert.ok(csrf);
+    assert.match(html,/Magic 8-Ball/u);assert.match(html,/Sichere Antwort-Vorschau/u);
+    const eightBallState=await fetch(`${base}/dashboard/api/eight-ball`,{headers:{Cookie:sessionCookie}});
+    assert.equal(eightBallState.status,200);assert.deepEqual((await eightBallState.json() as any).distribution,{yes:40,no:40,maybe:20});
+    const eightBallPreview=await fetch(`${base}/dashboard/api/eight-ball/preview`,{headers:{Cookie:sessionCookie}});
+    assert.equal(eightBallPreview.status,200);assert.match((await eightBallPreview.json() as any).answer,/^(JA!|NEIN!|VIELLEICHT!) 🎱/u);
+    assert.equal(sentChat.length,0,'8-Ball-Vorschau darf keine Twitch-Nachricht senden');
+    const eightBallSave=await fetch(`${base}/dashboard/api/eight-ball`,{method:'POST',headers:{Cookie:sessionCookie,Origin:base,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({enabled:false,personalCooldownSeconds:45,globalCooldownSeconds:7,cooldownNotices:false})});
+    assert.equal(eightBallSave.status,200);const savedEightBall=await fetch(`${base}/dashboard/api/eight-ball`,{headers:{Cookie:sessionCookie}});
+    assert.deepEqual((await savedEightBall.json() as any),{enabled:false,settings:{personalCooldownMs:45_000,globalCooldownMs:7_000,cooldownNotices:false},distribution:{yes:40,no:40,maybe:20},lastUsedAt:null});
     assert.match(html,/Bot-Lebenszeichen/u);assert.match(html,/Bei geplanten Neustarts verabschieden und zurückmelden/u);
     assert.match(html,/Eigene geplante Nachrichten/u);assert.match(html,/Community-Tipps/u);assert.match(html,/automatic-chat-form/u);assert.match(html,/communityTipCategories/u);
     assert.match(html,/@media\(max-width:520px\)/u);
@@ -143,7 +154,7 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.match(html,/!sus @Name/u);
     assert.match(html,/!savequote Mein Zitat/u);
     assert.match(html,/Automatik pausieren/u);assert.match(html,/Auto-Pilot dreht alle 30 Minuten/u);assert.match(html,/Abstand speichern/u);
-    assert.doesNotMatch(html,/Jannick spielt selbst|Erfolg wird nicht automatisch geprüft/u);assert.doesNotMatch(html,/Jannik entscheidet/u,'nach dem Dreh gibt es keine zusätzliche Genehmigung');
+    assert.doesNotMatch(html,/Jannik spielt selbst|Erfolg wird nicht automatisch geprüft/u);assert.doesNotMatch(html,/Jannik entscheidet/u,'nach dem Dreh gibt es keine zusätzliche Genehmigung');
     assert.match(html,/So funktioniert’s/u);assert.doesNotMatch(html,/Einfach erklärt/u,'lange Hilfetexte sind nicht mehr standardmäßig eingeblendet');
     assert.match(html,/mini-overlay-status/u);assert.match(html,/arcade-widget-status/u);assert.match(html,/mini-participant-link/u);assert.match(html,/data-drop-status/u);
     assert.match(html,/b\.hidden=!visible/u,'Spielaktionen werden nach der aktuellen Phase ein- und ausgeblendet');
@@ -182,6 +193,9 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.equal(runtimeData.dashboardResponding,true);
     assert.equal(runtimeData.chatReceive,'unknown','eine offene Verbindung darf nicht als Chat-Empfangsnachweis erscheinen');
     assert.equal(runtimeData.botChatSend,'unknown','Senden muss separat gemessen sein');
+    const unknownLive=await(await fetch(`${base}/dashboard/api/streamer-state`,{headers:{Cookie:sessionCookie}})).json() as {stream:{status:string;details:unknown}};
+    assert.equal(unknownLive.stream.status,'unknown','ohne echte Twitch-Abfrage wird kein Offline- oder Live-Zustand erfunden');
+    assert.equal(unknownLive.stream.details,null);
     const optionalChannelPoints=await fetch(`${base}/dashboard/api/channel-points`,{headers:{Cookie:sessionCookie}});
     assert.equal(optionalChannelPoints.status,200,'fehlende optionale Kanalpunkte-Integration soll keinen 405-Fehler erzeugen');
     const optionalChannelPointsData=await optionalChannelPoints.json() as {available:boolean;connected:boolean;message:string};
@@ -255,7 +269,7 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     const dashboardPage=await fetch(`${base}/dashboard`,{headers:{Cookie:sessionCookie}}).then(response=>response.text());
     assert.match(dashboardPage,/Auto-Pilot dreht alle 30 Minuten/u);
     assert.doesNotMatch(dashboardPage,/<form id="arcade-challenge"/u,'normale Bedienung enthält keinen manuellen Challenge-Editor');
-    assert.doesNotMatch(dashboardPage,/Jannick spielt sie selbst/u);
+    assert.doesNotMatch(dashboardPage,/Jannik spielt sie selbst/u);
 
     const wheelState=await fetch(`${base}/dashboard/api/arcade`,{headers:{Cookie:sessionCookie}});
     const wheelData=await wheelState.json() as {wheel:{canSpin:boolean;entries:Array<{id:string;probability:number}>;wheelFields:Array<{title:string;description:string;probability:number;kind:string;active:boolean}>}};
@@ -380,6 +394,11 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.equal(tokenRevoke.status, 200);
     assert.equal((await fetch(`${widgetBase}/api/quest?token=${widgetToken}`)).status, 404, 'widerrufene Widget-URL ist sofort ungültig');
 
+    const earlierPoll=store.activePoll();if(earlierPoll)store.endPoll(earlierPoll.id,Date.now());
+    const liveDecision=await fetch(`${base}/dashboard/api/polls`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({question:'Welche Strategie?',options:['Vorsichtig','Mutig'],durationSeconds:30})});assert.equal(liveDecision.status,201,await liveDecision.clone().text());const liveDecisionBody=await liveDecision.json() as {poll:{id:string;allowVoteChange:boolean;endsAt:number}};assert.equal(liveDecisionBody.poll.allowVoteChange,false);assert.ok(liveDecisionBody.poll.endsAt-Date.now()<=30_000);assert.match(sentChat.at(-1)||'',/!vote 1–2/u);
+    const tooShortDecision=await fetch(`${base}/dashboard/api/polls`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({question:'Zu kurz?',options:['A','B'],durationSeconds:10})});assert.equal(tooShortDecision.status,400);
+    await fetch(`${base}/dashboard/api/polls/action`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({id:liveDecisionBody.poll.id,action:'end'})});
+
     const disablePolls = await fetch(`${base}/dashboard/api/modules`, {
       method: 'POST', headers: { Cookie: sessionCookie, Origin: `http://localhost:${port}`, 'X-CSRF-Token': csrf, 'Content-Type': 'application/json' },
       body: JSON.stringify({ key: 'polls', enabled: false }),
@@ -442,21 +461,25 @@ test('Moderator-OAuth öffnet nur die Prank-Oberfläche und serverseitig nur der
   const env={...process.env},directory=fs.mkdtempSync(path.join(os.tmpdir(),'acy-prank-dashboard-')),store=new FeatureStore(path.join(directory,'features.sqlite')),port=await freePort();
   process.env.TWITCH_CLIENT_ID='test-client';process.env.TWITCH_CLIENT_SECRET='test-secret';process.env.DASHBOARD_REDIRECT_URI='https://bot.example.test/dashboard/oauth/callback';process.env.DASHBOARD_ADMIN_IDS='admin-id';process.env.AUTHORIZED_MODERATOR_IDS='mod-id';process.env.DASHBOARD_HOST='127.0.0.1';process.env.DASHBOARD_PORT=String(port);
   let verifiedUserId='mod-id';const fetchImpl:typeof fetch=async(input,init)=>{const url=String(input);if(url.endsWith('/oauth2/token'))return Response.json({access_token:'temporary'});if(url.endsWith('/oauth2/validate'))return Response.json({client_id:'test-client',user_id:verifiedUserId,login:verifiedUserId==='mod-id'?'mod':'admin'});if(url.endsWith('/helix/users'))return Response.json({data:[{id:verifiedUserId,login:verifiedUserId==='mod-id'?'mod':'admin',display_name:'Test User'}]});throw Error(`Unexpected URL ${url}`)};
-  const pranks=new ModeratorPranks(store,()=>false,()=>false);
-  const dashboard=new DashboardServer(store,()=>({twitchConnected:false,channel:'acyjannik',startedAt:1}),logger,fetchImpl,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,pranks,async(login)=>login==='target'?{id:'123456',login:'target',displayName:'Target'}:undefined);
+  const pranks=new ModeratorPranks(store,()=>false,()=>false);pranks.configure({enabled:{chief:true}});
+  const vipExperience=new VipExperience(store);vipExperience.updateSettings({enabled:true,loungeEnabled:true,chaosEnabled:true});const request=vipExperience.requestChaos('123456','VIP Fan','stream-1','elio-crown',Date.now());assert.equal(request.ok,true);
+  const vipService={isVip:async(userId:string)=>userId==='123456',status:async()=>({state:'ready',authorized:true,scopeGranted:true,checkedAt:Date.now()})} as unknown as TwitchVipService;
+  const dashboard=new DashboardServer(store,()=>({twitchConnected:false,channel:'acyjannik',startedAt:1}),logger,fetchImpl,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,pranks,async(login)=>login==='target'?{id:'123456',login:'target',displayName:'Target'}:undefined,undefined,undefined,undefined,vipService,vipExperience);
   try{
     assert.equal(await dashboard.start(),true);const base=`http://127.0.0.1:${port}`;
     const login=await fetch(`${base}/dashboard/login`,{redirect:'manual'}),state=new URL(login.headers.get('location')||'').searchParams.get('state')||'',stateCookie=login.headers.get('set-cookie')?.split(';')[0]||'';
     const callback=await fetch(`${base}/dashboard/oauth/callback?code=x&state=${state}`,{headers:{Cookie:stateCookie},redirect:'manual'});assert.equal(callback.status,303);
     const session=callback.headers.getSetCookie().find(x=>x.startsWith('community_admin='))?.split(';')[0]||'';
-    const page=await fetch(`${base}/dashboard`,{headers:{Cookie:session}});assert.equal(page.status,200);const html=await page.text();assert.match(html,/Chaos &amp; Pranks/u);assert.doesNotMatch(html,/data-dashboard-view="overview"|DASHBOARD_ADMIN/u);
+    const page=await fetch(`${base}/dashboard`,{headers:{Cookie:session}});assert.equal(page.status,200);const html=await page.text();assert.match(html,/Chaos &amp; Pranks/u);assert.match(html,/VIP-Chaos-Anfragen/u);assert.doesNotMatch(html,/data-dashboard-view="overview"|DASHBOARD_ADMIN/u);
     const csrf=html.match(/<meta name="csrf" content="([^"]+)/u)?.[1]||'';assert.ok(csrf);
     assert.equal((await fetch(`${base}/dashboard/api/overview`,{headers:{Cookie:session}})).status,403);
     assert.equal((await fetch(`${base}/streamer`,{headers:{Cookie:session}})).status,403);
     assert.equal((await fetch(`${base}/dashboard/api/fairness`,{headers:{Cookie:session}})).status,403);
     assert.equal((await fetch(`${base}/dashboard/api/pranks`,{headers:{Cookie:session}})).status,200);
-    await fetch(`${base}/dashboard/api/pranks`,{method:'POST',headers:{Cookie:session,Origin:'https://bot.example.test','X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({action:'settings',settings:{enabled:{chief:true}}})});
-    const start=await fetch(`${base}/dashboard/api/pranks`,{method:'POST',headers:{Cookie:session,Origin:'https://bot.example.test','X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({action:'start',kind:'chief'})});assert.equal(start.status,200);
+    assert.equal((await fetch(`${base}/dashboard/api/vip/status`,{headers:{Cookie:session}})).status,200,'Moderatoren können offene VIP-Anfragen in ihrer eingeschränkten Ansicht lesen');
+    const vipApproval=await fetch(`${base}/dashboard/api/vip/chaos`,{method:'POST',headers:{Cookie:session,Origin:'https://bot.example.test','X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({id:request.id,action:'approve'})});assert.equal(vipApproval.status,200,await vipApproval.clone().text());assert.equal((pranks.snapshot().active as {kind?:string}|null)?.kind,'chief');
+    assert.equal((await fetch(`${base}/dashboard/api/vip/settings`,{method:'POST',headers:{Cookie:session,Origin:'https://bot.example.test','X-CSRF-Token':csrf,'Content-Type':'application/json'},body:'{}'})).status,403,'Moderatoren können VIP-Einstellungen nicht ändern');
+    assert.equal((pranks.snapshot().active as {kind?:string}|null)?.kind,'chief','Freigabe startet genau einmal den vorhandenen Prank');
     assert.equal((await fetch(`${base}/dashboard/api/minigames`,{headers:{Cookie:session}})).status,403);
     assert.equal((await fetch(`${base}/dashboard/api/pranks`)).status,401);
   }finally{await dashboard.stop();store.close();fs.rmSync(directory,{recursive:true,force:true});for(const key of Object.keys(process.env))if(!(key in env))delete process.env[key];for(const [key,value] of Object.entries(env))process.env[key]=value}

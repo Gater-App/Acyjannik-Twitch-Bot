@@ -29,4 +29,11 @@ test('EventSub-Chatpayload wird auf User-ID und Event-ID abgebildet', () => {
   assert.equal(message.eventId, 'event-id');
   assert.equal(message.senderUserId, 'viewer-1');
   assert.equal(message.isModerator, true);
+  assert.equal(message.isVip, false);
+});
+
+test('VIP-Berechtigung wird ausschließlich aus dem Twitch-EventSub-VIP-Badge übernommen', () => {
+  const message = parseEventSubChatMessage({metadata:{message_type:'notification',message_id:'vip-event'},payload:{event:{message_id:'vip-event',broadcaster_user_id:'broadcaster-1',chatter_user_id:'vip-1',chatter_user_login:'vip',chatter_user_name:'VIP',message:{text:'!startguess'},badges:[{set_id:'vip',id:'1',info:''}]}}});
+  assert.equal(message.isVip,true);
+  assert.equal(message.isModerator,false);
 });

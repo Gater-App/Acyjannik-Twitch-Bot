@@ -12,11 +12,13 @@ Vollständige Übersicht der im aktuellen Bot-Code fest eingebauten Chatbefehle.
 | `!gift`, `!egghunt` | Sammeln, wenn das aktive Event so konfiguriert ist. |
 | `!eventscore [event-id]`, `!eventtop [event-id]` | Event-Punktestand bzw. Topliste. |
 | `!level [@user]`, `!rank`, `!xptop` | XP-Level, eigener Rang und XP-Topliste. |
-| `!8ball FRAGE`, `!rps schere\|stein\|papier` | Chat-Minispiele. |
+| `!8ball FRAGE`, `!rps schere\|stein\|papier` | 8-Ball: 40 % JA, 40 % NEIN, 20 % VIELLEICHT; Themenantworten und Cooldowns. |
 | `!guess ZAHL` | Bei aktiver Zahlenrunde raten; Versuche sind begrenzt. |
+| `!startguess` | Jannik, Moderatoren und Twitch-VIPs dürfen eine gemeinsame Zahlenrunde starten, wenn noch keine läuft. Alle Zuschauer können mit `!guess ZAHL` mitraten. |
 | `!duel @user`, `!accept`, `!cancelduel` | Duell herausfordern, annehmen oder eigene Herausforderung zurückziehen. |
 | `!boss`, `!attack`, `!bosstop` | Bossstatus, angreifen, Schadensrangliste bei aktivem Boss. |
 | `!quest TEXT`, `!quests`, `!myquest`, `!questhelp` | Quest-Idee einreichen (wird moderiert), Status und Details ansehen. |
+| `!idee TEXT`, `!ideen`, `!idee status ID`, `!idee top` | Allgemeine Stream-/Community-Idee einreichen, Portal öffnen oder öffentlichen Status/Favoriten ansehen. Cooldown und Prüfung gelten; konkrete Stream-Aufgaben bleiben `!quest`. |
 | `!poll`, `!vote NUMMER`, `!pollresults` | Aktive Umfrage ansehen, abstimmen und Ergebnis abrufen. |
 | `!spark`, `!sparkhelp`, `!sparktopics` | Conversation-Spark-Status, Erklärung und aktuelle Themen. |
 | `!imposter`, `!imposterstatus`, `!joinimposter`, `!leaveimposter`, `!sus @Name` | Imposter-Runde ansehen, freiwillig anmelden/abmelden und abstimmen. |
@@ -34,14 +36,15 @@ Die genaue Prüfung ist featureabhängig: Broadcaster, Twitch-Mod-Badge oder aus
 |---|---|
 | `!starthalloween`, `!endhalloween` | Halloween starten/beenden; Jannik oder autorisierte Mods. |
 | `!startevent ID`, `!endevent ID` | Saison-Event starten/beenden; Jannik oder autorisierte Mods. |
-| `!startguess` | Zahlenrunde starten; Jannik oder Mods. |
 | `!startboss [Name]`, `!endboss` | Bosskampf starten/beenden; Jannik oder Mods. |
 | `!questqueue` | Wartende Quest-IDs; Zugriff gemäß Quest-Moderationseinstellungen. |
+| Dashboard → „Ideen verwalten“ | Einreichungen prüfen, kategorisieren, freigeben/ablehnen und 2–5 freigegebene Ideen zur Portalabstimmung stellen. Abstimmungssieg ist keine automatische Zusage. |
 | `!approvequest ID`, `!rejectquest ID` | Quest moderieren; Jannik oder ausdrücklich freigegebene Mods. Text vor Freigabe im Dashboard prüfen. |
 | `!skipquest` | Aktive Quest überspringen; Jannik oder eigens freigegebene Skip-Mods. |
 | `!sparks` | Offene Spark-Vorschläge anzeigen. |
 | `!sparkapprove ID`, `!sparkreject ID` | Vorschlag freigeben/ablehnen; Jannik oder Twitch-Mods. Freigabe startet keine Aktion automatisch. |
-| `!startimposter`, `!closeimposter`, `!cancelimposter` | Anmeldung starten, schließen/Rollenphase auslösen bzw. abbrechen; Jannik oder Mods. |
+| `!startimposter` | Imposter-Anmeldung starten; Jannik, Mods oder Twitch-VIPs. |
+| `!closeimposter`, `!cancelimposter` | Anmeldung schließen/Rollenphase auslösen bzw. abbrechen; nur Jannik oder Mods. |
 | `!startdetektiv`, `!skipdetektiv`, `!enddetektiv` | Detektiv-Runde starten/überspringen/beenden; Jannik oder Mods. |
 | `!startdrop [common\|rare\|epic\|legendary\|community]`, `!canceldrop` | Mystery Drop starten/abbrechen; Jannik oder Mods, wenn aktiviert. |
 | `!startwheel`, `!cancelwheel` | Wheel-Dreh starten/abbrechen; Jannik oder Mods, wenn aktiviert. |

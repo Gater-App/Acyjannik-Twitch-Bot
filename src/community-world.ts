@@ -11,6 +11,9 @@ const BADGES=[
   {id:'quest_spark',name:'Quest-Funken',description:'Reiche eine Community-Quest ein, die das System angenommen hat.',rarity:'common' as const,emoji:'📜'},
   {id:'community_player',name:'Teamplayer',description:'Erhalte eine belegte Belohnung aus einem Community-Spiel.',rarity:'rare' as const,emoji:'🤝'},
   {id:'xp_collector',name:'XP-Sammler',description:'Sammle seit Start der Community-Welt 100 XP.',rarity:'epic' as const,emoji:'⭐'},
+  {id:'haunted_visitor',name:'Erster Spukhaus-Besuch',description:'Trage während der Halloween-Saison mit einer gültigen Runde bei.',rarity:'common' as const,emoji:'🕯️'},
+  {id:'haunted_scout',name:'Mitternachts-Entdecker',description:'Trage mit fünf gültigen Halloween-Runden zum Spukhaus bei.',rarity:'rare' as const,emoji:'🔎'},
+  {id:'haunted_house_crew',name:'Geisterhaus-Crew',description:'Hilf der Community, das gemeinsame Spukhaus-Ziel zu erreichen.',rarity:'epic' as const,emoji:'🏚️'},
 ];
 const BERLIN_DATE=new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Berlin',year:'numeric',month:'2-digit',day:'2-digit'});
 function dayKey(now:number):string{const parts=Object.fromEntries(BERLIN_DATE.formatToParts(now).map(part=>[part.type,part.value]));return `${parts.year}-${parts.month}-${parts.day}`;}

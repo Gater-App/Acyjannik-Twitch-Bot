@@ -51,11 +51,13 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
   const miniGames = new MiniGames(store, testConfig());
   const communityFeatures = new CommunityFeatures(store, testConfig());
   communityFeatures.vault.updateSettings({enabled:true});
-  assert.equal(communityFeatures.vault.startManual(Date.now()).ok,true);
-  store.miniGameQuery(db=>db.prepare("UPDATE community_vault_rounds SET secret_code='042' WHERE status='active'").run());
+  for(const [index,userId] of ['viewer-a','viewer-b','viewer-c'].entries())communityFeatures.vault.observeActivity({eventId:`activity-${index}`,broadcasterUserId:'channel-1',senderUserId:userId,senderLogin:userId,senderDisplayName:userId,message:`Aktivität im Browser-Test ${index}`,sentAt:Date.now()});
+  const petToken=randomBytes(32).toString('base64url');
+  store.rotateWidgetToken('pet',createHash('sha256').update(petToken).digest('hex'),Date.now(),'admin-id');
+  const sentChatMessages:string[]=[];
   const portal = new ViewerCommunityPortal(store, communityFeatures, testConfig(), fetchImpl);
   const communityTips=new CommunityTips(store);
-  const dashboard = new DashboardServer(store, () => ({ twitchConnected: true, channel: 'acyjannik', startedAt: 1 }), logger, fetchImpl, undefined, undefined, undefined, miniGames, arcade, async()=>{}, undefined, communityTips, undefined, undefined, portal, communityFeatures.vault, async()=>true, communityFeatures.moderatorPranks,async(login)=>({id:'123456',login,displayName:'Testviewer'}),undefined,undefined,botLifecycle);
+  const dashboard = new DashboardServer(store, () => ({ twitchConnected: true, channel: 'acyjannik', startedAt: 1,streamLive:true,streamStatusCheckedAt:Date.now(),streamSnapshot:{title:'ACY Live Test',gameName:'Testspiel',viewerCount:42,startedAt:new Date(Date.now()-3_600_000).toISOString()},lastChatReceiveAt:Date.now()-60_000,lastBotChatSendAt:Date.now()-30_000 }), logger, fetchImpl, undefined, undefined, undefined, miniGames, arcade, async(message)=>{sentChatMessages.push(message);}, undefined, communityTips, undefined, undefined, portal, communityFeatures.vault, async()=>true, communityFeatures.moderatorPranks,async(login)=>({id:'123456',login,displayName:'Testviewer'}),undefined,undefined,botLifecycle);
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
   try {
     assert.equal(await dashboard.start(), true);
@@ -69,8 +71,12 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     const sessionCookie = callback.headers.getSetCookie().find((value) => value.startsWith('community_admin='))?.split(';')[0] || '';
     assert.ok(sessionCookie, 'OAuth-Login muss eine Sitzung ausstellen');
 
+    const seedTime=Date.now();
+    const pendingIdea=store.submitCommunityIdea({id:'dashboard-idea-pending',userId:'idea-viewer-1',displayName:'IdeenFan',text:'Ein Community-Spieleabend im Herbst',now:seedTime});assert.equal(pendingIdea.ok,true);
+    const approvedIdea=store.submitCommunityIdea({id:'dashboard-idea-approved',userId:'idea-viewer-2',displayName:'StreamFan',text:'Ein gemeinsamer Retro-Gaming-Abend',now:seedTime});assert.equal(approvedIdea.ok,true);assert.equal(store.moderateCommunityIdea('dashboard-idea-approved','approve','admin-id',seedTime),true);
     browser = await chromium.launch({ headless: true });
-    const page = await browser.newPage();
+    const context = await browser.newContext();
+    const page = await context.newPage();
     await page.context().addCookies([{ name: 'community_admin', value: sessionCookie.split('=')[1], domain: '127.0.0.1', path: '/', httpOnly: true, secure: true, sameSite: 'Lax' }]);
     const pageErrors: string[] = [];
     const apiResponses: string[] = [];
@@ -84,6 +90,9 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     };
 
     await page.goto(`${base}/dashboard`, { waitUntil: 'domcontentloaded', timeout: 10000 });
+    const ideasPage=await page.context().newPage();await ideasPage.goto(`${base}/dashboard/ideas`);await ideasPage.getByRole('heading',{name:'💡 Community-Ideen'}).waitFor();
+    const ideaCard=ideasPage.locator('.idea').filter({hasText:'Ein Community-Spieleabend im Herbst'});await ideaCard.getByRole('button',{name:'Freigeben'}).click();await ideasPage.getByText('Idee freigegeben.',{exact:true}).waitFor();
+    await ideasPage.locator('#filter').selectOption('approved');const ideaCheckboxes=ideasPage.locator('#ideas input[type=checkbox]:not([disabled])');await ideaCheckboxes.nth(0).check();await ideaCheckboxes.nth(1).check();await ideasPage.getByRole('button',{name:'Ausgewählte Ideen zur Abstimmung stellen'}).click();await ideasPage.getByText('Abstimmung gestartet. Der Sieg führt nicht automatisch zu einer Zusage.',{exact:true}).waitFor();assert.equal(store.activePoll()?.options.filter(option=>option.ideaId).length,2);store.endPoll(store.activePoll()!.id,Date.now(),true);await ideasPage.close();
     const view = (name: string) => page.locator(`[data-dashboard-view="${name}"]`);
     await view('overview').waitFor({ state: 'visible' });
     const ux50ScreenshotDir = process.env.DASHBOARD_UX50_SCREENSHOT_DIR;
@@ -111,6 +120,15 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
       await navigate(name);
       await screenshot(`acy-ux50-desktop-${name}`);
     }
+    await navigate('community');await page.getByRole('button',{name:'Abstimmungen'}).click();
+    const decisions=page.locator('[data-community-page="live-votes"]');await decisions.waitFor({state:'visible'});
+    await decisions.locator('#poll-template').selectOption('strategy');
+    assert.equal(await decisions.locator('[name="question"]').inputValue(),'Welche Spielstrategie soll Jannik ausprobieren?');
+    await decisions.locator('[name="options"]').fill('Vorsichtig spielen\nVolles Risiko');await decisions.locator('[name="durationSeconds"]').selectOption('30');
+    await decisions.getByRole('button',{name:'Abstimmung starten'}).click();
+    await decisions.getByText(/LIVE · Welche Spielstrategie/u).waitFor();assert.match(sentChatMessages.at(-1)||'',/!vote 1–2/u);
+    assert.equal(await decisions.locator('[name="durationSeconds"] option').count(),5,'30–180 Sekunden in nachvollziehbaren Schritten');
+    await navigate('overview');
 
     assert.equal(await page.getByRole('heading', { name: 'Stream bereit machen' }).isVisible(), true, 'Startseite enthält eine Einrichtungs-Checkliste');
     assert.match(await page.locator('#home-status').innerText(), /Bot antwortet[\s\S]*Twitch-Verbindung/u, 'Kompaktstatus zeigt Bot und Twitch');
@@ -138,7 +156,7 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     const screenshotDir=process.env.DASHBOARD_SCREENSHOT_DIR;
     if(screenshotDir){fs.mkdirSync(screenshotDir,{recursive:true});await page.screenshot({path:path.join(screenshotDir,'automatic-chat-hints-desktop.png'),fullPage:true});}
     const questCard=hintPanel.locator('[data-category="quest"]');
-    assert.match(await questCard.innerText(),/!quest IDEE/u);assert.match(await questCard.innerText(),/Jannick oder ein Mod startet/u);
+    assert.match(await questCard.innerText(),/!quest IDEE/u);assert.match(await questCard.innerText(),/Jannik oder ein Mod startet/u);
     const hallow=hintPanel.locator('[data-category="halloween"] input[type="checkbox"]');await hallow.uncheck();
     await hintPanel.locator('select').nth(1).selectOption('normal');
     await hintPanel.getByRole('button',{name:'Einstellungen speichern'}).click();
@@ -169,6 +187,10 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     await page.locator('#game-catalog').getByRole('button', {name:'Community-Tresor'}).click();
     await assertSubpage('[data-game-page="vault"]', true);
     await page.getByRole('heading', { name: '🔐 Community-Tresor' }).waitFor({ state: 'visible' });
+    await page.locator('#vault-start').click();
+    await page.locator('#vault-action-status').getByText('Community-Tresor wurde gestartet.').waitFor({state:'visible'});
+    assert.equal(sentChatMessages.some(message=>message.includes('Tresor')) ,true,'Start über die Dashboard-Schaltfläche sendet die bestätigte Spielankündigung');
+    store.miniGameQuery(db=>db.prepare("UPDATE community_vault_rounds SET secret_code='042' WHERE status='active'").run());
     await page.waitForFunction(() => document.querySelector('#vault-status')?.textContent?.includes('Tresor offen'));
     const dashboardVault=await page.evaluate(async()=>await (await fetch('/dashboard/api/vault')).json());
     assert.equal(dashboardVault.snapshot.vault.resultCode,null,'Dashboard-Snapshot liefert während der Runde keinen Code');
@@ -231,6 +253,9 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
       assert.fail(`Elio-Status fehlt: ${JSON.stringify(await page.evaluate(() => ({ petStatus: document.querySelector('#pet-status')?.textContent, arcadeState: document.querySelector('#arcade-state')?.textContent, arcadeCard: document.querySelector('#dashboard-community')?.textContent, arcadeCount: document.querySelectorAll('#arcade-state').length, arcadeButtonCount: document.querySelectorAll('#arcade-drop').length, arcadeLoad: typeof (window as unknown as {arcadeLoad?:unknown}).arcadeLoad, inlineHasArcade: [...document.scripts].some(s=>s.textContent.includes('arcadeLoad')) })))}, pageErrors=${pageErrors.join(' | ')}, api=${apiResponses.join(', ')}`);
     });
     assert.match(await elioStatus.innerText(), /Kätzchen/u, 'Elio zeigt seine Lebensphase');
+    const personalityToggle=page.getByRole('button',{name:'Ausschalten: Persönlichkeit und Ereignisse'});await personalityToggle.waitFor({state:'visible'});await personalityToggle.click();await page.getByRole('button',{name:'Einschalten: Persönlichkeit und Ereignisse'}).waitFor();
+    await page.getByRole('button',{name:'Einschalten: Persönlichkeit und Ereignisse'}).click();await page.getByRole('button',{name:'Ausschalten: Persönlichkeit und Ereignisse'}).waitFor();
+    await page.locator('.elio-personality summary').click();await page.getByText(/Elio hat die Tastatur besetzt/u).waitFor();
     if (screenshotDir) { fs.mkdirSync(screenshotDir, { recursive: true }); await page.screenshot({ path: path.join(screenshotDir, 'acy-dashboard-elio.png'), fullPage: true }); }
     await page.locator('[data-community-target="music"]').click();
     await assertSubpage('[data-community-page="music"]', true);
@@ -285,6 +310,20 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
         assert.equal(await page.locator('#xp-form [name="userId"]').inputValue(), 'viewer-42', 'Ausgewähltes Konto wird intern korrekt zugeordnet');
       }
       if(name==='messages')assert.equal(await page.locator('#chat-response-settings [data-category="communityPortal"] input[type="checkbox"]').isVisible(),true,'Portal-Tipp ist über den Kategorie-Schalter erreichbar');
+      if(name==='functions'){
+        const eightBall=page.locator('[data-eight-ball-settings]');await eightBall.getByRole('heading',{name:'🎱 Magic 8-Ball'}).waitFor();
+        assert.equal(await page.locator('#modules label').filter({hasText:'eightBall'}).isVisible(),false,'8-Ball-Aktivierung hat nur eine sichtbare Einstellung');
+        await eightBall.getByRole('button',{name:'Sichere Antwort-Vorschau'}).click();
+        await eightBall.getByText(/Vorschau \(wird nicht in Twitch gesendet\): (JA!|NEIN!|VIELLEICHT!) 🎱/u).waitFor();
+        await eightBall.locator('[name="personalCooldownSeconds"]').fill('45');await eightBall.locator('[name="globalCooldownSeconds"]').fill('7');
+        await eightBall.getByRole('button',{name:'Einstellungen speichern'}).click();
+        await eightBall.getByText(/Magic 8-Ball-Einstellungen gespeichert/u).waitFor();
+        const saved=await page.evaluate(async()=>await(await fetch('/dashboard/api/eight-ball')).json());
+        assert.deepEqual(saved.settings,{personalCooldownMs:45_000,globalCooldownMs:7_000,cooldownNotices:true});
+        await screenshot('acy-dashboard-eight-ball-desktop');await page.setViewportSize({width:390,height:844});
+        assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth+1),'8-Ball-Einstellungen passen mobil ohne seitliches Scrollen');
+        await screenshot('acy-dashboard-eight-ball-mobile');await page.setViewportSize({width:1440,height:1000});
+      }
       if (name === 'integrations') {
         assert.match(settingText, /nicht eingerichtet/u, 'Fehlende optionale Kanalpunkte-Anbindung wird erklärt statt die Seite leer zu lassen');
         assert.equal(await page.locator('[data-integration-empty]').isVisible(), true, 'nicht eingerichtete Verbindung wird als klarer Status angezeigt');
@@ -326,11 +365,49 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     await screenshot('acy-chaos-pranks-mobile');
     await page.setViewportSize({width:1440,height:1000});
     await page.getByLabel('Aktivieren',{exact:true}).first().check();
+    await page.waitForFunction(async()=>Boolean((await(await fetch('/dashboard/api/pranks')).json()).settings.enabled.chief));
+    await page.locator('[data-prank-announce="chief"]').check();
+    await page.waitForFunction(async()=>Boolean((await(await fetch('/dashboard/api/pranks')).json()).settings.announce.chief));
     await page.getByRole('button',{name:'Für 60 Sekunden starten'}).click();
     await page.getByText(/Elio als Stream-Chef läuft noch/u).waitFor({state:'visible'});
+    assert.ok(sentChatMessages.some(message=>message.includes('Kontrolle übernommen')),'Stream-Chef-Ankündigung wird nach aktivierter Option versendet');
+    const chiefWidget=await(await fetch(`${base}/widgets/api/pet?token=${petToken}`)).json();
+    assert.equal(chiefWidget.prank.kind,'chief','Stream-Chef erscheint im vorhandenen Elio-Overlay');
     await screenshot('acy-chaos-pranks-active-desktop');
     await page.getByRole('button',{name:'Laufenden Prank beenden'}).click();
     await page.locator('#prank-result').getByText('Prank beendet.').waitFor({state:'visible'});
+    const startPrank=async(kind:'accusation'|'vault-alarm'|'oracle',label:string)=>{
+      await page.locator(`[data-prank-enabled="${kind}"]`).check();
+      await page.waitForFunction(async(key)=>Boolean((await(await fetch('/dashboard/api/pranks')).json()).settings.enabled[key]),kind);
+      await page.locator(`[data-prank-announce="${kind}"]`).check();
+      await page.waitForFunction(async(key)=>Boolean((await(await fetch('/dashboard/api/pranks')).json()).settings.announce[key]),kind);
+      if(kind==='accusation'){
+        await page.locator('#prank-target').fill('testviewer');
+        await page.locator('#prank-search').click();
+        await page.getByText('Konto geprüft: Testviewer').waitFor({state:'visible'});
+      }
+      const priorMessages=sentChatMessages.length;
+      await page.locator(`[data-prank-start="${kind}"]`).click();
+      await page.locator('#prank-result').getByText(label).waitFor({state:'visible'});
+      const state=await page.evaluate(async()=>await(await fetch('/dashboard/api/pranks')).json());
+      assert.equal(state.active.kind,kind,`${kind} API-Aktion persistiert den aktiven Zustand`);
+      assert.equal(sentChatMessages.length>priorMessages,true,`${kind} versendet die ausdrücklich aktivierte Chat-Ankündigung`);
+    };
+    await startPrank('accusation','Elio-Verdacht gestartet.');
+    assert.match(communityFeatures.moderatorPranks.handle({eventId:'defend',broadcasterUserId:'channel-1',senderUserId:'123456',senderLogin:'testviewer',senderDisplayName:'Testviewer',message:'!unschuldig',sentAt:Date.now()},'unschuldig',[],Date.now())||'',/Freispruch|unschuldig|Fall geschlossen/u);
+    await page.waitForFunction(async()=>!(await(await fetch('/dashboard/api/pranks')).json()).active,'', {timeout:3000});
+    await startPrank('vault-alarm','Tresor-Fehlalarm gestartet.');
+    const petWidget=await fetch(`${base}/widgets/api/pet?token=${petToken}`);
+    assert.equal(petWidget.status,200,'Elio-Overlay-Endpunkt bleibt während Fehlalarm erreichbar');
+    assert.equal((await petWidget.json()).prank.kind,'vault-alarm','Fehlalarm erscheint im bestehenden Elio-Overlay');
+    await page.getByRole('button',{name:'Laufenden Prank beenden'}).click();
+    await page.locator('#prank-result').getByText('Prank beendet.').waitFor({state:'visible'});
+    await startPrank('oracle','Orakelphase gestartet.');
+    assert.match(communityFeatures.moderatorPranks.handle({eventId:'oracle',broadcasterUserId:'channel-1',senderUserId:'viewer-42',senderLogin:'testviewer',senderDisplayName:'Testviewer',message:'!orakel Frage',sentAt:Date.now()},'orakel',['Frage'],Date.now())||'',/【🔮 ORAKEL】/u);
+    await page.getByRole('button',{name:'Laufenden Prank beenden'}).click();
+    await page.locator('#prank-result').getByText('Prank beendet.').waitFor({state:'visible'});
+    assert.deepEqual(pageErrors,[],'Browser-Klickpfade erzeugen keine JavaScript-Fehler');
+    assert.equal(apiResponses.some(entry=>entry.startsWith('409')&&entry.endsWith('/dashboard/api/pranks')),false,'keine Prank-Aktion scheitert still durch Konflikt');
     await navigate('community');
     await page.locator('[data-community-target="fairness"]').click();
     await assertSubpage('[data-community-page="fairness"]',true);
@@ -355,11 +432,15 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     await streamerPage.route('**/dashboard/api/minigames', (route) => route.fulfill({ json: { settings: { enabled: true }, state: { imposter: { phase: 'registration', players: [{}, {}], endsAt: Date.now() + 60_000 }, detective: null } } }));
     await streamerPage.goto(`${base}/streamer`, { waitUntil: 'domcontentloaded', timeout: 10000 });
     assert.equal(await streamerPage.getByRole('heading', { name: /Streamer-Steuerung/u }).isVisible(), true);
+    await streamerPage.getByRole('heading',{name:'ACY Live Test'}).waitFor({state:'visible'});
+    assert.equal(await streamerPage.locator('#live-viewers').innerText(),'42','Live-Control zeigt die vom Server gelieferten Zuschauerzahlen');
+    assert.match(await streamerPage.locator('#chat-receive').innerText(),/Bestätigt/u);
+    assert.match(await streamerPage.locator('#chat-send').innerText(),/Von Twitch angenommen/u);
     assert.equal(await streamerPage.locator('form, input, select, textarea').count(), 0, 'Streamer-Modus bleibt eine Bedienoberfläche ohne Konfigurationsformulare');
     await streamerPage.getByText(/Anmeldung läuft/u).first().waitFor({ state: 'visible' });
     assert.equal(await streamerPage.locator('#active button').count(), 0, 'Statusbereich zeigt laufende Spiele ohne doppelte Steuerknöpfe');
     assert.equal(await streamerPage.locator('#games').getByRole('button', { name: 'Rollen verteilen' }).isVisible(), true, 'nächste Imposter-Aktion ist an einer einzigen Stelle verfügbar');
-    assert.match(await streamerPage.locator('#stream-status').innerText(), /Twitch-Chat:/u, 'Verbindungsstatus benennt den geprüften Bereich');
+    assert.match(await streamerPage.locator('#stream-status').innerText(), /Zuletzt geprüft/u, 'Twitch-Live-Status zeigt den Prüfzeitpunkt');
     for (const [label, width, height] of [['desktop', 1440, 1000], ['tablet', 768, 1024], ['iphone', 390, 844]] as const) {
       await streamerPage.setViewportSize({ width, height });
       const size = await streamerPage.evaluate(() => ({ viewport: document.documentElement.clientWidth, content: document.documentElement.scrollWidth }));
@@ -418,10 +499,10 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
   }
 });
 
-test('Chaos-Wheel-OBS-Widget zeigt das festgelegte gewichtete Ergebnis und landet exakt am Zeiger',async()=>{
+test('Chaos-Wheel-OBS-Widget zeigt den serverseitig ausgelosten Zuschauer-Gewinner und landet exakt am Zeiger',async()=>{
   const env={...process.env},directory=fs.mkdtempSync(path.join(os.tmpdir(),'acy-wheel-browser-')),store=new FeatureStore(path.join(directory,'state.sqlite')),port=await freePort();
   process.env.TWITCH_CLIENT_ID='test-client';process.env.TWITCH_CLIENT_SECRET='test-secret';process.env.DASHBOARD_REDIRECT_URI=`http://127.0.0.1:${port}/dashboard/oauth/callback`;process.env.DASHBOARD_ADMIN_IDS='admin-id';process.env.DASHBOARD_HOST='127.0.0.1';process.env.DASHBOARD_PORT=String(port);
-  const base=`http://127.0.0.1:${port}`,arcade=new CommunityArcade(store,'admin-id',()=>0);arcade.updateSettings({...arcade.settings(),wheelEnabled:true,petEnabled:true,dropsEnabled:true});
+  const base=`http://127.0.0.1:${port}`,arcade=new CommunityArcade(store,'admin-id',()=>0);arcade.updateSettings({...arcade.settings(),wheelEnabled:true,viewerRewardsEnabled:true});arcade.setCurrentStreamId('browser-test-stream');store.recordRecentChatActivity('viewer-id','PurrfectViewer','purrfectviewer',Date.now());arcade.configureWheelField('wheel:viewer-xp',true,1);arcade.configureWheelField('wheel:honor',true,1000);
   const fetchImpl:typeof fetch=async input=>String(input).endsWith('/oauth2/token')?Response.json({access_token:'ephemeral-wheel-token'}):String(input).endsWith('/oauth2/validate')?Response.json({client_id:'test-client',user_id:'admin-id'}):String(input).endsWith('/helix/users')?Response.json({data:[{id:'admin-id',login:'admin',display_name:'Admin'}]}):Response.error();
   const dashboard=new DashboardServer(store,()=>({twitchConnected:true,channel:'acyjannik',startedAt:Date.now()}),logger,fetchImpl,undefined,undefined,undefined,undefined,arcade);
   let browser:Awaited<ReturnType<typeof chromium.launch>>|undefined;
@@ -431,13 +512,13 @@ test('Chaos-Wheel-OBS-Widget zeigt das festgelegte gewichtete Ergebnis und lande
     browser=await chromium.launch({headless:true});const page=await browser.newPage({viewport:{width:900,height:900}});const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
     await page.goto(`${base}/widgets/wheel?token=${rawToken}`,{waitUntil:'domcontentloaded'});
     await page.waitForFunction(()=>document.querySelector('#root')?.dataset.ready==='true');
-    arcade.spinAdmin('admin-id',Date.now());
+    assert.match(arcade.spinAdmin('admin-id',Date.now()),/@PurrfectViewer gewinnt 25 XP/u);
     await page.waitForFunction(()=>document.querySelector('#root')?.dataset.spinId!==''&&document.querySelector('#root')?.dataset.spinId!==undefined,{timeout:5000});
     await page.waitForFunction(()=>document.querySelector('#rotor')?.getAnimations().length===1,{timeout:3000});
     const timing=await page.locator('#rotor').evaluate(node=>node.getAnimations()[0]?.effect?.getTiming());assert.equal(timing?.duration,6000);assert.match(String(timing?.easing),/cubic-bezier/u);
-    assert.ok(await page.locator('#rotor .segment').count()>=2);assert.equal(await page.locator('#winner').innerText(),(await (await fetch(`${base}/widgets/api/wheel?token=${rawToken}`)).json() as {wheel:{title:string}}).wheel.title);
+    assert.ok(await page.locator('#rotor .segment').count()>=2);assert.match(await page.locator('#winner').innerText(),/@PurrfectViewer.*25 XP/u);const publicWheel=(await (await fetch(`${base}/widgets/api/wheel?token=${rawToken}`)).json() as {wheel:{winnerName:string;resultLabel:string;rewardStatus:string}}).wheel;assert.equal(publicWheel.winnerName,'PurrfectViewer');assert.equal(publicWheel.resultLabel,'@PurrfectViewer · 25 XP');assert.equal(publicWheel.rewardStatus,'granted');assert.equal(await page.locator('#winner').innerText(),publicWheel.resultLabel);
     await page.waitForFunction(()=>document.querySelector('#root')?.classList.contains('result')===true,{timeout:7000});
-    const screenshotDir=path.join(process.cwd(),'docs','verification');fs.mkdirSync(screenshotDir,{recursive:true});await page.screenshot({path:path.join(screenshotDir,'chaos-wheel-2.png'),fullPage:true});
+    const screenshotDir=path.join(process.cwd(),'docs','verification');fs.mkdirSync(screenshotDir,{recursive:true});await page.screenshot({path:path.join(screenshotDir,'chaos-wheel-3.png'),fullPage:true});
     const landing=await page.locator('#wheel').evaluate(node=>{const svg=node as SVGSVGElement,angle=Number(svg.dataset.selectedCenter),transform=getComputedStyle(document.querySelector('#rotor')!).transform,m=new DOMMatrixReadOnly(transform),rotation=((Math.atan2(m.b,m.a)*180/Math.PI)%360+360)%360;return {angle,rotation,error:Math.abs((((angle+rotation+90)%360)+360)%360)}});
     assert.ok(landing.error<0.2,`Gewinnersegment landet am festen Zeiger: ${JSON.stringify(landing)}`);assert.deepEqual(errors,[]);
     const mobile=await browser.newPage({viewport:{width:390,height:844},reducedMotion:'reduce'});await mobile.goto(`${base}/widgets/wheel?token=${rawToken}`,{waitUntil:'domcontentloaded'});await mobile.waitForSelector('#root:not([hidden])');

@@ -12,6 +12,8 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     redirectUri: 'http://127.0.0.1:3000/oauth/callback',
     redemptionRedirectUri: 'http://127.0.0.1:3000/oauth/redemptions/callback',
     redemptionTokenFile: 'data/oauth-tokens.json.broadcaster',
+    vipRedirectUri: 'http://127.0.0.1:3000/oauth/vips/callback',
+    vipTokenFile: 'data/oauth-tokens.json.vip',
     oauthHost: '127.0.0.1',
     oauthPort: 3000,
     oauthStateTtlMs: 600_000,

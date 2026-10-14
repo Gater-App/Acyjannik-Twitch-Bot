@@ -15,6 +15,7 @@ export interface HelpAvailability {
   detective: boolean;
   vault?: boolean;
   quests: boolean;
+  ideas?: boolean;
   spark: boolean;
   eightBall: boolean;
   rps: boolean;
@@ -24,7 +25,7 @@ export interface HelpAvailability {
 
 export const DEFAULT_HELP_AVAILABILITY: HelpAvailability = {
   xp:true, events:false, pet:false, drops:false, wheel:false, imposter:false, detective:false,
-  quests:false, spark:false, eightBall:false, rps:false, guess:false, duels:false,
+  quests:false, ideas:false, spark:false, eightBall:false, rps:false, guess:false, duels:false,
 };
 
 const MOD_TOPICS = '🛡️ Mod-Hilfe: !help mods spiele · !help mods community · !help mods events · Dashboard: twitch.gater-app.de/dashboard (nur Chaos & Pranks).';
@@ -46,8 +47,8 @@ export function helpReply(args: string[], message: ChatMessage, availability: He
   const topic = (args[0] || '').toLocaleLowerCase('de-DE');
   if (topic === 'mods' || topic === 'admin') {
     const broadcaster = message.senderUserId === message.broadcasterUserId;
-    if (!broadcaster && message.isModerator !== true) return '⛔ Diese Hilfe ist nur für Jannick und Twitch-Moderatoren.';
-    if (topic === 'admin' && broadcaster) return '🔒 Nur Jannick: !help mods · Dashboard: twitch.gater-app.de/dashboard.';
+    if (!broadcaster && message.isModerator !== true) return '⛔ Diese Hilfe ist nur für Jannik und Twitch-Moderatoren.';
+    if (topic === 'admin' && broadcaster) return '🔒 Nur Jannik: !help mods · Dashboard: twitch.gater-app.de/dashboard.';
     const section = args[1];
     return section ? MOD_SECTIONS[section.toLowerCase()] || MOD_TOPICS : MOD_TOPICS;
   }
@@ -61,25 +62,25 @@ export function helpReply(args: string[], message: ChatMessage, availability: He
     case 'event-easter': return seasonalHelp('easter',availability);
     case 'events': return availability.events && availability.activeEventName && availability.activeEventCommand
       ? `✨ ${availability.activeEventName} läuft! Teilnahme mit !${availability.activeEventCommand}; Punkte und Rang: !eventscore oder !eventtop.`
-      : '✨ Gerade läuft kein Saison-Event. Wenn Jannick Halloween, Weihnachten oder Ostern startet, erscheint hier der passende Mitmach-Befehl.';
+      : '✨ Gerade läuft kein Saison-Event. Wenn Jannik Halloween, Weihnachten oder Ostern startet, erscheint hier der passende Mitmach-Befehl.';
     case 'xp': return availability.xp ? '🏆 Spiele geben XP und Level-Fortschritt. Schreibe !level für deinen Stand oder !rank für deinen Rang.' : '🏆 XP und Level sind derzeit deaktiviert.';
     case 'quests': return availability.quests ? '📜 Schlage mit !quest DEINE IDEE eine Aufgabe vor. Nach Freigabe können alle bei der Quest mitmachen.' : '📜 Community-Quests sind derzeit deaktiviert.';
-    case 'ideen': return availability.spark ? '✨ Der Bot erkennt häufige Gaming-Themen. Mit !spark siehst du den Status; Vorschläge werden erst nach Freigabe gestartet.' : '✨ Chat-Ideen sind derzeit deaktiviert.';
-    case 'imposter': return availability.imposter ? '🎭 Freiwilliges Ratespiel: Schreibe !joinimposter bei offener Anmeldung. Deine geheime Rolle siehst du nach Twitch-Anmeldung; später stimmt ihr mit !sus @Name ab.' : '🎭 Chat-Imposter ist derzeit deaktiviert.';
+    case 'ideen': return `${availability.ideas===false?'💡 Der Community-Ideenkasten ist derzeit pausiert.':'💡 Reiche allgemeine Vorschläge für Streams, Events und Community-Aktionen mit !idee DEIN VORSCHLAG ein; Status: !idee status ID. !ideen öffnet den Ideenkasten: https://twitch.gater-app.de/community/ideen.'} ${availability.spark?'✨ Chat-Ideen erkennt zusätzlich wiederkehrende Themen; Vorschläge starten erst nach Freigabe.':''}`.trim();
+    case 'imposter': return availability.imposter ? '🎭 Freiwilliges Ratespiel: Schreibe !joinimposter bei offener Anmeldung. Twitch-VIPs dürfen mit !startimposter eine Runde starten; schließen und abbrechen können Jannik oder Mods. Deine geheime Rolle siehst du nach Twitch-Anmeldung; später stimmt ihr mit !sus @Name ab.' : '🎭 Chat-Imposter ist derzeit deaktiviert.';
     case 'detektiv': return availability.detective ? '🕵️ Errate den Absender eines freigegebenen Zitats mit !wer @Name. Eigene Zitate reichst du einzeln mit !savequote TEXT ein.' : '🕵️ Chat-Detektiv ist derzeit deaktiviert.';
     case 'pet': return availability.pet ? '🐱 Elio ist die Community-Katze: !pet zeigt den Zustand, !feed gibt Katzenfutter, !play startet Spielangel- oder Wollknäuel-Spiel, !petcare kümmert sich um ihn und !petstats zeigt Werte.' : '🐱 Elio macht Pause und ist derzeit nicht verfügbar.';
-    case 'drop': return availability.drops ? '🎁 Jannick startet eine Belohnungsrunde. Während des Drops schreibe !claim; das Ergebnis wird automatisch bekannt gegeben.' : '🎁 Mystery Drops sind derzeit deaktiviert.';
-    case 'gluecksrad': return availability.wheel ? '🎡 Jannick dreht das Glücksrad. Das Ergebnis startet automatisch; bei einer Challenge spielt Jannick die Aufgabe. Status: !wheel.' : '🎡 Das Chaos Wheel ist derzeit deaktiviert.';
+    case 'drop': return availability.drops ? '🎁 Jannik startet eine Belohnungsrunde. Während des Drops schreibe !claim; das Ergebnis wird automatisch bekannt gegeben.' : '🎁 Mystery Drops sind derzeit deaktiviert.';
+    case 'gluecksrad': return availability.wheel ? '🎡 Jannik dreht das Glücksrad. Das Ergebnis startet automatisch; bei einer Challenge spielt Jannik die Aufgabe. Status: !wheel.' : '🎡 Das Chaos Wheel ist derzeit deaktiviert.';
     case 'tresor': return availability.vault ? '🔐 Knackt gemeinsam den dreistelligen Code mit !code 427. Der geheime Hinweis zu deinem letzten Tipp erscheint angemeldet im Community-Portal: https://twitch.gater-app.de/community' : '🔐 Der Community-Tresor ist derzeit deaktiviert.';
-    case 'community-portal': return '💜 XP, Elio 🐱, Quest-Ideen und Community-Spiele: https://twitch.gater-app.de/community';
+    case 'community-portal': return '💜 XP, Elio 🐱, Community-Ideen und Spiele: https://twitch.gater-app.de/community';
     default: return '🎮 !help spiele | 🎃 !help events | 🏆 !help xp | 📜 !help quests | 📖 Alle Befehle: https://twitch.gater-app.de/hilfe | 💜 Portal: https://twitch.gater-app.de/community';
   }
 }
 
 function gameHelp(a: HelpAvailability): string {
   const games = [
-    a.eightBall && '!8ball FRAGE (Orakel)', a.rps && '!rps stein (Schere-Stein-Papier)',
-    a.guess && '!guess ZAHL (Zahlenraten)', a.duels && '!duel @Name (Duell)', a.vault && '!code 427 (Community-Tresor)',
+    a.eightBall && '!8ball FRAGE (40 % Ja · 40 % Nein · 20 % Vielleicht)', a.rps && '!rps stein (Schere-Stein-Papier)',
+    a.guess && '!startguess (Jannik/Mods/VIPs) · !guess ZAHL (mitraten)', a.duels && '!duel @Name (Duell)', a.vault && '!code 427 (Community-Tresor)',
   ].filter(Boolean);
   return games.length ? `🎮 Weitere Chatspiele: ${games.join(' · ')}.` : '🎮 Weitere Chatspiele sind derzeit deaktiviert. Für Community-Runden: !help imposter oder !help detective.';
 }
@@ -89,5 +90,5 @@ export const HELP_TOPICS = ['start','spiele','events','xp','quests','ideen','imp
 function seasonalHelp(id:string,availability:HelpAvailability):string {
   const event=availability.seasonalEvents?.find(item=>item.id===id);
   const name=event?.name||(id==='halloween'?'Halloween':id==='christmas'?'Weihnachten':'Ostern');
-  return event?.active?`✨ ${name} läuft! Schreibe !${event.command}, um saisonale Punkte zu sammeln.`:`✨ ${name} ist gerade nicht aktiv. Sobald Jannick das Event startet, wird der Mitmach-Befehl verfügbar.`;
+  return event?.active?`✨ ${name} läuft! Schreibe !${event.command}, um saisonale Punkte zu sammeln.`:`✨ ${name} ist gerade nicht aktiv. Sobald Jannik das Event startet, wird der Mitmach-Befehl verfügbar.`;
 }

@@ -35,6 +35,8 @@ export interface CustomCommand {
 export type QuestStatus = 'pending' | 'approved' | 'active' | 'completed' | 'failed' | 'rejected' | 'canceled';
 export type QuestSource = 'chat' | 'channel_points' | 'dashboard';
 export type PollStatus = 'active' | 'ended' | 'canceled';
+export type IdeaStatus = 'pending' | 'reviewing' | 'approved' | 'voting' | 'accepted' | 'planned' | 'implemented' | 'rejected' | 'archived';
+export interface CommunityIdea { id:string; submitterUserId:string; displayName:string; text:string; category:string|null; status:IdeaStatus; submittedAt:number; updatedAt:number; moderationComment:string|null; votes:number; voted:boolean; }
 export type WidgetType = 'quest' | 'poll' | 'imposter' | 'detective' | 'pet' | 'drop' | 'wheel' | 'vault';
 export type SparkStatus = 'detected' | 'pending_approval' | 'approved' | 'rejected' | 'expired' | 'executed' | 'canceled';
 export interface SparkProposal {
@@ -67,7 +69,7 @@ export interface ChannelRedemptionRecord {
   status: ChannelRedemptionStatus; questId: string | null; questStatus: QuestStatus | null; lastError: string | null; updatedAt: number;
 }
 
-export interface PollOptionResult { label: string; votes: number; percent: number; questId?: string; }
+export interface PollOptionResult { label: string; votes: number; percent: number; questId?: string; ideaId?: string; }
 export interface PollRecord {
   id: string;
   type: 'chat' | 'quest';
@@ -93,7 +95,7 @@ export interface QuestSubmission {
   game?: string | null; sourceEventId?: string | null; redemptionId?: string | null;
 }
 
-export interface PollOptionInput { label: string; questId?: string; }
+export interface PollOptionInput { label: string; questId?: string; ideaId?: string; }
 export interface PollCreateInput {
   id?: string; type: 'chat' | 'quest'; question: string; options: PollOptionInput[];
   durationMs: number; allowVoteChange: boolean; createdBy: string; now: number;
@@ -140,7 +142,7 @@ const RESERVED_COMMANDS = new Set([
   'quest', 'quests', 'myquest', 'questhelp', 'questqueue', 'approvequest', 'rejectquest', 'skipquest', 'poll', 'vote', 'pollresults',
   'spark','sparks','sparkhelp','sparkapprove','sparkreject','sparkpause','sparkresume','sparktopics',
   'imposter','imposterstatus','joinimposter','leaveimposter','startimposter','closeimposter','cancelimposter','sus','community',
-  'quoteoptin','quoteoptout','savequote','myquotes','deletequote','detektiv','startdetektiv','wer','quote','skipdetektiv','enddetektiv',
+  'idee','ideen','quoteoptin','quoteoptout','savequote','myquotes','deletequote','detektiv','startdetektiv','wer','quote','skipdetektiv','enddetektiv',
   'pet','feed','play','petcare','petstats','petname','pethelp','petevolution','setpetname','petpause','petresume',
   'claim','drop','dropstats','drops','startdrop','canceldrop','dropconfig','wheel','spin','wheelstatus','startwheel','cancelwheel','wheelpause','wheelresume',
   'code','orakel','unschuldig','prankoptout','prankoptin',
@@ -738,6 +740,143 @@ export class FeatureStore {
         this.db.prepare('INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (26, ?)').run(Date.now());
       })();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 27) {
+      if (currentVersion > 0) this.backupBeforeMigration(27);
+      this.db.transaction(() => {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS haunted_house_seasons (
+            season_id TEXT PRIMARY KEY, season_year INTEGER NOT NULL, started_at INTEGER NOT NULL,
+            last_contribution_at INTEGER NOT NULL
+          );
+          CREATE TABLE IF NOT EXISTS haunted_house_contributions (
+            event_id TEXT PRIMARY KEY, season_id TEXT NOT NULL, user_id TEXT NOT NULL, contributed_at INTEGER NOT NULL,
+            FOREIGN KEY(season_id) REFERENCES haunted_house_seasons(season_id)
+          );
+          CREATE INDEX IF NOT EXISTS haunted_house_contributions_season ON haunted_house_contributions(season_id,contributed_at);
+          CREATE INDEX IF NOT EXISTS haunted_house_contributions_user ON haunted_house_contributions(user_id,contributed_at);
+          INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (27, unixepoch()*1000);
+        `);
+      })();
+    }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 28) {
+      if (currentVersion > 0) this.backupBeforeMigration(28);
+      this.db.transaction(() => {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS community_pet_events (
+            id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('feed','play','care','ambient','rare','community')),
+            message TEXT NOT NULL, rare INTEGER NOT NULL DEFAULT 0 CHECK(rare IN (0,1)), created_at INTEGER NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS community_pet_events_created ON community_pet_events(created_at DESC);
+          INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (28, unixepoch()*1000);
+        `);
+      })();
+    }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 29) {
+      if (currentVersion > 0) this.backupBeforeMigration(29);
+      this.db.transaction(() => {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS community_memories (
+            id TEXT PRIMARY KEY, submitter_user_id TEXT NOT NULL, submitter_name TEXT NOT NULL,
+            body TEXT NOT NULL CHECK(length(body) BETWEEN 10 AND 500), clip_url TEXT,
+            category TEXT NOT NULL CHECK(category IN ('gaming','community','seasonal','funny','milestone')),
+            event_name TEXT, status TEXT NOT NULL CHECK(status IN ('pending','published','rejected','withdrawn')),
+            featured INTEGER NOT NULL DEFAULT 0 CHECK(featured IN (0,1)),
+            submitted_at INTEGER NOT NULL, published_at INTEGER, moderated_by TEXT, moderated_at INTEGER
+          );
+          CREATE INDEX IF NOT EXISTS community_memories_timeline ON community_memories(status,published_at DESC);
+          CREATE INDEX IF NOT EXISTS community_memories_submitter ON community_memories(submitter_user_id,submitted_at DESC);
+          CREATE TABLE IF NOT EXISTS community_memory_reactions (
+            memory_id TEXT NOT NULL REFERENCES community_memories(id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(memory_id,user_id)
+          );
+          CREATE INDEX IF NOT EXISTS community_memory_reactions_memory ON community_memory_reactions(memory_id);
+          INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (29, unixepoch()*1000);
+        `);
+      })();
+    }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 30) {
+      if (currentVersion > 0) this.backupBeforeMigration(30);
+      this.db.transaction(() => {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS community_ideas (
+            id TEXT PRIMARY KEY, submitter_user_id TEXT NOT NULL, display_name TEXT NOT NULL,
+            idea_text TEXT NOT NULL CHECK(length(idea_text) BETWEEN 8 AND 240), normalized_text TEXT NOT NULL,
+            category TEXT, status TEXT NOT NULL CHECK(status IN ('pending','reviewing','approved','voting','accepted','planned','implemented','rejected','archived')),
+            submitted_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, moderated_by TEXT, moderation_comment TEXT,
+            UNIQUE(submitter_user_id,normalized_text,status)
+          );
+          CREATE INDEX IF NOT EXISTS community_ideas_public ON community_ideas(status,updated_at DESC);
+          CREATE INDEX IF NOT EXISTS community_ideas_submitter ON community_ideas(submitter_user_id,submitted_at DESC);
+          CREATE TABLE IF NOT EXISTS community_idea_votes (
+            idea_id TEXT NOT NULL REFERENCES community_ideas(id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(idea_id,user_id)
+          );
+          CREATE INDEX IF NOT EXISTS community_idea_votes_idea ON community_idea_votes(idea_id);
+          INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (30, unixepoch()*1000);
+        `);
+      })();
+    }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 31) {
+      if (currentVersion > 0) this.backupBeforeMigration(31);
+      this.db.transaction(() => {
+        const spinColumns = new Set((this.db.prepare('PRAGMA table_info(chaos_wheel_spins)').all() as Array<{name:string}>).map(column=>column.name));
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS recent_chat_activity (
+            user_id TEXT PRIMARY KEY, display_name TEXT NOT NULL, login TEXT NOT NULL, last_activity_at INTEGER NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS recent_chat_activity_time ON recent_chat_activity(last_activity_at DESC);
+        `);
+        if (!spinColumns.has('winner_user_id')) this.db.exec('ALTER TABLE chaos_wheel_spins ADD COLUMN winner_user_id TEXT');
+        if (!spinColumns.has('winner_name')) this.db.exec('ALTER TABLE chaos_wheel_spins ADD COLUMN winner_name TEXT');
+        if (!spinColumns.has('result_label')) this.db.exec('ALTER TABLE chaos_wheel_spins ADD COLUMN result_label TEXT');
+        if (!spinColumns.has('reward_status')) this.db.exec("ALTER TABLE chaos_wheel_spins ADD COLUMN reward_status TEXT NOT NULL DEFAULT 'none'");
+        if (!spinColumns.has('stream_id')) this.db.exec('ALTER TABLE chaos_wheel_spins ADD COLUMN stream_id TEXT');
+        // New fields start disabled, preserving all existing configured weights and behavior.
+        const insert=this.db.prepare("INSERT OR IGNORE INTO chaos_wheel_challenges(id,title,weight,active,action_type,wheel_key) VALUES(?,?,1,0,'manual_challenge',?)");
+        for (const [id,title,key] of [
+          ['wheel:viewer-xp','🎁 Glückspilz · 25 XP','viewer_xp'],
+          ['wheel:viewer-drop','💜 Persönlicher Mystery Drop','viewer_mystery_drop'],
+          ['wheel:honor','👑 Ehrenmoment','viewer_honor'],
+          ['wheel:community-bonus','✨ Community-Bonus','community_bonus'],
+          ['wheel:quest-luck','🎯 Quest-Glück','quest_luck'],
+          ['wheel:chaos-title','😈 Chaos-Magnet','chaos_title'],
+          ['wheel:extra-spin','🎡 Noch mal drehen','extra_spin'],
+        ]) insert.run(id,title,key);
+        this.db.exec('INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (31, unixepoch()*1000);');
+      })();
+    }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 32) {
+      if (currentVersion > 0) this.backupBeforeMigration(32);
+      this.db.transaction(() => this.db.exec(`
+        CREATE TABLE IF NOT EXISTS vip_chaos_requests (
+          id TEXT PRIMARY KEY, stream_id TEXT NOT NULL, user_id TEXT NOT NULL, display_name TEXT NOT NULL,
+          action TEXT NOT NULL CHECK(action IN ('elio-crown','oracle','vault-alarm')), status TEXT NOT NULL
+            CHECK(status IN ('pending','processing','approved','rejected','failed')),
+          created_at INTEGER NOT NULL, decided_by TEXT, decided_at INTEGER, executed_at INTEGER,
+          UNIQUE(user_id,stream_id)
+        );
+        CREATE INDEX IF NOT EXISTS vip_chaos_status_created ON vip_chaos_requests(status,created_at);
+        CREATE TABLE IF NOT EXISTS vip_achievements (
+          user_id TEXT NOT NULL, achievement_id TEXT NOT NULL, earned_at INTEGER NOT NULL,
+          PRIMARY KEY(user_id,achievement_id)
+        );
+        CREATE TABLE IF NOT EXISTS vip_challenges (
+          quest_id TEXT PRIMARY KEY, submitter_user_id TEXT NOT NULL, created_at INTEGER NOT NULL,
+          featured_until INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS vip_challenges_submitter_created ON vip_challenges(submitter_user_id,created_at);
+        CREATE INDEX IF NOT EXISTS vip_challenges_featured ON vip_challenges(featured_until);
+        CREATE TABLE IF NOT EXISTS vip_pet_interactions (event_id TEXT PRIMARY KEY,user_id TEXT NOT NULL,created_at INTEGER NOT NULL);
+        CREATE INDEX IF NOT EXISTS vip_pet_interactions_user ON vip_pet_interactions(user_id,created_at);
+        INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (32, unixepoch()*1000);
+      `))();
+    }
   }
 
   private backupBeforeMigration(version: number): void {
@@ -786,6 +925,130 @@ export class FeatureStore {
   }
 
   deleteViewerSession(sessionHash:string):void { this.db.prepare('DELETE FROM community_viewer_sessions WHERE session_hash=?').run(sessionHash); }
+
+  submitCommunityMemory(input:{id:string;userId:string;displayName:string;body:string;clipUrl:string|null;category:string;eventName:string|null;now:number}):boolean {
+    return this.db.transaction(()=>{
+      const recent=this.db.prepare("SELECT 1 FROM community_memories WHERE submitter_user_id=? AND status IN ('pending','published') AND submitted_at>? LIMIT 1")
+        .get(input.userId,input.now-10*60_000);
+      const open=this.db.prepare("SELECT COUNT(*) n FROM community_memories WHERE submitter_user_id=? AND status='pending'").get(input.userId) as {n:number};
+      if(recent||open.n>=3)return false;
+      return this.db.prepare(`INSERT INTO community_memories(id,submitter_user_id,submitter_name,body,clip_url,category,event_name,status,submitted_at)
+        VALUES(@id,@userId,@displayName,@body,@clipUrl,@category,@eventName,'pending',@now)`).run(input).changes===1;
+    })();
+  }
+
+  communityMemories(filter:{status?:string;category?:string;event?:string;from?:number;to?:number;featured?:boolean;userId?:string;limit?:number}={}):Array<Record<string,unknown>> {
+    const clauses:string[]=[];const args:unknown[]=[];
+    if(filter.status){clauses.push('m.status=?');args.push(filter.status)}
+    if(filter.category){clauses.push('m.category=?');args.push(filter.category)}
+    if(filter.event){clauses.push('m.event_name=?');args.push(filter.event)}
+    if(filter.from!==undefined){clauses.push('m.published_at>=?');args.push(filter.from)}
+    if(filter.to!==undefined){clauses.push('m.published_at<?');args.push(filter.to)}
+    if(filter.featured){clauses.push('m.featured=1')}
+    const where=clauses.length?`WHERE ${clauses.join(' AND ')}`:'';
+    const rows=this.db.prepare(`SELECT m.id,m.body,m.clip_url,m.category,m.event_name,m.status,m.featured,m.submitted_at,m.published_at,m.moderated_at,m.submitter_name,
+      COALESCE(r.reactions,0) reactions,${filter.userId?'EXISTS(SELECT 1 FROM community_memory_reactions mine WHERE mine.memory_id=m.id AND mine.user_id=?)':'0'} reacted FROM community_memories m LEFT JOIN
+      (SELECT memory_id,COUNT(*) reactions FROM community_memory_reactions GROUP BY memory_id) r ON r.memory_id=m.id
+      ${where} ORDER BY m.featured DESC,COALESCE(m.published_at,m.submitted_at) DESC LIMIT ?`).all(...(filter.userId?[filter.userId]:[]),...args,Math.max(1,Math.min(100,filter.limit??50))) as Array<Record<string,unknown>>;
+    return rows;
+  }
+
+  communityMemorySubmissions(userId:string,limit=20):Array<Record<string,unknown>> {
+    return this.db.prepare(`SELECT id,body,clip_url,category,event_name,status,submitted_at,published_at,featured FROM community_memories
+      WHERE submitter_user_id=? ORDER BY submitted_at DESC LIMIT ?`).all(userId,Math.max(1,Math.min(50,limit))) as Array<Record<string,unknown>>;
+  }
+
+  moderateCommunityMemory(id:string,action:'publish'|'reject'|'feature'|'unfeature',moderatorId:string,now:number):boolean {
+    if(action==='publish')return this.db.prepare("UPDATE community_memories SET status='published',published_at=COALESCE(published_at,?),moderated_by=?,moderated_at=? WHERE id=? AND status='pending'").run(now,moderatorId,now,id).changes===1;
+    if(action==='reject')return this.db.prepare("UPDATE community_memories SET status='rejected',featured=0,moderated_by=?,moderated_at=? WHERE id=? AND status='pending'").run(moderatorId,now,id).changes===1;
+    if(action==='feature')return this.db.prepare("UPDATE community_memories SET featured=1,moderated_by=?,moderated_at=? WHERE id=? AND status='published'").run(moderatorId,now,id).changes===1;
+    return this.db.prepare("UPDATE community_memories SET featured=0,moderated_by=?,moderated_at=? WHERE id=? AND status='published'").run(moderatorId,now,id).changes===1;
+  }
+
+  reactToCommunityMemory(memoryId:string,userId:string,now:number):boolean {
+    return this.db.prepare("INSERT OR IGNORE INTO community_memory_reactions(memory_id,user_id,created_at) SELECT id,?,? FROM community_memories WHERE id=? AND status='published'")
+      .run(userId,now,memoryId).changes===1;
+  }
+
+  deleteCommunityMemory(id:string,userId:string):boolean {
+    return this.db.prepare('DELETE FROM community_memories WHERE id=? AND submitter_user_id=?')
+      .run(id,userId).changes===1;
+  }
+
+  submitCommunityIdea(input:{id:string;userId:string;displayName:string;text:string;now:number;cooldownMs?:number}):{ok:true;idea:CommunityIdea}|{ok:false;reason:'duplicate'|'cooldown'|'limit'} {
+    const normalized=input.text.normalize('NFKC').toLocaleLowerCase('de').replace(/[^\p{L}\p{N}]+/gu,' ').trim();
+    return this.db.transaction(()=>{
+      const same=this.db.prepare("SELECT 1 FROM community_ideas WHERE submitter_user_id=? AND normalized_text=? AND status NOT IN ('rejected','archived') AND submitted_at>? LIMIT 1").get(input.userId,normalized,input.now-90*24*60*60_000);
+      if(same)return {ok:false as const,reason:'duplicate' as const};
+      const open=this.db.prepare("SELECT COUNT(*) AS n FROM community_ideas WHERE submitter_user_id=? AND status IN ('pending','reviewing','approved','voting')").get(input.userId) as {n:number};
+      if(open.n>=5)return {ok:false as const,reason:'limit' as const};
+      const cooldown=this.db.prepare('SELECT last_used_at FROM feature_cooldowns WHERE feature=? AND user_id=?').get('community-idea',input.userId) as {last_used_at:number}|undefined;
+      const remaining=cooldown?cooldown.last_used_at+(input.cooldownMs??600_000)-input.now:0;
+      if(remaining>0)return {ok:false as const,reason:'cooldown' as const};
+      this.db.prepare("INSERT INTO community_ideas(id,submitter_user_id,display_name,idea_text,normalized_text,status,submitted_at,updated_at) VALUES(?,?,?,?,?,'pending',?,?)")
+        .run(input.id,input.userId,input.displayName,input.text,normalized,input.now,input.now);
+      this.db.prepare(`INSERT INTO feature_cooldowns(feature,user_id,last_used_at) VALUES('community-idea',?,?) ON CONFLICT(feature,user_id) DO UPDATE SET last_used_at=excluded.last_used_at`).run(input.userId,input.now);
+      this.recordCommunityEvent('community.idea.submitted',{id:input.id,userId:input.userId},input.now);
+      return {ok:true as const,idea:this.communityIdea(input.id,input.userId)!};
+    })();
+  }
+
+  communityIdea(id:string,userId?:string):CommunityIdea|undefined {
+    const row=this.db.prepare(`SELECT i.id,i.submitter_user_id,i.display_name,i.idea_text,i.category,i.status,i.submitted_at,i.updated_at,i.moderation_comment,
+      (SELECT COUNT(*) FROM community_idea_votes v WHERE v.idea_id=i.id) votes,
+      ${userId?'EXISTS(SELECT 1 FROM community_idea_votes mine WHERE mine.idea_id=i.id AND mine.user_id=?)':'0'} voted
+      FROM community_ideas i WHERE i.id=?`).get(...(userId?[userId,id]:[id])) as Record<string,unknown>|undefined;
+    return row?toCommunityIdea(row):undefined;
+  }
+
+  communityIdeas(filter:{status?:string;userId?:string;query?:string;sort?:'newest'|'popular';limit?:number}={}):CommunityIdea[] {
+    const clauses:string[]=[];const args:unknown[]=[];
+    if(filter.status){clauses.push('i.status=?');args.push(filter.status)}
+    if(filter.userId){clauses.push('i.submitter_user_id=?');args.push(filter.userId)}
+    const q=(filter.query||'').trim().slice(0,80);if(q){clauses.push('(lower(i.idea_text) LIKE lower(?) OR lower(i.display_name) LIKE lower(?) OR i.id LIKE ?)');args.push(`%${q}%`,`%${q}%`,`%${q}%`)}
+    const order=filter.sort==='popular'?'votes DESC,i.submitted_at DESC':'i.submitted_at DESC';
+    const rows=this.db.prepare(`SELECT i.id,i.submitter_user_id,i.display_name,i.idea_text,i.category,i.status,i.submitted_at,i.updated_at,i.moderation_comment,
+      (SELECT COUNT(*) FROM community_idea_votes v WHERE v.idea_id=i.id) votes,
+      ${filter.userId?'EXISTS(SELECT 1 FROM community_idea_votes mine WHERE mine.idea_id=i.id AND mine.user_id=?)':'0'} voted
+      FROM community_ideas i ${clauses.length?'WHERE '+clauses.join(' AND '):''} ORDER BY ${order} LIMIT ?`)
+      .all(...(filter.userId?[filter.userId]:[]),...args,Math.max(1,Math.min(200,filter.limit??100))) as Array<Record<string,unknown>>;
+    return rows.map(toCommunityIdea);
+  }
+
+  voteCommunityIdea(id:string,userId:string,now:number):boolean {
+    return this.db.prepare("INSERT OR IGNORE INTO community_idea_votes(idea_id,user_id,created_at) SELECT id,?,? FROM community_ideas WHERE id=? AND status='approved'")
+      .run(userId,now,id).changes===1;
+  }
+
+  moderateCommunityIdea(id:string,action:'review'|'approve'|'reject'|'accept'|'plan'|'implement'|'archive',moderatorId:string,now:number,comment:string|null=null,category:string|null=null):boolean {
+    const status:IdeaStatus=({review:'reviewing',approve:'approved',reject:'rejected',accept:'accepted',plan:'planned',implement:'implemented',archive:'archived'} as const)[action];
+    const allowed:Record<typeof action,string[]>={review:['pending'],approve:['pending','reviewing'],reject:['pending','reviewing','approved'],accept:['approved','voting'],plan:['accepted'],implement:['accepted','planned'],archive:['rejected','implemented','accepted','planned','approved']};
+    return this.db.prepare(`UPDATE community_ideas SET status=?,updated_at=?,moderated_by=?,moderation_comment=?,category=COALESCE(?,category)
+      WHERE id=? AND status IN (${allowed[action].map(()=>'?').join(',')})`).run(status,now,moderatorId,comment,category,id,...allowed[action]).changes===1;
+  }
+
+  categorizeCommunityIdea(id:string,category:string,moderatorId:string,now:number):boolean {
+    return this.db.prepare('UPDATE community_ideas SET category=?,updated_at=?,moderated_by=? WHERE id=?').run(category,now,moderatorId,id).changes===1;
+  }
+
+  linkIdeasToPoll(ids:string[],now:number):boolean {
+    if(ids.length<2||ids.length>5||new Set(ids).size!==ids.length)return false;
+    return this.db.transaction(()=>{
+      const rows=ids.map(id=>this.db.prepare("SELECT id FROM community_ideas WHERE id=? AND status='approved'").get(id));
+      if(rows.some(row=>!row))return false;
+      const update=this.db.prepare("UPDATE community_ideas SET status='voting',updated_at=? WHERE id=? AND status='approved'");
+      return ids.every(id=>update.run(now,id).changes===1);
+    })();
+  }
+
+  markIdeasVoting(ids:string[],now:number):boolean {
+    if(ids.length<2||ids.length>5||new Set(ids).size!==ids.length)return false;
+    return this.db.transaction(()=>{
+      const placeholders=ids.map(()=>'?').join(',');
+      const result=this.db.prepare(`UPDATE community_ideas SET status='voting',updated_at=? WHERE status='approved' AND id IN (${placeholders})`).run(now,...ids);
+      return result.changes===ids.length;
+    })();
+  }
 
   deleteExpiredViewerData(now:number):void {
     this.db.prepare('DELETE FROM community_viewer_sessions WHERE expires_at<=?').run(now);
@@ -1095,6 +1358,9 @@ export class FeatureStore {
         const approved = this.db.prepare(`SELECT COUNT(*) AS count FROM quests WHERE status='approved' AND id IN (${placeholders})`).get(...linkedIds) as { count: number };
         if (approved.count !== linkedIds.length) return undefined;
       } else if (linkedIds.length) return undefined;
+      const ideaIds=input.options.map(option=>option.ideaId).filter((value):value is string=>Boolean(value));
+      if(ideaIds.length&& (input.type!=='chat'||ideaIds.length!==input.options.length||new Set(ideaIds).size!==ideaIds.length
+        ||ideaIds.some(id=>!this.db.prepare("SELECT 1 FROM community_ideas WHERE id=? AND status='approved'").get(id))))return undefined;
       this.db.prepare(`INSERT INTO polls(id,poll_type,question,options_json,status,starts_at,ends_at,allow_vote_change,created_by,linked_quest_ids_json)
         VALUES(?,?,?,?,'active',?,?,?,?,?)`)
         .run(id, input.type, input.question, JSON.stringify(input.options), input.now, input.now + input.durationMs,
@@ -1113,6 +1379,11 @@ export class FeatureStore {
   poll(id: string): PollRecord | undefined {
     const row = this.db.prepare('SELECT * FROM polls WHERE id=?').get(id) as PollRow | undefined;
     return row ? this.toPoll(row) : undefined;
+  }
+
+  pollVoteOption(pollId:string,userId:string):number|undefined {
+    const row=this.db.prepare('SELECT option_index FROM poll_votes WHERE poll_id=? AND user_id=?').get(pollId,userId) as {option_index:number}|undefined;
+    return row?row.option_index+1:undefined;
   }
 
   pollHistory(limit = 25): PollRecord[] {
@@ -1148,6 +1419,8 @@ export class FeatureStore {
       if (!poll) return this.poll(id);
       if (canceled) {
         this.db.prepare("UPDATE polls SET status='canceled',ended_at=? WHERE id=? AND status='active'").run(now, id);
+        const options=parsePollOptions((this.db.prepare('SELECT options_json FROM polls WHERE id=?').get(id) as {options_json:string}).options_json);
+        for(const option of options)if(option.ideaId)this.db.prepare("UPDATE community_ideas SET status='approved',updated_at=? WHERE id=? AND status='voting'").run(now,option.ideaId);
         this.recordCommunityEvent('poll.canceled', { id }, now);
       } else this.finishPollInside(id, now);
       return this.poll(id);
@@ -1263,6 +1536,7 @@ export class FeatureStore {
     const changed = this.db.prepare(`UPDATE polls SET status='ended',ended_at=?,winner_option=?,tied=? WHERE id=? AND status='active'`)
       .run(now, winner, tied ? 1 : 0, id);
     if (!changed.changes) return;
+    for(const option of options)if(option.ideaId)this.db.prepare("UPDATE community_ideas SET status='approved',updated_at=? WHERE id=? AND status='voting'").run(now,option.ideaId);
     if (row.poll_type === 'quest' && winner !== null) {
       const option = options[winner];
       if (option?.questId) {
@@ -1276,6 +1550,21 @@ export class FeatureStore {
   awardXp(eventId: string, userId: string, displayName: string, amount: number, reason: string, now: number, dailyCap?: number): number {
     if (!Number.isInteger(amount) || amount <= 0) return 0;
     return this.db.transaction(() => this.awardXpInside(eventId, userId, displayName, amount, reason, now, dailyCap))();
+  }
+
+  recordRecentChatActivity(userId:string,displayName:string,login:string,now:number):void {
+    this.db.prepare(`INSERT INTO recent_chat_activity(user_id,display_name,login,last_activity_at) VALUES(?,?,?,?)
+      ON CONFLICT(user_id) DO UPDATE SET display_name=excluded.display_name,login=excluded.login,last_activity_at=excluded.last_activity_at`)
+      .run(userId,displayName,login,now);
+    this.db.prepare('DELETE FROM recent_chat_activity WHERE last_activity_at<?').run(now-24*60*60_000);
+  }
+
+  recentChatActivity(now:number,windowMinutes:number,excludeUserIds:string[]=[]):Array<{userId:string;displayName:string;login:string;lastActivityAt:number}> {
+    const cutoff=now-Math.max(1,Math.min(120,windowMinutes))*60_000;
+    this.db.prepare('DELETE FROM recent_chat_activity WHERE last_activity_at<?').run(now-24*60*60_000);
+    const exclusions=excludeUserIds.length?` AND user_id NOT IN (${excludeUserIds.map(()=>'?').join(',')})`:'';
+    return this.db.prepare(`SELECT user_id userId,display_name displayName,login,last_activity_at lastActivityAt FROM recent_chat_activity WHERE last_activity_at>=?${exclusions} ORDER BY user_id`)
+      .all(cutoff,...excludeUserIds) as Array<{userId:string;displayName:string;login:string;lastActivityAt:number}>;
   }
 
   private awardXpInside(eventId: string, userId: string, displayName: string, amount: number, reason: string, now: number, dailyCap?: number): number {
@@ -1342,6 +1631,25 @@ export class FeatureStore {
       this.db.prepare(`INSERT INTO feature_cooldowns(feature,user_id,last_used_at) VALUES(?,?,?)
         ON CONFLICT(feature,user_id) DO UPDATE SET last_used_at=excluded.last_used_at`).run(feature, userId, now);
       return 0;
+    })();
+  }
+
+  /** Atomically checks and records personal plus channel-wide cooldowns. A denied attempt writes neither timestamp. */
+  useCooldownPair(feature: string, userId: string, now: number, personalMs: number, globalMs: number):
+    { blocked: 'personal' | 'global'; remainingMs: number } | undefined {
+    return this.db.transaction(() => {
+      const read = (key: string) => this.db.prepare('SELECT last_used_at FROM feature_cooldowns WHERE feature=? AND user_id=?').get(feature, key) as {last_used_at:number}|undefined;
+      const personal = read(userId);
+      if (personal && personalMs > 0 && now - personal.last_used_at < personalMs)
+        return { blocked: 'personal' as const, remainingMs: personalMs - (now - personal.last_used_at) };
+      const global = read('__channel_global__');
+      if (global && globalMs > 0 && now - global.last_used_at < globalMs)
+        return { blocked: 'global' as const, remainingMs: globalMs - (now - global.last_used_at) };
+      const upsert = this.db.prepare(`INSERT INTO feature_cooldowns(feature,user_id,last_used_at) VALUES(?,?,?)
+        ON CONFLICT(feature,user_id) DO UPDATE SET last_used_at=excluded.last_used_at`);
+      if (personalMs > 0) upsert.run(feature, userId, now);
+      if (globalMs > 0) upsert.run(feature, '__channel_global__', now);
+      return undefined;
     })();
   }
 
@@ -1697,7 +2005,7 @@ export class FeatureStore {
     const options: PollOptionResult[] = baseOptions.map((option, index) => {
       const votes = countByOption.get(index) ?? 0;
       return { label: option.label, votes, percent: totalVotes ? Math.round((votes / totalVotes) * 100) : 0,
-        ...(option.questId ? { questId: option.questId } : {}) };
+        ...(option.questId ? { questId: option.questId } : {}), ...(option.ideaId?{ideaId:option.ideaId}:{}) };
     });
     return { id: row.id, type: row.poll_type, question: row.question, options, status: row.status,
       startsAt: row.starts_at, endsAt: row.ends_at, endedAt: row.ended_at, winnerOption: row.winner_option,
@@ -1733,7 +2041,8 @@ function parsePollOptions(value: string): PollOptionInput[] {
     if (!Array.isArray(parsed)) return [];
     return parsed.filter((entry): entry is PollOptionInput => Boolean(entry) && typeof entry === 'object'
       && typeof (entry as PollOptionInput).label === 'string'
-      && (!('questId' in (entry as object)) || typeof (entry as PollOptionInput).questId === 'string'));
+      && (!('questId' in (entry as object)) || typeof (entry as PollOptionInput).questId === 'string')
+      && (!('ideaId' in (entry as object)) || typeof (entry as PollOptionInput).ideaId === 'string'));
   } catch { return []; }
 }
 
@@ -1742,6 +2051,12 @@ function toChannelRedemption(row:Record<string,unknown>):ChannelRedemptionRecord
     userInput:String(row.quest_title??row.user_input),redeemedAt:Number(row.redeemed_at),status:row.status as ChannelRedemptionStatus,
     questId:row.quest_id?String(row.quest_id):null,questStatus:row.quest_status?row.quest_status as QuestStatus:null,
     lastError:row.last_error?String(row.last_error):null,updatedAt:Number(row.updated_at)};
+}
+
+function toCommunityIdea(row:Record<string,unknown>):CommunityIdea {
+  return {id:String(row.id),submitterUserId:String(row.submitter_user_id),displayName:String(row.display_name),text:String(row.idea_text),
+    category:row.category===null?null:String(row.category),status:String(row.status) as IdeaStatus,submittedAt:Number(row.submitted_at),updatedAt:Number(row.updated_at),
+    moderationComment:row.moderation_comment===null?null:String(row.moderation_comment),votes:Number(row.votes||0),voted:Boolean(row.voted)};
 }
 
 function validViewerText(value: string, maxLength: number, minLength = 3): boolean {

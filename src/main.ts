@@ -10,7 +10,7 @@ import { CommunityFeatures } from './community-features.js';
 import { DashboardServer } from './dashboard.js';
 import { logger } from './logger.js';
 import { TwitchOAuth, FileTokenStore, OAuthCallbackServer } from './twitch-oauth.js';
-import { TwitchApi, TwitchApiError } from './twitch-api.js';
+import { TwitchApi, TwitchApiError, type TwitchStream } from './twitch-api.js';
 import { EventSubClient } from './eventsub.js';
 import { SendQueue } from './send-queue.js';
 import { ChatResponsePolicy, DEFAULT_CHAT_RESPONSE_SETTINGS } from './chat-response-policy.js';
@@ -25,6 +25,8 @@ import { SpotifySongRequests } from './song-requests.js';
 import { ViewerCommunityPortal } from './community-portal.js';
 import { CommunityPortalHealth } from './portal-health.js';
 import { BotLifecycle, RESTART_GOODBYE_MESSAGES, RESTART_WELCOME_MESSAGES } from './bot-lifecycle.js';
+import { TwitchVipService } from './twitch-vip.js';
+import { VipExperience } from './vip-experience.js';
 
 const isTestMode = process.argv.includes('--test') || process.env.TEST_MODE === 'true';
 
@@ -91,19 +93,25 @@ async function runLiveMode(): Promise<void> {
   const api = new TwitchApi(config.clientId, oauth);
   const redemptionOauth = new TwitchOAuth(config.clientId,config.clientSecret,config.redemptionRedirectUri,['channel:manage:redemptions'],
     new FileTokenStore(config.redemptionTokenFile));
+  const vipOauth = new TwitchOAuth(config.clientId,config.clientSecret,config.vipRedirectUri,['channel:read:vips'],
+    new FileTokenStore(config.vipTokenFile));
+  const vipService = new TwitchVipService(config.clientId,config.broadcasterUserId,vipOauth);
+  const vipExperience = new VipExperience(features);
   const oauthServer = new OAuthCallbackServer(config.oauthHost, config.oauthPort, config.oauthStateTtlMs, oauth, logger,
-    [{name:'channel-points',oauth:redemptionOauth,callbackPath:'/oauth/redemptions/callback',stateFilePath:`${config.redemptionTokenFile}.oauth-state`}],
+    [{name:'channel-points',oauth:redemptionOauth,callbackPath:'/oauth/redemptions/callback',stateFilePath:`${config.redemptionTokenFile}.oauth-state`},
+      {name:'vip-verification',oauth:vipOauth,startPath:'/oauth/vips/start',callbackPath:'/oauth/vips/callback',stateFilePath:`${config.vipTokenFile}.oauth-state`}],
     `${config.tokenFile}.oauth-state`);
   const game = new GameService(database, config);
   const chatPolicy = new ChatResponsePolicy(features.config('chat_response_settings', DEFAULT_CHAT_RESPONSE_SETTINGS));
   const communityTips = new CommunityTips(features);
   const automaticChatMessages = new AutomaticChatMessages(features);
   const handler = new CommandHandler(database, game, config, undefined, community, chatPolicy, communityTips);
+  let lastChatReceiveAt:number|undefined,lastBotChatSendAt:number|undefined,lastBotChatSendErrorAt:number|undefined;
   const queue = new SendQueue(
     async (message, replyParentMessageId) => {
       const result = await sendChatMessageWithRetry(api, config.broadcasterUserId, config.botUserId, message, replyParentMessageId);
-      if (!result.isSent) logger.warn('Twitch hat die Antwort verworfen.', { reason: result.dropReason || 'unbekannt' });
-      else logger.info('Twitch hat die Chatantwort angenommen.');
+      if (!result.isSent) { lastBotChatSendErrorAt=Date.now();logger.warn('Twitch hat die Antwort verworfen.', { reason: result.dropReason || 'unbekannt' }); }
+      else { lastBotChatSendAt=Date.now();logger.info('Twitch hat die Chatantwort angenommen.'); }
       if(!result.isSent)throw new Error(result.dropReason||'Twitch hat die Chatnachricht nicht angenommen.');
     },
     Math.max(1500, config.sendQueueIntervalMs),
@@ -114,9 +122,10 @@ async function runLiveMode(): Promise<void> {
   let songRequests:SpotifySongRequests|undefined;
   let lastSpecialAnnouncementAt = botStartedAt;
   let lastKnownStreamLive:boolean|undefined;
+  let lastStreamSnapshot:TwitchStream|undefined;
   let streamStatusCheckedAt=0;
-  const recordStreamStatus=(stream:unknown)=>{lastKnownStreamLive=Boolean(stream);streamStatusCheckedAt=Date.now();};
-  const recordStreamStatusError=()=>{lastKnownStreamLive=undefined;streamStatusCheckedAt=Date.now();};
+  const recordStreamStatus=(stream:TwitchStream|undefined)=>{lastKnownStreamLive=Boolean(stream);lastStreamSnapshot=stream;streamStatusCheckedAt=Date.now();community.arcade.setCurrentStreamId(stream?.id);};
+  const recordStreamStatusError=()=>{lastKnownStreamLive=undefined;lastStreamSnapshot=undefined;streamStatusCheckedAt=Date.now();community.arcade.setCurrentStreamId(undefined);};
   const eventsub = new EventSubClient(
     async (sessionId) => {
       await api.ensureChatSubscription(sessionId, config.broadcasterUserId, config.botUserId);
@@ -170,6 +179,7 @@ async function runLiveMode(): Promise<void> {
         });
         return;
       }
+      lastChatReceiveAt=chatMessage.sentAt;
       let replies;
       communityTips.observe(chatMessage);
       community.vault.observeActivity(chatMessage);
@@ -186,6 +196,7 @@ async function runLiveMode(): Promise<void> {
     },
   );
   let dashboard:DashboardServer|undefined;
+  let lastLiveControlPollAt=0,checkingLiveControl=false;
   let lastTipLiveCheckAt = 0;
   let checkingLive = false;
   const communityPortalHealth=new CommunityPortalHealth(new URL('/community',config.redirectUri).toString());
@@ -195,6 +206,13 @@ async function runLiveMode(): Promise<void> {
   let checkingVaultLive = false;
   const runFeatureTick = singleFlight(async () => {
       try {
+        const tickNow=Date.now();
+        if(!checkingLiveControl&&tickNow-lastLiveControlPollAt>=30_000){
+          checkingLiveControl=true;lastLiveControlPollAt=tickNow;
+          try{recordStreamStatus(await api.getStreamStatus(config.broadcasterUserId));}
+          catch(error){recordStreamStatusError();logger.warn('Live-Control konnte Twitch-Status nicht aktualisieren.',{error:error instanceof Error?error.message:'unbekannt'});}
+          finally{checkingLiveControl=false;}
+        }
         const announcements = community.tickMessages();
         for (const message of announcements) {
           void queue.enqueue(message.message, undefined, message.category).catch(error =>
@@ -237,7 +255,7 @@ async function runLiveMode(): Promise<void> {
               const result=community.arcade.autoSpinIfDue(Date.now());
               if(result){
                 lastSpecialAnnouncementAt=Date.now();
-                try{await queue.enqueue(result,undefined,'wheel');}
+                try{if(community.arcade.winnerChatAnnouncementEnabled())await queue.enqueue(result,undefined,'wheel');}
                 catch(error){logger.warn('Automatisches Glücksrad-Ergebnis konnte nicht in den Chat gestellt werden; die Aktion bleibt gespeichert und wird nicht erneut ausgeführt.',{error:error instanceof Error?error.message:'unbekannt'});}
                 return;
               }
@@ -287,6 +305,8 @@ async function runLiveMode(): Promise<void> {
     await oauth.initialize(config.accessToken, config.refreshToken);
     try{await redemptionOauth.initialize();}
     catch(error){logger.warn('Optionales Broadcaster-Kanalpunkte-Token konnte nicht geladen werden; Dashboard-Reauthorisierung ist erforderlich.',{error:error instanceof Error?error.message:'unbekannt'});}
+    try{await vipOauth.initialize();}
+    catch(error){logger.warn('Optionales Twitch-VIP-Token konnte nicht geladen werden; VIP-Aktionen bleiben gesperrt.',{error:error instanceof Error?error.message:'unbekannt'});}
     await oauthServer.start();
     if (!oauth.hasAccessToken) {
       logger.warn('Noch kein Twitch-OAuth vorhanden. Öffne die folgende URL im Browser:', { url: oauthServer.startUrl });
@@ -299,6 +319,7 @@ async function runLiveMode(): Promise<void> {
     if (config.broadcasterUserId && config.broadcasterUserId !== broadcaster.id) throw new Error('TWITCH_BROADCASTER_USER_ID passt nicht zum Kanal.');
     if (config.botUserId && config.botUserId !== bot.id) throw new Error('TWITCH_BOT_USER_ID passt nicht zum Bot-Konto.');
     config.broadcasterUserId = broadcaster.id;
+    vipService.setBroadcasterId(broadcaster.id);
     config.botUserId = bot.id;
     logger.info('Twitch-Konten erkannt.', { channel: broadcaster.login, bot: bot.login });
     channelPoints=new ChannelPointsService(features,new TwitchApi(config.clientId,redemptionOauth),redemptionOauth,config.broadcasterUserId,()=>{
@@ -309,14 +330,14 @@ async function runLiveMode(): Promise<void> {
     const redemptionApi=new TwitchApi(config.clientId,redemptionOauth);
     songRequests=new SpotifySongRequests(features,redemptionApi,redemptionOauth,config.broadcasterUserId,logger);
     await songRequests.initialize();
-    const viewerPortal=new ViewerCommunityPortal(features,community,{...config,redirectUri:process.env.DASHBOARD_REDIRECT_URI?.trim()||config.redirectUri},fetch);
-    dashboard = new DashboardServer(features, () => ({twitchConnected:eventsub.isConnected,channel:config.channelLogin,startedAt:botStartedAt,...queue.snapshot(),chatResponse:chatPolicy.snapshot(),streamLive:lastKnownStreamLive,streamStatusCheckedAt}),
+    const viewerPortal=new ViewerCommunityPortal(features,community,{...config,redirectUri:process.env.DASHBOARD_REDIRECT_URI?.trim()||config.redirectUri},fetch,vipService,vipExperience,()=>lastStreamSnapshot?{id:lastStreamSnapshot.id,live:lastKnownStreamLive===true}:undefined);
+    dashboard = new DashboardServer(features, () => ({twitchConnected:eventsub.isConnected,channel:config.channelLogin,startedAt:botStartedAt,...queue.snapshot(),chatResponse:chatPolicy.snapshot(),streamLive:lastKnownStreamLive,streamStatusCheckedAt,...(lastStreamSnapshot?{streamSnapshot:{...(lastStreamSnapshot.title?{title:lastStreamSnapshot.title}:{}),...(lastStreamSnapshot.game_name?{gameName:lastStreamSnapshot.game_name}:{}),...(typeof lastStreamSnapshot.viewer_count==='number'?{viewerCount:lastStreamSnapshot.viewer_count}:{}),...(lastStreamSnapshot.started_at?{startedAt:lastStreamSnapshot.started_at}:{})}}:{}),...(lastChatReceiveAt?{lastChatReceiveAt}:{}),...(lastBotChatSendAt?{lastBotChatSendAt}:{}),...(lastBotChatSendErrorAt?{lastBotChatSendErrorAt}:{})}),
       logger,fetch,()=>community.conversationSpark.snapshot(),channelPoints,()=>oauthServer.startUrlFor('channel-points'),community.miniGames,community.arcade,
       async(message,category)=>{if(!chatPolicy.shouldSend({message,now:Date.now()}))return;await queue.enqueue(message,undefined,category);},chatPolicy,communityTips,automaticChatMessages,songRequests,viewerPortal,community.vault,
-      async()=>{const now=Date.now(),stream=await api.getStreamStatus(config.broadcasterUserId);if(!stream||community.vault.activeViewerCount(now)<community.vault.settings().minActiveViewers||now-lastSpecialAnnouncementAt<5*60_000)return false;const game=community.miniGames.snapshot(),drop=community.arcade.snapshot('drop'),wheel=community.arcade.wheelStatus(),dropStatus=(drop.drop as {status?:string}|undefined)?.status;return !Boolean(game.imposter||game.detective||features.activeQuest()||features.activePoll(now)||features.activeBoss(now)||['announced','claiming','resolving'].includes(dropStatus||'')||wheel.active||queue.busy);},
+      async()=>{const now=Date.now(),settings=community.vault.settings();if(!settings.enabled)return 'Der Community-Tresor ist ausgeschaltet. Aktiviere ihn zuerst in den Einstellungen.';const remaining=community.vault.cooldownRemainingMs(now);if(remaining>0)return `⏳ Der globale Tresor-Cooldown läuft noch ${Math.ceil(remaining/60_000)} Min.`;if(community.vault.isActive(now))return '⏳ Der Tresor läuft bereits.';const stream=await api.getStreamStatus(config.broadcasterUserId);recordStreamStatus(stream);if(!stream)return '📴 Der Twitch-Stream ist derzeit offline.';const active=community.vault.activeViewerCount(now),minimum=settings.minActiveViewers;if(active<minimum)return `⏳ Der Start braucht ${minimum} aktive Zuschauer; aktuell sind ${active} bestätigt.`;const wait=5*60_000-(now-lastSpecialAnnouncementAt);if(wait>0)return `⏳ Nach einer wichtigen Chat-Aktion bitte noch ${Math.ceil(wait/60_000)} Min. warten.`;const game=community.miniGames.snapshot(),drop=community.arcade.snapshot('drop'),wheel=community.arcade.wheelStatus(),dropStatus=(drop.drop as {status?:string}|undefined)?.status;if(game.imposter||game.detective||features.activeQuest()||features.activePoll(now)||features.activeBoss(now)||['announced','claiming','resolving'].includes(dropStatus||'')||wheel.active)return '⏳ Ein anderes Community-Spiel läuft gerade.';if(queue.busy)return '⏳ Der Chat verarbeitet gerade eine wichtige Meldung.';return true;},
       community.moderatorPranks,async(login)=>{const user=(await api.getUsers([login]))[0];return user?{id:user.id,login:user.login,displayName:user.display_name}:undefined;},
       {weights:config.eventWeights,source:process.env.EVENT_WEIGHTS_JSON?.trim()?'EVENT_WEIGHTS_JSON (beim Bot-Start geladen)':'Standardwerte aus src/config.ts'},
-      ()=>communityPortalHealth.isAvailable(),botLifecycle);
+      ()=>communityPortalHealth.isAvailable(),botLifecycle,vipService,vipExperience,()=>oauthServer.startUrlFor('vip-verification'));
     logger.info('OAuth-Server erreichbar unter http://127.0.0.1:3000/oauth/start');
     await dashboard.start();
     eventsub.start();

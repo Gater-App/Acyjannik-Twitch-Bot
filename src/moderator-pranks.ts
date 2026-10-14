@@ -73,7 +73,7 @@ export class ModeratorPranks {
     }
     if(command==='prankoptout'||command==='prankoptin'){
       const d=this.data(now),hash=createHash('sha256').update(message.senderUserId).digest('hex');
-      if(command==='prankoptout'&&!d.optOutHashes.includes(hash)&&d.optOutHashes.length>=10_000)return '🐱 Elio kann deinen Wunsch gerade nicht sicher speichern. Bitte wende dich an Jannick oder einen Moderator.';
+      if(command==='prankoptout'&&!d.optOutHashes.includes(hash)&&d.optOutHashes.length>=10_000)return '🐱 Elio kann deinen Wunsch gerade nicht sicher speichern. Bitte wende dich an Jannik oder einen Moderator.';
       if(command==='prankoptout'&&d.active?.kind==='accusation'&&d.active.targetId===message.senderUserId)delete d.active;
       d.optOutHashes=d.optOutHashes.filter(item=>item!==hash);
       if(command==='prankoptout')d.optOutHashes.push(hash);

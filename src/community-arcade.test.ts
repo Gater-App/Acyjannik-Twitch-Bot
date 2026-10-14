@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
 import { FeatureStore } from './feature-store.js';
-import { CommunityArcade } from './community-arcade.js';
+import { CommunityArcade, type PetState } from './community-arcade.js';
+import { CommunityVault } from './community-vault.js';
 import { communityWidgetHtml } from './dashboard-community-ui.js';
 import type { ChatMessage } from './types.js';
 import { DEFAULT_8BALL_ANSWERS, LEGACY_DEFAULT_8BALL_ANSWERS } from './eight-ball-answers.js';
@@ -23,6 +24,57 @@ test('Community-Pet bleibt gemeinschaftlich, begrenzt Werte und dedupliziert Eve
   store.close();
 });
 
+test('Elios Stimmungen folgen nachvollziehbar seinen Werten und einem zeitnahen seltenen Ereignis',()=>{
+  const {store,arcade}=setup();
+  try{
+    const set=(hunger:number,happiness:number,energy:number)=>store.miniGameTransaction(db=>db.prepare('UPDATE community_pet SET hunger=?,happiness=?,energy=? WHERE id=1').run(hunger,happiness,energy));
+    set(20,90,90);assert.equal(arcade.pet(1000).mood,'hungry');
+    set(50,50,20);assert.equal(arcade.pet(1000).mood,'tired');
+    set(50,85,50);assert.equal(arcade.pet(1000).mood,'playful');
+    set(50,65,50);assert.equal(arcade.pet(1000).mood,'happy');
+    set(50,40,50);assert.equal(arcade.pet(1000).mood,'calm');
+    store.miniGameTransaction(db=>db.prepare("INSERT INTO community_pet_events(id,kind,message,rare,created_at) VALUES('rare-mood','rare','Ein seltenes Glitzern!',1,?)").run(1000));
+    assert.equal(arcade.pet(1001).mood,'cheeky');assert.equal(arcade.pet(16*60_000).mood,'calm');
+  }finally{store.close();}
+});
+
+test('Persönlichkeitsmigration erhält Elis Zustand und bestehende Katzenaktionen',()=>{
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'elio-migration-')),file=path.join(directory,'db','state.sqlite');let store=new FeatureStore(file);
+  store.miniGameTransaction(db=>{db.prepare("UPDATE community_pet SET name='Elio',level=17,xp=1650,hunger=42,happiness=88,energy=61 WHERE id=1").run();db.prepare("INSERT INTO community_pet_interactions(event_id,user_id,kind,created_at,source) VALUES('old-pet-action','viewer','feed',1234,'portal')").run();db.exec('DROP TABLE community_pet_events;DELETE FROM schema_migrations WHERE version>=28')});store.close();
+  try{
+    store=new FeatureStore(file);const pet=new CommunityArcade(store,'broadcaster').pet(2000);assert.deepEqual([pet.name,pet.level,pet.xp,pet.hunger,pet.happiness,pet.energy],['Elio',17,1650,42,88,61]);
+    assert.equal(store.miniGameQuery(db=>(db.prepare("SELECT COUNT(*) n FROM community_pet_interactions WHERE event_id='old-pet-action'").get() as {n:number}).n),1);
+    assert.equal(store.miniGameQuery(db=>(db.prepare('SELECT COUNT(*) n FROM community_pet_events').get() as {n:number}).n),0);
+    assert.ok(fs.readdirSync(path.join(directory,'backups')).some(name=>name.includes('migration-v28-')),'v28-Migration erstellt ein Vorab-Backup');
+  }finally{store.close();fs.rmSync(directory,{recursive:true,force:true});}
+});
+
+test('Elio-Ereignisse laufen über den vorhandenen Tick, sind selten, privat und über Neustarts sichtbar',()=>{
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'elio-personality-')),file=path.join(directory,'state.sqlite');let store=new FeatureStore(file),arcade=new CommunityArcade(store,'broadcaster',()=>0);
+  try{
+    arcade.updateSettings({...arcade.settings(),petEnabled:true,petPersonalityEnabled:true},10_000);
+    arcade.tickMessages(10_000);const due=store.config<number>('pet_personality_next_event_at',0);assert.ok(due>10_000);
+    assert.equal(arcade.petActivity(10_000).length,0);assert.equal(arcade.tickMessages(due-1).length,0);
+    assert.equal(arcade.tickMessages(due).some(item=>item.category==='pet'),false,'Ein Portalereignis erzeugt keine Chatmeldung.');
+    let snapshot=arcade.snapshot('pet',due) as {events:Array<{rare:boolean;message:string}>;obsHint:{message:string}|null;pet:PetState};
+    assert.equal(snapshot.events.length,1);assert.equal(snapshot.events[0]?.rare,true);assert.match(snapshot.events[0]?.message||'',/Elio/u);assert.equal(snapshot.obsHint?.message,snapshot.events[0]?.message);assert.equal(snapshot.pet.mood,'cheeky');
+    const before=store.xp('viewer').xp;store.close();
+    store=new FeatureStore(file);arcade=new CommunityArcade(store,'broadcaster',()=>0);snapshot=arcade.snapshot('pet',due+5) as typeof snapshot;
+    assert.equal(snapshot.events.length,1);assert.equal(snapshot.obsHint?.message,snapshot.events[0]?.message);assert.equal(store.xp('viewer').xp,before);
+    assert.equal(arcade.tickMessages(due+25_000).some(item=>item.category==='pet'),false);
+    arcade.updateSettings({...arcade.settings(),petPersonalityEnabled:false},due+30_000);assert.equal(arcade.snapshot('pet',due+30_001).obsHint,null);
+  }finally{try{store.close()}catch{}fs.rmSync(directory,{recursive:true,force:true});}
+});
+
+test('Portalaktionen speichern eine kurze Reaktion ohne Nutzername in der Aktivitätshistorie',()=>{
+  const {store,arcade}=setup(()=>0);arcade.updateSettings({...arcade.settings(),petEnabled:true,petPersonalityEnabled:true},1000);
+  try{
+    const action=arcade.interactFromPortal(message('private-viewer','private-event','!feed'),'feed',2000);assert.equal(action.ok,true);assert.match(action.reaction||'',/Elio/u);
+    const events=arcade.petActivity(2001);assert.equal(events.length,1);assert.equal(events[0]?.message,action.reaction);assert.equal('userId' in (events[0]||{}),false);
+    assert.equal(arcade.tickMessages(2002).some(item=>item.category==='pet'),false,'Portalaktionen bleiben still im Chat.');
+  }finally{store.close();}
+});
+
 test('Elio-Befehle, Katzen-Lebensphasen, Bonus und OBS zeigen keine Drachen-UI',()=>{
   const {store,arcade}=setup(()=>0);arcade.updateSettings({...arcade.settings(),petEnabled:true,wheelEnabled:true});
   assert.match(arcade.handle(message('u1','play','!play'),'play',[],1000)||'',/Spielangel oder mit dem Wollknäuel/u);
@@ -38,7 +90,7 @@ test('Versionierte Elio-Migration ersetzt nur den alten Standardnamen und erhäl
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'elio-pet-migration-'));const sub=path.join(directory,'data');fs.mkdirSync(sub);
   const legacyPath=path.join(sub,'legacy.sqlite');let store=new FeatureStore(legacyPath);new CommunityArcade(store,'broadcaster');
   store.setConfig('8ball_answers', LEGACY_DEFAULT_8BALL_ANSWERS);
-  store.miniGameTransaction(db=>{db.prepare("UPDATE community_pet SET name='Fünkchen',level=2,xp=125 WHERE id=1").run();db.prepare("UPDATE chaos_wheel_challenges SET id='legacy-generated-id',title='Der Drache bekommt einen Energieschub!',action_type='boost_pet' WHERE id='builtin:pet-energy'").run();db.prepare("INSERT INTO community_pet_interactions(event_id,user_id,kind,created_at,source) VALUES('viewer:legacy','viewer','feed',100,'chat')").run();db.prepare('DELETE FROM schema_migrations WHERE version IN (13,14,15,16,17,18,19,20,21,22,23,24,25,26)').run()});store.close();
+  store.miniGameTransaction(db=>{db.prepare("UPDATE community_pet SET name='Fünkchen',level=2,xp=125 WHERE id=1").run();db.prepare("UPDATE chaos_wheel_challenges SET id='legacy-generated-id',title='Der Drache bekommt einen Energieschub!',action_type='boost_pet' WHERE id='builtin:pet-energy'").run();db.prepare("INSERT INTO community_pet_interactions(event_id,user_id,kind,created_at,source) VALUES('viewer:legacy','viewer','feed',100,'chat')").run();db.prepare('DELETE FROM schema_migrations WHERE version>=13').run()});store.close();
   store=new FeatureStore(legacyPath);assert.equal(new CommunityArcade(store,'broadcaster').pet().name,'Elio');assert.equal(new CommunityArcade(store,'broadcaster').pet().level,2);assert.equal(new CommunityArcade(store,'broadcaster').pet().xp,125);
   assert.deepEqual(store.config('8ball_answers', []), DEFAULT_8BALL_ANSWERS, 'alter Standardpool wird beim Upgrade ersetzt');
   assert.equal(store.miniGameQuery(db=>(db.prepare("SELECT source FROM community_pet_interactions WHERE event_id='viewer:legacy'").get() as {source:string}).source),'portal','alte Portalaktionen werden auch beim Upgrade privat gehalten');
@@ -203,7 +255,7 @@ test('Migration deaktiviert alte manuelle Felder und schließt laufende manuelle
   store.miniGameQuery(db=>{
     db.prepare("INSERT INTO chaos_wheel_challenges(id,title,weight,active,action_type) VALUES('old-manual','Fünf Minuten nur Pistolen',2,1,'manual_challenge')").run();
     db.prepare("INSERT INTO chaos_wheel_spins(id,challenge_id,title,status,created_by,created_at,action_type) VALUES('old-spin','old-manual','Fünf Minuten nur Pistolen','active','mod',10,'manual_challenge')").run();
-    db.prepare('DELETE FROM schema_migrations WHERE version IN (17,18,19,20,21,22,23,24,25,26)').run();
+    db.prepare('DELETE FROM schema_migrations WHERE version>=17').run();
   });store.close();
   store=new FeatureStore(database);
   assert.equal(store.miniGameQuery(db=>db.prepare("SELECT active FROM chaos_wheel_challenges WHERE id='old-manual'").get() as {active:number}).active,0);
@@ -308,4 +360,106 @@ test('Ohne-Springen-Aufgabe erscheint in Chat und OBS ohne Erfolgsversprechen',(
   const result=arcade.spinAdmin('broadcaster',5000);assert.match(result,/Eine Runde ohne Springen/u);assert.match(result,/nicht prüfen/u);
   const view=arcade.snapshot('wheel',5001) as {visible:boolean;wheel:{title:string;status:string}};assert.equal(view.visible,true);assert.equal(view.wheel.title,'Eine Runde ohne Springen');assert.equal(view.wheel.status,'active');assert.match(arcade.finishCurrentTask(5002),/nicht bewertet/u);assert.equal((arcade.snapshot('wheel',5003) as {wheel:{status:string}}).wheel.status,'canceled');
   assert.doesNotMatch(result,/geschafft|erfolgreich/u);store.close();
+});
+
+test('recent chat activity deduplicates a viewer, excludes broadcaster and known bot, and expires at the configured window',()=>{
+  const {store,arcade}=setup(()=>0);arcade.updateSettings({...arcade.settings(),wheelEnabled:true,viewerRewardsEnabled:true,viewerActivityWindowMinutes:15});
+  const vault=new CommunityVault(store,'bot-id');
+  const activity=(user:string,login:string,body:string,at:number)=>({...message(user,`activity-${user}-${at}`,body),senderLogin:login,senderDisplayName:login});
+  vault.observeActivity(activity('v1','viewerone','Hello chat',1_000),1_000);
+  vault.observeActivity(activity('v1','viewerone','Another message',2_000),2_000);
+  vault.observeActivity(activity('broadcaster','jannik','Hello everyone',2_500),2_500);
+  vault.observeActivity(activity('nightbot-id','nightbot','A timer message',2_600),2_600);
+  vault.observeActivity(activity('bot-id','acycommunitybot','Hello',2_700),2_700);
+  vault.observeActivity(activity('v2','viewertwo','Good evening',3_000),3_000);
+  const status=arcade.wheelStatus(3_000) as {activeViewerCount:number;eligibleWinnerCount:number};
+  assert.deepEqual([status.activeViewerCount,status.eligibleWinnerCount],[2,2]);
+  assert.equal(store.recentChatActivity(3_000,15,['broadcaster']).length,2,'a chatter gets one ticket regardless of message count');
+  assert.equal(store.recentChatActivity(903_001,15,['broadcaster']).length,0,'activity older than 15 minutes is ineligible');
+  store.close();
+});
+
+test('wheel viewer XP is selected from one ticket per active user and written idempotently with the winning result',()=>{
+  const {store,arcade}=setup(()=>0);arcade.updateSettings({...arcade.settings(),wheelEnabled:true,viewerRewardsEnabled:true,wheelWinnerXp:25,wheelMaxRewardsPerStream:1});
+  arcade.setCurrentStreamId('test-live-stream');
+  store.recordRecentChatActivity('real-viewer','PurrfectViewer','purrfectviewer',1_000);
+  arcade.configureWheelField('wheel:viewer-xp',true,1);
+  arcade.configureWheelField('wheel:honor',true,1000);
+  const status=arcade.wheelStatus(2_000) as {activeViewerCount:number;eligibleWinnerCount:number;entries:Array<{wheelKey:string}>};
+  assert.equal(status.activeViewerCount,1);assert.equal(status.eligibleWinnerCount,1);assert.ok(status.entries.some(x=>x.wheelKey==='viewer_xp'));
+  const result=arcade.spinAdmin('broadcaster',2_000);
+  assert.match(result,/@PurrfectViewer gewinnt 25 XP/u);
+  assert.equal(store.xp('real-viewer').xp,25);
+  assert.equal(store.miniGameQuery(db=>(db.prepare("SELECT COUNT(*) n FROM xp_ledger WHERE event_id LIKE 'wheel:%:winner-xp'").get() as {n:number}).n),1);
+  const winner=arcade.wheelStatus(2_001) as {lastWinner:{winnerName:string;resultLabel:string}};
+  assert.equal(winner.lastWinner.winnerName,'PurrfectViewer');assert.match(winner.lastWinner.resultLabel,/25 XP/u);
+  const capped=arcade.wheelStatus(2_001) as {prizeSlotsRemaining:number;entries:Array<{wheelKey:string}>};assert.equal(capped.prizeSlotsRemaining,0);assert.ok(!capped.entries.some(x=>x.wheelKey==='viewer_xp'));
+  assert.match(arcade.spinAdmin('broadcaster',2_001),/kurze Pause/u);
+  assert.equal(store.xp('real-viewer').xp,25);
+  store.close();
+});
+
+test('Viewer reward segments stay out when no verified stream or eligible participant exists',()=>{
+  const {store,arcade}=setup(()=>0);arcade.updateSettings({...arcade.settings(),wheelEnabled:true,viewerRewardsEnabled:true});arcade.configureWheelField('wheel:viewer-xp',true,10);arcade.configureWheelField('wheel:honor',true,10);
+  const offline=arcade.wheelStatus(10_000) as {activeViewerCount:number;entries:Array<{wheelKey:string}>;unavailable:Array<{wheelKey?:string;title:string;reason:string}>};
+  assert.equal(offline.activeViewerCount,0);assert.ok(!offline.entries.some(x=>x.wheelKey==='viewer_xp'));assert.ok(offline.unavailable.some(x=>x.title.includes('Glückspilz')&&x.reason.includes('Live-Stream')));
+  arcade.setCurrentStreamId('stream-with-no-chat');const liveEmpty=arcade.wheelStatus(10_000) as {entries:Array<{wheelKey:string}>};assert.ok(!liveEmpty.entries.some(x=>x.wheelKey==='viewer_xp'));
+  store.close();
+});
+
+test('personal mystery wheel prize uses the existing drop and XP records and does not create a public claim round',()=>{
+  const {store,arcade}=setup(()=>0);arcade.updateSettings({...arcade.settings(),wheelEnabled:true,viewerRewardsEnabled:true,dropsEnabled:true,wheelPersonalMysteryDrop:true});
+  arcade.setCurrentStreamId('test-live-stream');
+  store.recordRecentChatActivity('winner-id','LuckyCat','luckycat',1_000);
+  arcade.configureWheelField('builtin:mystery-drop',false,1);
+  arcade.configureWheelField('wheel:viewer-drop',true,1);arcade.configureWheelField('wheel:honor',true,1000);
+  assert.match(arcade.spinAdmin('broadcaster',2_000),/persönlichen Mystery Drop mit 5 XP/u);
+  assert.equal(store.xp('winner-id').xp,5);
+  const drop=store.miniGameQuery(db=>db.prepare('SELECT status,source_spin_id FROM mystery_drops').get() as {status:string;source_spin_id:string});
+  assert.equal(drop.status,'completed');assert.ok(drop.source_spin_id);
+  assert.equal(store.miniGameQuery(db=>(db.prepare("SELECT COUNT(*) n FROM mystery_drops WHERE status IN ('announced','claiming','resolving')").get() as {n:number}).n),0);
+  assert.equal(store.miniGameQuery(db=>(db.prepare('SELECT reward_xp FROM mystery_claims').get() as {reward_xp:number}).reward_xp),5);
+  store.close();
+});
+
+test('Community bonus, approved quest luck, cosmetic chaos title and extra spin stay bounded and truthful',()=>{
+  {
+    const {store,arcade}=setup(()=>1);arcade.updateSettings({...arcade.settings(),wheelEnabled:true,viewerRewardsEnabled:true,wheelCommunityBonusXp:10});
+    arcade.setCurrentStreamId('test-live-stream');
+    store.recordRecentChatActivity('viewer-a','ViewerA','viewera',1_000);store.recordRecentChatActivity('viewer-b','ViewerB','viewerb',1_000);
+    arcade.configureWheelField('wheel:community-bonus',true,1000);arcade.configureWheelField('wheel:honor',true,1);
+    assert.match(arcade.spinAdmin('broadcaster',2_000),/2 berechtigte aktive Personen erhalten je 10 XP/u);
+    assert.equal(store.xp('viewer-a').xp,10);assert.equal(store.xp('viewer-b').xp,10);
+    assert.equal(store.miniGameQuery(db=>(db.prepare("SELECT COUNT(*) n FROM xp_ledger WHERE reason='bonus:chaos-wheel'").get() as {n:number}).n),2);
+    store.close();
+  }
+  {
+    const {store,arcade}=setup(()=>1);arcade.updateSettings({...arcade.settings(),wheelEnabled:true,viewerRewardsEnabled:true});
+    arcade.setCurrentStreamId('test-live-stream');
+    const policy={maxLength:180,queueLimit:20,maxOpenPerUser:2,cooldownMs:60_000,activeDurationMs:0,completionXp:25};
+    const submitted=store.submitQuest({submitterUserId:'viewer',displayName:'Viewer',title:'Spiele eine Runde ohne Springen',source:'chat'},policy,1000);
+    assert.equal(submitted.ok,true);if(submitted.ok)assert.equal(store.transitionQuest(submitted.quest.id,'approved','mod',1001,policy).ok,true);
+    arcade.configureWheelField('wheel:quest-luck',true,1000);arcade.configureWheelField('wheel:honor',true,1);
+    assert.match(arcade.spinAdmin('broadcaster',2_000),/freigegebene Challenge.*wird für Jannik hervorgehoben/u);
+    const spin=store.miniGameQuery(db=>db.prepare('SELECT winner_name,winner_user_id,reward_status,result_label FROM chaos_wheel_spins').get() as {winner_name:string|null;winner_user_id:string|null;reward_status:string;result_label:string});
+    assert.equal(spin.winner_name,null);assert.equal(spin.winner_user_id,null);assert.equal(spin.reward_status,'none');assert.match(spin.result_label,/Spiele eine Runde/u);
+    store.close();
+  }
+  {
+    let calls=0;const {store,arcade}=setup(max=>calls++===0?1:0);arcade.updateSettings({...arcade.settings(),wheelEnabled:true,viewerRewardsEnabled:true});
+    arcade.setCurrentStreamId('test-live-stream');
+    store.recordRecentChatActivity('viewer','Viewer','viewer',1000);arcade.configureWheelField('wheel:chaos-title',true,1000);arcade.configureWheelField('wheel:honor',true,1);
+    assert.match(arcade.spinAdmin('broadcaster',2_000),/@Viewer ist für 60 Sekunden der offizielle Chaos-Magnet des Streams/u);
+    const spin=store.miniGameQuery(db=>db.prepare('SELECT winner_name,reward_status,result_label FROM chaos_wheel_spins').get() as {winner_name:string;reward_status:string;result_label:string});
+    assert.equal(spin.winner_name,'Viewer');assert.equal(spin.reward_status,'cosmetic');assert.match(spin.result_label,/Chaos-Magnet/u);
+    store.close();
+  }
+  {
+    let calls=0;const {store,arcade}=setup(max=>calls++===0?1:0);arcade.updateSettings({...arcade.settings(),wheelEnabled:true,viewerRewardsEnabled:true});
+    arcade.setCurrentStreamId('test-live-stream');
+    store.recordRecentChatActivity('viewer','Viewer','viewer',1000);arcade.configureWheelField('wheel:extra-spin',true,1000);arcade.configureWheelField('wheel:honor',true,1);
+    assert.match(arcade.spinAdmin('broadcaster',2_000),/Noch ein Dreh!.*Lieblingsmensch/u);
+    assert.equal(store.miniGameQuery(db=>(db.prepare('SELECT COUNT(*) n FROM chaos_wheel_spins').get() as {n:number}).n),1,'a bonus draw is capped at one extra result and creates no spin loop');
+    store.close();
+  }
 });

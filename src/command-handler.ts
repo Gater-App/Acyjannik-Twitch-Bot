@@ -63,9 +63,9 @@ export class CommandHandler {
         const until=this.helpCooldowns.get(message.senderUserId)||0;
         if(now<until)return [];
         this.helpCooldowns.set(message.senderUserId,now+5_000);
-        return reply('Dein Community-Portal: XP und Level ansehen, Elio 🐱 besuchen, Quest-Ideen einreichen und bei Imposter mitspielen: https://twitch.gater-app.de/community','communityPortal');
+        return reply('Dein Community-Portal: XP und Level ansehen, Elio 🐱 besuchen, Quest-Ideen und Community-Ideen einreichen und bei Imposter mitspielen: https://twitch.gater-app.de/community','communityPortal');
       }
-      case 'trickortreat': { const result = this.trickOrTreat(name, message.senderUserId, now); return reply(result.message, result.category); }
+      case 'trickortreat': { const result = this.trickOrTreat(name, message.senderUserId, message.eventId, now); return reply(result.message, result.category); }
       case 'pumpkins': return reply(`🎃 ${name} hat ${this.game.pumpkins(message.senderUserId)} Kürbisse.`);
       case 'top': return reply(this.topMessage());
       case 'halloween': return reply(this.halloweenMessage());
@@ -88,7 +88,7 @@ export class CommandHandler {
     }
   }
 
-  private trickOrTreat(name: string, userId: string, now: number): {message:string;category:ChatCategory} {
+  private trickOrTreat(name: string, userId: string, eventId: string, now: number): {message:string;category:ChatCategory} {
     const result = this.game.play(userId, name, now);
     if (!result.ok) {
       if (result.reason === 'inactive') return {message:'🎃 Halloween ist noch nicht gestartet.',category:'hint'};
@@ -96,6 +96,7 @@ export class CommandHandler {
     }
     const { outcome } = result;
     this.community?.syncLegacyHalloween(now);
+    this.community?.recordHauntedHouseContribution(eventId, userId, now);
     const template = this.templateFor(outcome.event);
     const points = Math.abs(outcome.delta);
     return {message:`${eventMessage(template, { name, points, pumpkins: outcome.pumpkins })} Gesamt: ${outcome.pumpkins}.`,category:'halloween'};

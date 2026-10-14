@@ -7,11 +7,12 @@ import { ConversationSpark } from './conversation-spark.js';
 import { MiniGames } from './mini-games.js';
 import { CommunityArcade } from './community-arcade.js';
 import { CommunityVault } from './community-vault.js';
+import { CommunityHauntedHouse } from './community-haunted-house.js';
 import { ModeratorPranks } from './moderator-pranks.js';
 import { categoryForCommand, type ChatCategory } from './chat-message-format.js';
 import type { OutboundChatMessage } from './chat-message-format.js';
 import type { HelpAvailability } from './help.js';
-import { DEFAULT_8BALL_ANSWERS, LEGACY_DEFAULT_8BALL_ANSWERS } from './eight-ball-answers.js';
+import { chooseEightBallAnswer, DEFAULT_EIGHT_BALL_SETTINGS, EIGHT_BALL_ANSWERS } from './eight-ball-answers.js';
 
 type UserLookup = (login: string) => Promise<{ id: string; login: string; displayName: string } | undefined>;
 type RandomInclusive = (min: number, max: number) => number;
@@ -24,13 +25,14 @@ export class CommunityFeatures {
   readonly arcade: CommunityArcade;
   readonly vault: CommunityVault;
   readonly moderatorPranks: ModeratorPranks;
+  readonly hauntedHouse: CommunityHauntedHouse;
 
   constructor(
     private readonly store: FeatureStore,
     private readonly config: AppConfig,
     private readonly lookupUser: UserLookup = async () => undefined,
     private readonly random: RandomInclusive = secureRandomInclusive,
-  ) { this.questPoll = new QuestPollFeatures(store, config); this.conversationSpark = new ConversationSpark(store, config.broadcasterUserId); this.miniGames = new MiniGames(store, config); this.arcade = new CommunityArcade(store,config.broadcasterUserId); this.vault = new CommunityVault(store,config.botUserId); this.moderatorPranks = new ModeratorPranks(store,()=>((this.vault.publicSnapshot().vault as {status?:string}|undefined)?.status==='active'),()=>this.isMajorGameBusy()); }
+  ) { this.questPoll = new QuestPollFeatures(store, config); this.conversationSpark = new ConversationSpark(store, config.broadcasterUserId); this.miniGames = new MiniGames(store, config); this.arcade = new CommunityArcade(store,config.broadcasterUserId); this.vault = new CommunityVault(store,config.botUserId); this.hauntedHouse=new CommunityHauntedHouse(store); this.moderatorPranks = new ModeratorPranks(store,()=>((this.vault.publicSnapshot().vault as {status?:string}|undefined)?.status==='active'),()=>this.isMajorGameBusy()); }
 
   private isMajorGameBusy():boolean {
     const now=Date.now(),mini=this.miniGames.snapshot(),drop=this.arcade.snapshot('drop'),wheel=this.arcade.wheelStatus();
@@ -62,18 +64,21 @@ export class CommunityFeatures {
 
   syncLegacyHalloween(now = Date.now()): void { this.store.syncLegacyHalloween(now); }
 
+  recordHauntedHouseContribution(eventId:string,userId:string,now=Date.now()):void { this.hauntedHouse.recordAcceptedPlay(eventId,userId,now); }
+
   activeEventId(): string | undefined { return this.store.activeEvent()?.id; }
 
   helpAvailability(): HelpAvailability {
     const modules=this.store.config<Record<string,boolean>>('modules',{}),active=this.store.activeEvent();
     const eventSettings=this.store.config<{enabled?:boolean}>('quest_settings',{});
+    const ideaSettings=this.store.config<{enabled?:boolean;chatEnabled?:boolean}>('community_idea_settings',{});
     const mini=this.miniGames.settings(),arcade=this.arcade.settings(),spark=this.conversationSpark.config();
     const events=this.store.events().map(event=>({id:event.id,name:event.name,command:event.command,active:event.active&&(event.id==='halloween'||modules.events!==false)}));
     const activeEnabled=Boolean(active&&(active.id==='halloween'||modules.events!==false));
     return {xp:modules.xp!==false,events:activeEnabled,...(activeEnabled&&active?{activeEventId:active.id,activeEventName:active.name,activeEventCommand:active.command}:{}),seasonalEvents:events,
       pet:arcade.petEnabled,petCare:arcade.petEnabled&&!Boolean((this.arcade.snapshot('pet').pet as {paused?:boolean}|undefined)?.paused),
       drops:arcade.dropsEnabled,wheel:arcade.wheelEnabled,imposter:mini.enabled,detective:mini.enabled,vault:this.vault.settings().enabled,
-      quests:modules.quests!==false&&eventSettings.enabled!==false,spark:spark.enabled,
+      quests:modules.quests!==false&&eventSettings.enabled!==false,ideas:modules.ideas!==false&&ideaSettings.enabled!==false&&ideaSettings.chatEnabled!==false,spark:spark.enabled,
       eightBall:modules.eightBall!==false,rps:modules.rps!==false,guess:modules.guess!==false,duels:modules.duels!==false};
   }
 
@@ -88,6 +93,8 @@ export class CommunityFeatures {
     const name = cleanName(message.senderDisplayName);
     const say = (value: string, category: ChatCategory = categoryForCommand(command)): CommandReply[] => [{ message: clampChatMessage(value, this.config.appChatMessageLength), category,
       ...(message.messageId ? { replyParentMessageId: message.messageId } : {}) }];
+
+    if(command==='idee'||command==='ideen')return this.handleIdeaCommand(message,command,args,now,say);
 
     if(command==='code') { this.vault.guess(message,args,now); return []; }
 
@@ -115,7 +122,7 @@ export class CommunityFeatures {
       if (command === 'rank') return say(`⭐ ${name}: Rang ${this.store.xpRank(message.senderUserId) || 'noch nicht gelistet'}.`);
     }
 
-    if (modules.eightBall !== false && command === '8ball') return say(this.eightBall(message.senderUserId, args, now));
+    if (modules.eightBall !== false && command === '8ball') { const reply=this.eightBall(message,args,now);return reply?say(reply):[]; }
     if (modules.rps !== false && command === 'rps') return say(this.rps(message, args, now));
     if (modules.guess !== false && command === 'startguess') return say(this.startGuess(message, now));
     if (modules.guess !== false && command === 'guess') return say(this.guess(message, args, now));
@@ -141,6 +148,30 @@ export class CommunityFeatures {
       }
     }
     return [];
+  }
+
+  private handleIdeaCommand(message:ChatMessage,command:string,args:string[],now:number,say:(text:string,category?:ChatCategory)=>CommandReply[]):CommandReply[] {
+    const settings=this.store.config<{enabled?:boolean;chatEnabled?:boolean;cooldownMs?:number;maxLength?:number}>('community_idea_settings',{enabled:true,chatEnabled:true,cooldownMs:600_000,maxLength:240});
+    if(settings.enabled===false||settings.chatEnabled===false)return say('💡 Der Community-Ideenkasten ist gerade pausiert.','ideas');
+    if(command==='ideen')return say('💡 Alle Vorschläge ansehen und abstimmen: https://twitch.gater-app.de/community/ideen','ideas');
+    const sub=(args[0]||'').toLowerCase();
+    if(sub==='status'){
+      const idPrefix=(args[1]||'').toLowerCase(),idea=idPrefix?['approved','voting','accepted','planned','implemented'].flatMap(status=>this.store.communityIdeas({status,limit:200})).find(item=>item.id.toLowerCase().startsWith(idPrefix)):undefined;
+      if(!idea)return say('💡 Diese freigegebene Ideen-ID wurde nicht gefunden.','ideas');
+      const labels:Record<string,string>={pending:'eingereicht und wartet auf Prüfung',reviewing:'wird gerade geprüft',approved:'freigegeben',voting:'steht zur Abstimmung',accepted:'angenommen',planned:'in Planung',implemented:'umgesetzt',rejected:'nicht freigegeben',archived:'archiviert'};
+      return say(`💡 Idee #${idea.id.slice(0,8)} ist ${labels[idea.status]||'aktualisiert'}.`,'ideas');
+    }
+    if(sub==='top'){
+      const idea=this.store.communityIdeas({status:'approved',sort:'popular',limit:1})[0];
+      return say(idea?`💡 Community-Favorit: „${idea.text}“ – schau im Portal vorbei: https://twitch.gater-app.de/community/ideen`:'💡 Noch gibt es keine freigegebenen Ideen.','ideas');
+    }
+    const text=args.join(' ').normalize('NFC').trim();
+    if(!text)return say('💡 Du hast eine Idee für Jannik? Schreib einfach: !idee DEIN VORSCHLAG 💜','ideas');
+    const length=Array.from(text).length,max=Math.min(240,Math.max(40,Number(settings.maxLength)||240));
+    if(length<8||length>max||/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/u.test(text))return say(`💡 Bitte beschreibe deine Idee mit 8 bis ${max} Zeichen.`,'ideas');
+    const result=this.store.submitCommunityIdea({id:randomUUID(),userId:message.senderUserId,displayName:cleanName(message.senderDisplayName),text,now,cooldownMs:Math.max(60_000,Math.min(86_400_000,Number(settings.cooldownMs)||600_000))});
+    if(!result.ok)return say(result.reason==='duplicate'?'💡 Diese Idee hast du vor Kurzem schon eingereicht.':result.reason==='cooldown'?'⏳ Bitte warte noch kurz, bevor du eine weitere Idee einreichst.':'💡 Du hast bereits mehrere offene Ideen. Warte bitte erst die Prüfung ab.','ideas');
+    return say(`💡💜 Deine Idee ist gespeichert, @${cleanName(message.senderDisplayName)}! Danke für deinen Vorschlag! Jannik und die Mods schauen sie sich an. 🐾 ID: #${result.idea.id.slice(0,8)}`,'ideas');
   }
 
   private handleEvents(message: ChatMessage, command: string, args: string[], name: string, now: number): string | undefined {
@@ -211,15 +242,20 @@ export class CommunityFeatures {
     return top.length ? `⭐ XP-Top: ${top.map((p, i) => `${i + 1}. ${cleanName(p.displayName)} ${p.xp}`).join(' · ')}` : '⭐ Noch keine XP gesammelt.';
   }
 
-  private eightBall(userId: string, args: string[], now: number): string {
-    if (!args.length) return '🎱 Stell eine Frage dazu: !8ball Frage';
-    const left = this.store.useCooldown('8ball', userId, now, 10_000);
-    if (left) return `🎱 Bitte noch ${Math.ceil(left / 1000)} Sek. warten.`;
-    const answers = this.store.config<string[]>('8ball_answers', []);
-    const pool = answers.length && JSON.stringify(answers) !== JSON.stringify(LEGACY_DEFAULT_8BALL_ANSWERS)
-      ? answers
-      : DEFAULT_8BALL_ANSWERS;
-    return `🎱 ${pool[this.random(0, pool.length - 1)]}`;
+  private eightBall(message: ChatMessage, args: string[], now: number): string {
+    if (!args.length) return '🎱 Benutzung: !8ball Wird Jannik heute gewinnen?';
+    const saved=this.store.config<Partial<typeof DEFAULT_EIGHT_BALL_SETTINGS>>('eight_ball_settings',{});
+    const settings={...DEFAULT_EIGHT_BALL_SETTINGS,...saved};
+    const cooldown=this.store.useCooldownPair('8ball',message.senderUserId,now,settings.personalCooldownMs,settings.globalCooldownMs);
+    if(cooldown?.blocked==='global')return '';
+    if(cooldown?.blocked==='personal'){
+      if(!settings.cooldownNotices||this.store.useCooldown('8ball_notice',message.senderUserId,now,30_000)>0)return '';
+      return `🎱 @${cleanName(message.senderDisplayName)}, deine Kugel lädt noch auf. Versuch's in ${Math.ceil(cooldown.remainingMs/1000)} Sekunden erneut.`;
+    }
+    const question=args.join(' '),previous=this.store.state<{answer:string;at:number}|null>('eight_ball_last_reply',null);
+    const result=chooseEightBallAnswer(question,this.random(1,100),this.random(0,11),previous?.answer);
+    this.store.setState('eight_ball_last_reply',{answer:result.answer,at:now},now);
+    return result.answer;
   }
 
   private rps(message: ChatMessage, args: string[], now: number): string {
@@ -238,7 +274,7 @@ export class CommunityFeatures {
   }
 
   private startGuess(message: ChatMessage, now: number): string {
-    if (!this.isModerator(message)) return '⛔ Nur Jannik oder Mods dürfen eine Zahlenrunde starten.';
+    if (!this.isGuessStarter(message)) return '⛔ !startguess dürfen nur Jannik, Moderatoren und Twitch-VIPs starten.';
     const settings = this.store.config('game_settings', { guessMin: 1, guessMax: 100, guessTimeoutMs: 120_000, guessAttempts: 5 });
     if (this.store.state('guess', null)) return '🔢 Eine Zahlenrunde läuft bereits.';
     const target = this.random(settings.guessMin, settings.guessMax);
@@ -369,6 +405,10 @@ export class CommunityFeatures {
   private isModerator(message: ChatMessage): boolean {
     return message.senderUserId === this.config.broadcasterUserId || message.isModerator === true
       || this.config.authorizedModeratorIds.includes(message.senderUserId);
+  }
+
+  private isGuessStarter(message: ChatMessage): boolean {
+    return this.isModerator(message) || message.isVip === true;
   }
 
   private hasPermission(message: ChatMessage, permission: CustomCommand['permission']): boolean {

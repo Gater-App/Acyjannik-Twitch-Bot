@@ -16,12 +16,13 @@ test('Chat-Hilfe ist knapp, Aliase funktionieren und nennen nur aktivierte Funkt
   assert.match(helpReply(['ostern'],viewer,{...active,seasonalEvents:[{id:'easter',name:'Ostern',command:'egghunt',active:true}]}),/Ostern läuft.*!egghunt/u);
   assert.ok(helpReply(['spiele'],viewer,active).length<250);
   assert.match(helpReply(['drop'],viewer,{...active,drops:false}),/deaktiviert/u);
+  assert.match(helpReply(['spiele'],viewer,active),/!startguess \(Jannik\/Mods\/VIPs\).*!guess ZAHL \(mitraten\)/u);
 });
 
 test('Moderatorhilfe nutzt kurze Unterkategorien und bewahrt Rollenprüfung',()=>{
   assert.match(helpReply(['mods'],{...viewer,isModerator:true},active),/!help mods spiele.*community.*events/u);
   assert.match(helpReply(['mods','events'],{...viewer,isModerator:true},active),/!startevent.*!endevent/u);
-  assert.match(helpReply(['mods','events'],viewer,active),/nur für Jannick/u);
+  assert.match(helpReply(['mods','events'],viewer,active),/nur für Jannik/u);
   assert.ok(helpReply(['mods','spiele'],{...viewer,isModerator:true},active).length<300);
 });
 
