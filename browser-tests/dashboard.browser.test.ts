@@ -11,6 +11,8 @@ import { CommunityArcade } from '../src/community-arcade.js';
 import { MiniGames } from '../src/mini-games.js';
 import { testConfig } from '../src/test-config.js';
 import { logger } from '../src/logger.js';
+import { CommunityFeatures } from '../src/community-features.js';
+import { ViewerCommunityPortal } from '../src/community-portal.js';
 
 async function freePort(): Promise<number> {
   const server = net.createServer();
@@ -24,6 +26,7 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
   const env = { ...process.env };
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'acy-dashboard-browser-'));
   const store = new FeatureStore(path.join(directory, 'bot.sqlite'));
+  store.awardXp('browser-ux-seed', 'viewer-42', 'Testviewer', 250, 'Browser-Testkonto', Date.now());
   const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
   process.env.TWITCH_CLIENT_ID = 'test-client';
@@ -41,7 +44,9 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
   };
   const arcade = new CommunityArcade(store, 'channel-1');
   const miniGames = new MiniGames(store, testConfig());
-  const dashboard = new DashboardServer(store, () => ({ twitchConnected: true, channel: 'acyjannik', startedAt: 1 }), logger, fetchImpl, undefined, undefined, undefined, miniGames, arcade);
+  const communityFeatures = new CommunityFeatures(store, testConfig());
+  const portal = new ViewerCommunityPortal(store, communityFeatures, testConfig(), fetchImpl);
+  const dashboard = new DashboardServer(store, () => ({ twitchConnected: true, channel: 'acyjannik', startedAt: 1 }), logger, fetchImpl, undefined, undefined, undefined, miniGames, arcade, undefined, undefined, undefined, undefined, undefined, portal);
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
   try {
     assert.equal(await dashboard.start(), true);
@@ -60,7 +65,7 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     await page.context().addCookies([{ name: 'community_admin', value: sessionCookie.split('=')[1], domain: '127.0.0.1', path: '/', httpOnly: true, secure: true, sameSite: 'Lax' }]);
     const pageErrors: string[] = [];
     const apiResponses: string[] = [];
-    page.on('pageerror', (error) => pageErrors.push(error.message));
+    page.on('pageerror', (error) => pageErrors.push(`${error.message} at ${error.stack}`));
     page.on('response', (response) => { if (new URL(response.url()).pathname.startsWith('/dashboard/api/')) apiResponses.push(`${response.status()} ${new URL(response.url()).pathname}`); });
     const assertSubpage = async (selector: string, active: boolean) => {
       const state = await page.locator(selector).evaluate((node) => ({ hidden: (node as HTMLElement).hidden, display: getComputedStyle(node).display, active: (node as HTMLElement).dataset.active === 'true' }));
@@ -168,17 +173,53 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
 
     await navigate('settings');
     assert.equal(await page.locator('#automatic-chat-form label[name="custom"]').isVisible(), false, 'optionales Intervallfeld bleibt verborgen, bis „Eigenes Intervall“ gewählt wird');
-    for (const name of ['general', 'messages', 'commands', 'functions', 'integrations', 'moderation', 'diagnostics']) {
+    assert.equal(await page.locator('[data-setting-target="general"]').count(), 0, 'leere Allgemein-Seite wurde aus der Navigation entfernt');
+    for (const name of ['messages', 'commands', 'functions', 'integrations', 'moderation', 'diagnostics']) {
       await page.locator(`[data-setting-target="${name}"]`).click();
       await assertSubpage(`[data-setting-page="${name}"]`, true);
       const settingText = (await page.locator(`[data-setting-page="${name}"]`).innerText()).trim();
       assert.ok(settingText.length > 20, `${name} zeigt zugehörige Einstellungen und bleibt keine leere Seite: ${settingText.slice(0, 180)}`);
+      if (name === 'diagnostics') {
+        assert.equal(await page.locator('#settings-json').isVisible(), false, 'rohe JSON-Konfiguration erscheint nicht in den normalen Einstellungen');
+        assert.equal(await page.locator('#settings-json').evaluate((node) => node.closest('details')?.open), false, 'technische Konfiguration bleibt geschlossen');
+      }
+      if (name === 'commands') assert.doesNotMatch(settingText, /Millisekunden|\bms\b/u, 'Chatbefehle zeigen keine Millisekundenwerte');
+      if (name === 'moderation') {
+        await page.getByLabel('Twitch-Name', { exact: true }).fill('testviewer');
+        await page.getByRole('button', { name: 'Twitch-Konto suchen' }).click();
+        await page.getByRole('button', { name: 'Für Korrektur auswählen' }).click();
+        assert.match(await page.locator('#xp-user-selected').innerText(), /Testviewer.*250 XP/u, 'Zuschauerwahl zeigt den Namen und den aktuellen XP-Stand');
+        assert.equal(await page.locator('#xp-form [name="userId"]').isVisible(), false, 'interne Twitch-ID bleibt aus dem normalen Formular verborgen');
+        assert.equal(await page.locator('#xp-form [name="userId"]').inputValue(), 'viewer-42', 'Ausgewähltes Konto wird intern korrekt zugeordnet');
+      }
       if(name==='messages')assert.equal(await page.getByText('Community-Portal gelegentlich im Chat vorstellen').isVisible(),true,'Portal-Tipp ist über den verständlichen Schalter erreichbar');
-      if (name === 'integrations') assert.match(settingText, /nicht eingerichtet/u, 'Fehlende optionale Kanalpunkte-Anbindung wird erklärt statt die Seite leer zu lassen');
-      for (const other of ['general', 'messages', 'commands', 'functions', 'integrations', 'moderation', 'diagnostics']) {
+      if (name === 'integrations') {
+        assert.match(settingText, /nicht eingerichtet/u, 'Fehlende optionale Kanalpunkte-Anbindung wird erklärt statt die Seite leer zu lassen');
+        assert.equal(await page.locator('[data-integration-empty]').isVisible(), true, 'nicht eingerichtete Verbindung wird als klarer Status angezeigt');
+        assert.doesNotMatch(settingText, /Reward-ID|rewardId|\bID:/u, 'Kanalpunkte-Oberfläche zeigt keine technischen Reward-IDs');
+      }
+      for (const other of ['messages', 'commands', 'functions', 'integrations', 'moderation', 'diagnostics']) {
         if (other !== name) await assertSubpage(`[data-setting-page="${other}"]`, false);
       }
+      await screenshot(`acy-ux50-desktop-settings-${name}`);
     }
+    await page.evaluate(() => { location.hash = '#einstellungen/general'; });
+    await assertSubpage('[data-setting-page="diagnostics"]', true);
+
+    await navigate('community');
+    await page.locator('[data-community-target="spark"]').click();
+    assert.equal(await page.locator('#spark-settings textarea').count(), 0, 'eigene Themen werden ohne JSON-Editor verwaltet');
+    await page.getByText('Erkennung und eigene Themen einstellen').click();
+    assert.equal(await page.getByRole('button', { name: 'Thema hinzufügen' }).isVisible(), true, 'eigene Gesprächsthemen können verständlich ergänzt werden');
+    await page.getByRole('button', { name: 'Thema hinzufügen' }).click();
+    const newTopic = page.locator('.spark-topic').last();
+    await newTopic.getByLabel('Thema', { exact: true }).fill('Browser-Testthema');
+    await newTopic.getByLabel('Erkennungsbegriffe (durch Kommas trennen)', { exact: true }).fill('browser test, ux prüfung');
+    await page.getByRole('button', { name: 'Einstellungen speichern' }).click();
+    await page.getByText('Einstellungen und Themen gespeichert.').waitFor({ state: 'visible' });
+    const savedSpark = await page.evaluate(async () => (await (await fetch('/dashboard/api/spark')).json()).customTopics);
+    assert.ok(savedSpark.some((topic: { label: string }) => topic.label === 'Browser-Testthema'), 'Themenformular speichert eigene Themen dauerhaft über die API');
+    await screenshot('acy-ux50-desktop-community-spark');
 
     // Check the primary navigation and page width at tablet and iPhone sizes.
     for (const [label, width, height] of [['tablet', 768, 1024], ['iphone', 390, 844]] as const) {
@@ -195,9 +236,14 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     const streamerPage = await browser.newPage();
     await streamerPage.context().addCookies([{ name: 'community_admin', value: sessionCookie.split('=')[1], domain: '127.0.0.1', path: '/', httpOnly: true, secure: true, sameSite: 'Lax' }]);
     streamerPage.on('pageerror', (error) => pageErrors.push(error.message));
+    await streamerPage.route('**/dashboard/api/minigames', (route) => route.fulfill({ json: { settings: { enabled: true }, state: { imposter: { phase: 'registration', players: [{}, {}], endsAt: Date.now() + 60_000 }, detective: null } } }));
     await streamerPage.goto(`${base}/streamer`, { waitUntil: 'domcontentloaded', timeout: 10000 });
     assert.equal(await streamerPage.getByRole('heading', { name: /Streamer-Steuerung/u }).isVisible(), true);
     assert.equal(await streamerPage.locator('form, input, select, textarea').count(), 0, 'Streamer-Modus bleibt eine Bedienoberfläche ohne Konfigurationsformulare');
+    await streamerPage.getByText(/Anmeldung läuft/u).first().waitFor({ state: 'visible' });
+    assert.equal(await streamerPage.locator('#active button').count(), 0, 'Statusbereich zeigt laufende Spiele ohne doppelte Steuerknöpfe');
+    assert.equal(await streamerPage.locator('#games').getByRole('button', { name: 'Rollen verteilen' }).isVisible(), true, 'nächste Imposter-Aktion ist an einer einzigen Stelle verfügbar');
+    assert.match(await streamerPage.locator('#stream-status').innerText(), /Twitch-Chat:/u, 'Verbindungsstatus benennt den geprüften Bereich');
     for (const [label, width, height] of [['desktop', 1440, 1000], ['tablet', 768, 1024], ['iphone', 390, 844]] as const) {
       await streamerPage.setViewportSize({ width, height });
       const size = await streamerPage.evaluate(() => ({ viewport: document.documentElement.clientWidth, content: document.documentElement.scrollWidth }));
@@ -208,6 +254,22 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
       }
     }
     await streamerPage.close();
+
+    const portalPage = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    portalPage.on('pageerror', (error) => pageErrors.push(error.message));
+    await portalPage.goto(`${base}/community`, { waitUntil: 'domcontentloaded', timeout: 10000 });
+    await portalPage.getByRole('link', { name: 'Mit Twitch anmelden' }).waitFor({ state: 'visible' });
+    assert.equal(await portalPage.getByRole('link', { name: /Dashboard/u }).count(), 0, 'öffentliches Portal verweist nicht auf die Admin-Verwaltung');
+    for (const [label, width, height] of [['desktop', 1440, 1000], ['iphone', 390, 844]] as const) {
+      await portalPage.setViewportSize({ width, height });
+      const size = await portalPage.evaluate(() => ({ viewport: document.documentElement.clientWidth, content: document.documentElement.scrollWidth }));
+      assert.ok(size.content <= size.viewport + 1, `Community-Portal hat bei ${label} keinen horizontalen Überlauf: ${JSON.stringify(size)}`);
+      if (ux50ScreenshotDir) {
+        fs.mkdirSync(ux50ScreenshotDir, { recursive: true });
+        await portalPage.screenshot({ path: path.join(ux50ScreenshotDir, `acy-ux50-${label}-community-portal.png`), fullPage: true });
+      }
+    }
+    await portalPage.close();
 
     const logoutResponse = page.waitForResponse((response) => new URL(response.url()).pathname === '/dashboard/api/logout');
     await page.locator('#logout').click();
@@ -223,6 +285,7 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
   } finally {
     await browser?.close();
     await dashboard.stop();
+    portal.stop();
     store.close();
     fs.rmSync(directory, { recursive: true, force: true });
     for (const [key, value] of Object.entries(env)) process.env[key] = value;

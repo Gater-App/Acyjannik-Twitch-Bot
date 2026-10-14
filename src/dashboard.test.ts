@@ -161,7 +161,8 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.match(html,/Saisonpunkte für Halloween, Weihnachten und Ostern sind davon getrennt/u,'Saisonpunkte werden klar von XP getrennt');
     assert.match(html,/Privater OBS-Link/u);
     assert.match(html,/Erweiterte Einstellungen/u);
-    assert.match(html,/Für Fortgeschrittene: Erkennung einstellen/u);
+    assert.match(html,/Erkennung und eigene Themen einstellen/u,'Gesprächs-Funken-Einstellungen sind klar benannt und eigene Themen werden nicht als JSON gepflegt');
+    assert.doesNotMatch(html,/data-setting-target="general"/u,'leere Allgemein-Seite ist nicht in der Navigation');
     assert.match(html,/data-community-target="music"[^>]*>Song-Wünsche/u,'Song-Wünsche sind unter Community erreichbar');
     assert.match(html,/Song wünschen“ für genau 1\.000 Kanalpunkte/u,'das feste Request-Entgelt wird verständlich angezeigt');
     assert.match(html,/sr-connect[\s\S]*sr-playlists-load[\s\S]*sr-reward-create/u,'Spotify, Playlist und Reward lassen sich aus der Community-Ansicht einrichten');
