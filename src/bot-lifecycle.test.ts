@@ -15,13 +15,20 @@ test('Lebenszeichen sind standardmäßig aus und ungeplanter Start verwirft eine
   assert.equal(f.lifecycle.marker()?.phase,'cancelled');f.close();
 });
 
+test('Alte sent-Marker bleiben lesbar, ohne dass die API-Annahme als Zustellbeleg gilt',()=>{
+  const f=fixture();
+  f.store.setConfig('bot_lifecycle_marker',{id:'legacy',plannedAt:1_000,reason:'Geplantes Update',phase:'complete',farewellStatus:'sent',welcomeStatus:'sent',returnAllowed:true});
+  assert.equal(f.lifecycle.marker()?.farewellStatus,'sent','alte gespeicherte Marker bleiben rückwärtskompatibel');
+  f.close();
+});
+
 test('Live-Update sendet Abschied höchstens einmal und gibt genau einen Rückkehrversuch frei',()=>{
   const f=fixture();f.lifecycle.setEnabled(true);const prepared=f.lifecycle.prepare(1_000);assert.equal(prepared.ok,true);
   const marker=f.lifecycle.beginShutdown(2_000,true)!;assert.equal(marker.farewellStatus,'pending');
-  f.lifecycle.finishFarewell(marker.id,'sent');f.lifecycle.completeShutdown(marker.id);
+  f.lifecycle.finishFarewell(marker.id,'accepted');f.lifecycle.completeShutdown(marker.id);
   const candidate=f.lifecycle.takeReturnCandidate(3_000);assert.equal(candidate?.id,marker.id);assert.equal(candidate?.phase,'returning');
   assert.equal(f.lifecycle.takeReturnCandidate(3_500),undefined,'zweiter Start oder EventSub-Reconnect sendet keine zweite Rückkehrnachricht');
-  f.lifecycle.finishWelcome(marker.id,'sent');assert.equal(f.lifecycle.marker()?.welcomeStatus,'sent');
+  f.lifecycle.finishWelcome(marker.id,'accepted');assert.equal(f.lifecycle.marker()?.welcomeStatus,'accepted');
   f.close();
 });
 
@@ -39,7 +46,7 @@ test('Offline, fehlender Chatversand, abgebrochener Shutdown und Cooldown bleibe
 
 test('Abgelaufene Marker und ein Prozessabsturz beim Rückkehrversuch werden nicht wiederholt',()=>{
   const f=fixture();f.lifecycle.setEnabled(true);const prepared=f.lifecycle.prepare(100_000);assert.equal(prepared.ok,true);
-  const live=f.lifecycle.beginShutdown(101_000,true)!;f.lifecycle.finishFarewell(live.id,'sent');f.lifecycle.completeShutdown(live.id);
+  const live=f.lifecycle.beginShutdown(101_000,true)!;f.lifecycle.finishFarewell(live.id,'accepted');f.lifecycle.completeShutdown(live.id);
   const returning=f.lifecycle.takeReturnCandidate(102_000)!;assert.equal(returning.phase,'returning');
   const restarted=new BotLifecycle(f.store);assert.equal(restarted.takeReturnCandidate(103_000),undefined);
   assert.equal(restarted.marker()?.welcomeStatus,'failed');f.close();
@@ -48,7 +55,7 @@ test('Abgelaufene Marker und ein Prozessabsturz beim Rückkehrversuch werden nic
 test('Gleichzeitige Prozessstarts erhalten nur einen Rückkehr-Anspruch und laufende Spiele bleiben unverändert',()=>{
   const f=fixture();f.store.setState('guess',{status:'active',target:37},100_000);
   f.lifecycle.setEnabled(true);const prepared=f.lifecycle.prepare(100_000);assert.equal(prepared.ok,true);
-  const marker=f.lifecycle.beginShutdown(101_000,true)!;f.lifecycle.finishFarewell(marker.id,'sent');f.lifecycle.completeShutdown(marker.id);
+  const marker=f.lifecycle.beginShutdown(101_000,true)!;f.lifecycle.finishFarewell(marker.id,'accepted');f.lifecycle.completeShutdown(marker.id);
   const first=new BotLifecycle(f.store).takeReturnCandidate(102_000);
   const secondStore=new FeatureStore(path.join(f.dir,'data','bot.sqlite'));
   const second=new BotLifecycle(secondStore).takeReturnCandidate(102_000);secondStore.close();
@@ -59,10 +66,10 @@ test('Gleichzeitige Prozessstarts erhalten nur einen Rückkehr-Anspruch und lauf
 
 test('Deaktivieren während der Stabilisierungsphase unterdrückt die Rückkehrnachricht',()=>{
   const f=fixture();f.lifecycle.setEnabled(true);const prepared=f.lifecycle.prepare(1_000);assert.equal(prepared.ok,true);
-  const marker=f.lifecycle.beginShutdown(1_001,true)!;f.lifecycle.finishFarewell(marker.id,'sent');f.lifecycle.completeShutdown(marker.id);
+  const marker=f.lifecycle.beginShutdown(1_001,true)!;f.lifecycle.finishFarewell(marker.id,'accepted');f.lifecycle.completeShutdown(marker.id);
   assert.equal(f.lifecycle.takeReturnCandidate(1_002)?.phase,'returning');
   f.lifecycle.setEnabled(false);
-  f.lifecycle.finishWelcome(marker.id,'sent');
+  f.lifecycle.finishWelcome(marker.id,'accepted');
   assert.equal(f.lifecycle.marker()?.phase,'cancelled');assert.equal(f.lifecycle.marker()?.welcomeStatus,'skipped');
   f.close();
 });

@@ -6,7 +6,7 @@ export const BOT_LIFESIGNS_ENABLED_BY_DEFAULT = false;
 export const BOT_RESTART_COOLDOWN_MS = 30 * 60_000;
 export const BOT_RESTART_MARKER_TTL_MS = 15 * 60_000;
 
-export type RestartNoticeStatus = 'pending' | 'sent' | 'failed' | 'skipped';
+export type RestartNoticeStatus = 'pending' | 'accepted' | 'sent' | 'failed' | 'skipped';
 export type RestartPhase = 'armed' | 'shutting-down' | 'awaiting-return' | 'returning' | 'complete' | 'cancelled';
 export interface PlannedRestartMarker {
   id: string;
@@ -95,7 +95,7 @@ export class BotLifecycle {
     });
   }
 
-  finishFarewell(id:string,status:'sent'|'failed'|'skipped'):void {
+  finishFarewell(id:string,status:'accepted'|'sent'|'failed'|'skipped'):void {
     this.store.miniGameTransaction(db=>{const marker=this.readMarker(db);if(!marker||marker.id!==id||marker.phase!=='shutting-down')return;
       this.write(db,'bot_lifecycle_marker',{...marker,farewellStatus:status,returnAllowed:marker.returnAllowed&&status!=='skipped'});});
   }
@@ -122,7 +122,7 @@ export class BotLifecycle {
     });
   }
 
-  finishWelcome(id:string,status:'sent'|'failed'|'skipped'):void {
+  finishWelcome(id:string,status:'accepted'|'sent'|'failed'|'skipped'):void {
     this.store.miniGameTransaction(db=>{const marker=this.readMarker(db);if(!marker||marker.id!==id||marker.phase!=='returning')return;
       this.write(db,'bot_lifecycle_marker',{...marker,phase:'complete',welcomeStatus:status});});
   }
@@ -137,7 +137,7 @@ export class BotLifecycle {
   }
 }
 
-function isStatus(value:unknown):value is RestartNoticeStatus { return value==='pending'||value==='sent'||value==='failed'||value==='skipped'; }
+function isStatus(value:unknown):value is RestartNoticeStatus { return value==='pending'||value==='accepted'||value==='sent'||value==='failed'||value==='skipped'; }
 function readConfig<T>(db:BetterSqlite3.Database,key:string,fallback:T):T {
   const row=db.prepare('SELECT value FROM feature_config WHERE key=?').get(key) as {value:string}|undefined;
   if(!row)return fallback;try{return JSON.parse(row.value) as T;}catch{return fallback;}
