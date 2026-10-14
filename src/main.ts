@@ -145,8 +145,8 @@ async function runLiveMode(): Promise<void> {
           const finalMarker=botLifecycle.marker();
           if(!streamLive||!eventsub.isConnected||!botLifecycle.settings().enabled||finalMarker?.id!==returnMarker.id||finalMarker.phase!=='returning'){botLifecycle.finishWelcome(returnMarker.id,'skipped');return;}
           const message=RESTART_WELCOME_MESSAGES[randomInt(RESTART_WELCOME_MESSAGES.length)]!;
-          try{const sent=await queue.enqueue(message,undefined,'info');botLifecycle.finishWelcome(returnMarker.id,sent?'sent':'failed');}
-          catch{botLifecycle.finishWelcome(returnMarker.id,'failed');}
+          try{const accepted=await queue.enqueue(message,undefined,'info');botLifecycle.finishWelcome(returnMarker.id,accepted?'accepted':'failed');if(!accepted)logger.warn('Neustart-Rückkehr wurde nicht von der Chat-Sendewarteschlange bestätigt.',{restartId:returnMarker.id});}
+          catch(error){botLifecycle.finishWelcome(returnMarker.id,'failed');logger.warn('Neustart-Rückkehr konnte nicht an Twitch übergeben werden.',{restartId:returnMarker.id,error:error instanceof Error?error.message:'unbekannt'});}
         })();
       }
     },
@@ -367,9 +367,10 @@ async function runLiveMode(): Promise<void> {
         let timeout:NodeJS.Timeout|undefined;
         try{
           const message=RESTART_GOODBYE_MESSAGES[randomInt(RESTART_GOODBYE_MESSAGES.length)]!;
-          const sent=await Promise.race([queue.enqueue(message,undefined,'info'),new Promise<boolean>(resolve=>{timeout=setTimeout(()=>resolve(false),4000);})]);
-          botLifecycle.finishFarewell(marker.id,sent?'sent':'failed');
-        }catch{botLifecycle.finishFarewell(marker.id,'failed');}finally{if(timeout)clearTimeout(timeout);}
+          const accepted=await Promise.race([queue.enqueue(message,undefined,'info'),new Promise<boolean>(resolve=>{timeout=setTimeout(()=>resolve(false),4000);})]);
+          botLifecycle.finishFarewell(marker.id,accepted?'accepted':'failed');
+          if(!accepted)logger.warn('Neustart-Abschied wurde nicht von der Chat-Sendewarteschlange bestätigt.',{restartId:marker.id});
+        }catch(error){botLifecycle.finishFarewell(marker.id,'failed');logger.warn('Neustart-Abschied konnte nicht an Twitch übergeben werden.',{restartId:marker.id,error:error instanceof Error?error.message:'unbekannt'});}finally{if(timeout)clearTimeout(timeout);}
       }
       await eventsub.stop();
       await dashboard?.stop();

@@ -134,7 +134,7 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     const eightBallSave=await fetch(`${base}/dashboard/api/eight-ball`,{method:'POST',headers:{Cookie:sessionCookie,Origin:base,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({enabled:false,personalCooldownSeconds:45,globalCooldownSeconds:7,cooldownNotices:false})});
     assert.equal(eightBallSave.status,200);const savedEightBall=await fetch(`${base}/dashboard/api/eight-ball`,{headers:{Cookie:sessionCookie}});
     assert.deepEqual((await savedEightBall.json() as any),{enabled:false,settings:{personalCooldownMs:45_000,globalCooldownMs:7_000,cooldownNotices:false},distribution:{yes:40,no:40,maybe:20},lastUsedAt:null});
-    assert.match(html,/Bot-Lebenszeichen/u);assert.match(html,/Bei geplanten Neustarts verabschieden und zurückmelden/u);
+    assert.match(html,/Bot-Lebenszeichen/u);assert.match(html,/Bei geplanten Neustarts verabschieden und zurückmelden/u);assert.match(html,/Zustellung nicht unabhängig bestätigt/u);
     assert.match(html,/Eigene geplante Nachrichten/u);assert.match(html,/Community-Tipps/u);assert.match(html,/automatic-chat-form/u);assert.match(html,/communityTipCategories/u);
     assert.match(html,/@media\(max-width:520px\)/u);
     assert.match(page.headers.get('content-security-policy') || '', /nonce-/u);
