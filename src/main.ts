@@ -97,6 +97,7 @@ async function runLiveMode(): Promise<void> {
       const result = await sendChatMessageWithRetry(api, config.broadcasterUserId, config.botUserId, message, replyParentMessageId);
       if (!result.isSent) logger.warn('Twitch hat die Antwort verworfen.', { reason: result.dropReason || 'unbekannt' });
       else logger.info('Twitch hat die Chatantwort angenommen.');
+      if(!result.isSent)throw new Error(result.dropReason||'Twitch hat die Chatnachricht nicht angenommen.');
     },
     Math.max(1500, config.sendQueueIntervalMs),
     logger,
@@ -105,6 +106,10 @@ async function runLiveMode(): Promise<void> {
   let channelPoints:ChannelPointsService|undefined;
   let songRequests:SpotifySongRequests|undefined;
   let lastSpecialAnnouncementAt = botStartedAt;
+  let lastKnownStreamLive:boolean|undefined;
+  let streamStatusCheckedAt=0;
+  const recordStreamStatus=(stream:unknown)=>{lastKnownStreamLive=Boolean(stream);streamStatusCheckedAt=Date.now();};
+  const recordStreamStatusError=()=>{lastKnownStreamLive=undefined;streamStatusCheckedAt=Date.now();};
   const eventsub = new EventSubClient(
     async (sessionId) => {
       await api.ensureChatSubscription(sessionId, config.broadcasterUserId, config.botUserId);
@@ -185,7 +190,7 @@ async function runLiveMode(): Promise<void> {
         if(vaultReady&&!checkingVaultLive&&now-lastVaultLiveCheckAt>=15_000){
           checkingVaultLive=true;lastVaultLiveCheckAt=now;
           try{
-            const stream=await api.getStreamStatus(config.broadcasterUserId);
+            const stream=await api.getStreamStatus(config.broadcasterUserId);recordStreamStatus(stream);
             if(stream&&community.vault.autoStartReady(Date.now(),community.vault.activeViewerCount(),busy,lastSpecialAnnouncementAt)){
               const started=community.vault.startAutomatic(Date.now());
               if(started.ok){lastSpecialAnnouncementAt=Date.now();try{await queue.enqueue(started.message,undefined,'vault');}
@@ -193,7 +198,7 @@ async function runLiveMode(): Promise<void> {
                 return;
               }
             }
-          }catch(error){logger.warn('Automatischer Tresor-Start wegen unbekanntem Live-Status zurückgestellt.',{error:error instanceof Error?error.message:'unbekannt'});}
+          }catch(error){recordStreamStatusError();logger.warn('Automatischer Tresor-Start wegen unbekanntem Live-Status zurückgestellt.',{error:error instanceof Error?error.message:'unbekannt'});}
           finally{checkingVaultLive=false;}
         }
         const profile = chatPolicy.snapshot().profile, availability = {...community.helpAvailability(),communityPortal:communityTips.settings().portalEnabled};
@@ -204,7 +209,7 @@ async function runLiveMode(): Promise<void> {
           &&!checkingWheelLive&&now-lastWheelLiveCheckAt>=15_000){
           checkingWheelLive=true;lastWheelLiveCheckAt=now;
           try{
-            const stream=await api.getStreamStatus(config.broadcasterUserId);
+            const stream=await api.getStreamStatus(config.broadcasterUserId);recordStreamStatus(stream);
             if(stream){
               const result=community.arcade.autoSpinIfDue(Date.now());
               if(result){
@@ -214,14 +219,14 @@ async function runLiveMode(): Promise<void> {
                 return;
               }
             }
-          }catch(error){logger.warn('Automatischer Glücksrad-Dreh wegen unbekanntem Live-Status oder Twitch-Fehler zurückgestellt.',{error:error instanceof Error?error.message:'unbekannt'});}
+          }catch(error){recordStreamStatusError();logger.warn('Automatischer Glücksrad-Dreh wegen unbekanntem Live-Status oder Twitch-Fehler zurückgestellt.',{error:error instanceof Error?error.message:'unbekannt'});}
           finally{checkingWheelLive=false;}
         }
         if (!checkingLive && now - lastTipLiveCheckAt >= 15_000 && (Boolean(dueMessage)||wantsTip)) {
           checkingLive = true;
           try {
             lastTipLiveCheckAt = Date.now();
-            const stream = await api.getStreamStatus(config.broadcasterUserId);
+            const stream = await api.getStreamStatus(config.broadcasterUserId);recordStreamStatus(stream);
             if (!stream) { communityTips.alignStream(null);communityTips.maybeSend({ isLive: false, profile, availability, busy, now: Date.now() }); }
             else {
               communityTips.alignStream(stream.id);
@@ -233,19 +238,20 @@ async function runLiveMode(): Promise<void> {
               const currentDue=automaticChatMessages.nextDue(Date.now(),communityTips.eligibleActivityMessages,currentBusy,true);
               if(currentDue&&chatPolicy.shouldSend({message:currentDue.message,now:Date.now()})&&automaticChatMessages.reserveMessageAttempt(currentDue.id,Date.now())){
                 communityTips.consumeActivity();
-                try{await queue.enqueue(currentDue.message,undefined,'info');automaticChatMessages.markSent(currentDue.id,Date.now());}
+                try{const sent=await queue.enqueue(currentDue.message,undefined,'info');if(sent)automaticChatMessages.markSent(currentDue.id,Date.now());else automaticChatMessages.markFailed(currentDue.id,Date.now());}
                 catch(error){automaticChatMessages.markFailed(currentDue.id,Date.now());logger.warn('Automatische Chatnachricht konnte nicht gesendet werden; nächster Versuch frühestens nach dem Nachrichtenintervall.',{error:error instanceof Error?error.message:'unbekannt'});}
               }else if(!currentBusy&&wantsTip){
                 const tip = communityTips.maybeSend({ isLive: true, streamId: stream.id, profile, availability, busy:currentBusy, now: Date.now(),
                   allowSend: candidate => chatPolicy.shouldSend({ message: candidate.text, now: Date.now() })&&automaticChatMessages.reserveGlobalSlot(Date.now()) });
                 if(tip){
                   communityTips.consumeActivity();
-                  try{await queue.enqueue(tip.text,undefined,'tip');}catch(error){logger.warn('Community-Tipp konnte nicht in den Chat gestellt werden.',{error:error instanceof Error?error.message:'unbekannt'});}
+                  try{const sent=await queue.enqueue(tip.text,undefined,'tip');if(sent)communityTips.markDelivered(tip,Date.now());}catch(error){logger.warn('Community-Tipp konnte nicht in den Chat gestellt werden.',{error:error instanceof Error?error.message:'unbekannt'});}
                 }
               }
             }
           }
           catch (error) {
+            recordStreamStatusError();
             logger.warn('Community-Tipp wegen unbekanntem Twitch-Live-Status unterdrückt.', { error: error instanceof Error ? error.message : 'unbekannt' });
           } finally { checkingLive = false; }
         }
@@ -281,12 +287,13 @@ async function runLiveMode(): Promise<void> {
     songRequests=new SpotifySongRequests(features,redemptionApi,redemptionOauth,config.broadcasterUserId,logger);
     await songRequests.initialize();
     const viewerPortal=new ViewerCommunityPortal(features,community,{...config,redirectUri:process.env.DASHBOARD_REDIRECT_URI?.trim()||config.redirectUri},fetch);
-    dashboard = new DashboardServer(features, () => ({twitchConnected:eventsub.isConnected,channel:config.channelLogin,startedAt:botStartedAt,...queue.snapshot(),chatResponse:chatPolicy.snapshot()}),
+    dashboard = new DashboardServer(features, () => ({twitchConnected:eventsub.isConnected,channel:config.channelLogin,startedAt:botStartedAt,...queue.snapshot(),chatResponse:chatPolicy.snapshot(),streamLive:lastKnownStreamLive,streamStatusCheckedAt}),
       logger,fetch,()=>community.conversationSpark.snapshot(),channelPoints,()=>oauthServer.startUrlFor('channel-points'),community.miniGames,community.arcade,
       async(message,category)=>{if(!chatPolicy.shouldSend({message,now:Date.now()}))return;await queue.enqueue(message,undefined,category);},chatPolicy,communityTips,automaticChatMessages,songRequests,viewerPortal,community.vault,
       async()=>{const now=Date.now(),stream=await api.getStreamStatus(config.broadcasterUserId);if(!stream||community.vault.activeViewerCount(now)<community.vault.settings().minActiveViewers||now-lastSpecialAnnouncementAt<5*60_000)return false;const game=community.miniGames.snapshot(),drop=community.arcade.snapshot('drop'),wheel=community.arcade.wheelStatus(),dropStatus=(drop.drop as {status?:string}|undefined)?.status;return !Boolean(game.imposter||game.detective||features.activeQuest()||features.activePoll(now)||features.activeBoss(now)||['announced','claiming','resolving'].includes(dropStatus||'')||wheel.active||queue.busy);},
       community.moderatorPranks,async(login)=>{const user=(await api.getUsers([login]))[0];return user?{id:user.id,login:user.login,displayName:user.display_name}:undefined;},
-      {weights:config.eventWeights,source:process.env.EVENT_WEIGHTS_JSON?.trim()?'EVENT_WEIGHTS_JSON (beim Bot-Start geladen)':'Standardwerte aus src/config.ts'});
+      {weights:config.eventWeights,source:process.env.EVENT_WEIGHTS_JSON?.trim()?'EVENT_WEIGHTS_JSON (beim Bot-Start geladen)':'Standardwerte aus src/config.ts'},
+      ()=>communityPortalHealth.isAvailable());
     logger.info('OAuth-Server erreichbar unter http://127.0.0.1:3000/oauth/start');
     await dashboard.start();
     eventsub.start();

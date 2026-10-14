@@ -117,16 +117,26 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
 
     await navigate('settings');
     await page.locator('[data-setting-target="messages"]').click();
-    const halloweenPanel=page.locator('#chat-response-settings');
-    await halloweenPanel.getByRole('heading',{name:'🎃 Halloween-Event bewerben'}).waitFor({state:'visible'});
-    assert.equal(await halloweenPanel.locator('.chat-preview').count(),5,'fünf echte Halloween-Nachrichtenvorschauen');
-    assert.match(await halloweenPanel.innerText(),/Halloween-Event ist aktuell nicht aktiv/u,'inaktives Event wird im Dashboard erklärt');
-    assert.equal(await halloweenPanel.locator('select').nth(1).inputValue(),'frequent','Häufiger ist die gewählte Vorgabe');
-    await screenshot('acy-dashboard-halloween-reminders');
-    await halloweenPanel.getByLabel('Halloween-Erinnerungen aktivieren').uncheck();
-    await halloweenPanel.locator('select').nth(1).selectOption('normal');
-    await halloweenPanel.getByRole('button',{name:'Speichern'}).click();
-    await page.waitForFunction(async()=>{const d=await(await fetch('/dashboard/api/chat-messages')).json();return d.communityTips?.halloweenEnabled===false&&d.communityTips?.halloweenFrequency==='normal'});
+    const hintPanel=page.locator('#chat-response-settings');
+    await hintPanel.getByRole('heading',{name:'Automatische Chat-Hinweise'}).waitFor({state:'visible'});
+    assert.match(await hintPanel.innerText(),/Ruhig[\s\S]*Normal[\s\S]*Lebhaft/u,'Profile und tatsächliche Grenzen werden angezeigt');
+    assert.match(await hintPanel.innerText(),/Community-Tresor[\s\S]*!code 427/u,'aktiviertes Spiel zeigt den belegten Zuschauerbefehl');
+    assert.match(await hintPanel.innerText(),/Vorschau · kein Versand/u,'Vorschau versendet keine Twitch-Nachricht');
+    assert.match(await hintPanel.innerText(),/Event nicht aktiv; Hinweise pausieren automatisch/u,'inaktives Saison-Event wird klar gekennzeichnet');
+    assert.equal(await hintPanel.locator('[data-category]').count(),15,'alle implementierten Hinweis-Kategorien werden angezeigt');
+    assert.equal(await hintPanel.locator('[data-category="halloween"] .chat-preview').count(),2,'Halloween-Vorschauen erscheinen auch ohne aktives Event als Beispiele');
+    const screenshotDir=process.env.DASHBOARD_SCREENSHOT_DIR;
+    if(screenshotDir){fs.mkdirSync(screenshotDir,{recursive:true});await page.screenshot({path:path.join(screenshotDir,'automatic-chat-hints-desktop.png'),fullPage:true});}
+    const questCard=hintPanel.locator('[data-category="quest"]');
+    assert.match(await questCard.innerText(),/!quest IDEE/u);assert.match(await questCard.innerText(),/Jannick oder ein Mod startet/u);
+    const hallow=hintPanel.locator('[data-category="halloween"] input[type="checkbox"]');await hallow.uncheck();
+    await hintPanel.locator('select').nth(1).selectOption('normal');
+    await hintPanel.getByRole('button',{name:'Einstellungen speichern'}).click();
+    await page.waitForFunction(async()=>{const d=await(await fetch('/dashboard/api/chat-messages')).json();return d.communityTips?.halloweenEnabled===false&&d.communityTips?.halloweenFrequency==='normal'&&d.communityTips?.enabledCategories?.halloween===false});
+    await page.setViewportSize({width:390,height:844});
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth+1),'Chat-Hinweise passen mobil ohne seitliches Scrollen');
+    if(screenshotDir){await page.screenshot({path:path.join(screenshotDir,'automatic-chat-hints-mobile.png'),fullPage:true});}
+    await page.setViewportSize({width:1440,height:1000});
 
     await navigate('obs');
     assert.equal(await page.getByRole('heading', { name: 'OBS-Einrichtung' }).isVisible(), true, 'OBS wird als geführter Einrichtungsschritt dargestellt');
@@ -211,7 +221,6 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
       assert.fail(`Elio-Status fehlt: ${JSON.stringify(await page.evaluate(() => ({ petStatus: document.querySelector('#pet-status')?.textContent, arcadeState: document.querySelector('#arcade-state')?.textContent, arcadeCard: document.querySelector('#dashboard-community')?.textContent, arcadeCount: document.querySelectorAll('#arcade-state').length, arcadeButtonCount: document.querySelectorAll('#arcade-drop').length, arcadeLoad: typeof (window as unknown as {arcadeLoad?:unknown}).arcadeLoad, inlineHasArcade: [...document.scripts].some(s=>s.textContent.includes('arcadeLoad')) })))}, pageErrors=${pageErrors.join(' | ')}, api=${apiResponses.join(', ')}`);
     });
     assert.match(await elioStatus.innerText(), /Kätzchen/u, 'Elio zeigt seine Lebensphase');
-    const screenshotDir = process.env.DASHBOARD_SCREENSHOT_DIR;
     if (screenshotDir) { fs.mkdirSync(screenshotDir, { recursive: true }); await page.screenshot({ path: path.join(screenshotDir, 'acy-dashboard-elio.png'), fullPage: true }); }
     await page.locator('[data-community-target="music"]').click();
     await assertSubpage('[data-community-page="music"]', true);
@@ -265,7 +274,7 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
         assert.equal(await page.locator('#xp-form [name="userId"]').isVisible(), false, 'interne Twitch-ID bleibt aus dem normalen Formular verborgen');
         assert.equal(await page.locator('#xp-form [name="userId"]').inputValue(), 'viewer-42', 'Ausgewähltes Konto wird intern korrekt zugeordnet');
       }
-      if(name==='messages')assert.equal(await page.getByText('Community-Portal gelegentlich im Chat vorstellen').isVisible(),true,'Portal-Tipp ist über den verständlichen Schalter erreichbar');
+      if(name==='messages')assert.equal(await page.locator('#chat-response-settings [data-category="communityPortal"] input[type="checkbox"]').isVisible(),true,'Portal-Tipp ist über den Kategorie-Schalter erreichbar');
       if (name === 'integrations') {
         assert.match(settingText, /nicht eingerichtet/u, 'Fehlende optionale Kanalpunkte-Anbindung wird erklärt statt die Seite leer zu lassen');
         assert.equal(await page.locator('[data-integration-empty]').isVisible(), true, 'nicht eingerichtete Verbindung wird als klarer Status angezeigt');

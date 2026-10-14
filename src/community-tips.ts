@@ -4,8 +4,26 @@ import type { FeatureStore } from './feature-store.js';
 import type { ChatProfile } from './chat-response-policy.js';
 
 export type HalloweenTipFrequency = 'normal' | 'frequent';
-export interface CommunityTipSettings { enabled: boolean; portalEnabled: boolean; halloweenEnabled: boolean; halloweenFrequency: HalloweenTipFrequency; }
-export interface CommunityTipState { lastSentAt: number; streamId: string | null; sentInStream: string[]; sentHistory: number[]; lastCategory?: string; }
+export const COMMUNITY_TIP_CATEGORIES = [
+  { id: 'pet', name: 'Elio', description: 'Community-Katze und ihre Pflege.' },
+  { id: 'quest', name: 'Quests', description: 'Ideen einreichen und freigegebene Community-Aufgaben.' },
+  { id: 'xp', name: 'XP & Level', description: 'Persönlichen Fortschritt ansehen.' },
+  { id: 'communityPortal', name: 'Community-Portal', description: 'Öffentliche Portal-Seite, nur wenn sie erreichbar ist.' },
+  { id: 'wheel', name: 'Chaos Wheel', description: 'Aktionen und Status des Glücksrads.' },
+  { id: 'drop', name: 'Mystery Drops', description: 'Mitmachen, wenn Jannick einen Drop startet.' },
+  { id: 'vault', name: 'Community-Tresor', description: 'Gemeinsam den dreistelligen Code knacken.' },
+  { id: 'detective', name: 'Chat-Detektiv', description: 'Freigegebene Zitate erraten oder freiwillig einreichen.' },
+  { id: 'imposter', name: 'Imposter', description: 'Bei offener Anmeldung an der Runde teilnehmen.' },
+  { id: 'duel', name: 'Duell', description: 'Andere Zuschauer herausfordern.' },
+  { id: 'oracle', name: 'Orakel', description: 'Fragen mit dem 8-Ball stellen.' },
+  { id: 'rps', name: 'Schere, Stein, Papier', description: 'Kurze Runde gegen das Bot-Orakel.' },
+  { id: 'guess', name: 'Zahlenraten', description: 'Bei einer gestarteten Runde mitraten.' },
+  { id: 'season', name: 'Saison-Events', description: 'Nur das tatsächlich aktive Event.' },
+  { id: 'halloween', name: 'Halloween', description: 'Saisonhinweise während des aktiven Halloween-Events.' },
+] as const;
+export type CommunityTipCategoryId = typeof COMMUNITY_TIP_CATEGORIES[number]['id'];
+export interface CommunityTipSettings { enabled: boolean; portalEnabled: boolean; halloweenEnabled: boolean; halloweenFrequency: HalloweenTipFrequency; enabledCategories?: Partial<Record<CommunityTipCategoryId, boolean>>; }
+export interface CommunityTipState { lastSentAt: number; streamId: string | null; sentInStream: string[]; sentHistory: number[]; lastCategory?: string; lastTipId?: string; lastDeliveredAt?: number; lastDeliveredText?: string; lastDeliveredCategory?: string; }
 export interface TipAvailability {
   events?: boolean; eightBall?: boolean; rps?: boolean; guess?: boolean; duels?: boolean; pet?: boolean; detective?: boolean;
   quests?: boolean; xp?: boolean; drops?: boolean; imposter?: boolean; wheel?: boolean; vault?: boolean; petCare?: boolean;
@@ -77,8 +95,13 @@ export class CommunityTips {
   settings(): CommunityTipSettings {
     const raw = this.store.config<unknown>('community_tip_settings', { enabled: false, portalEnabled: false });
     const value=raw&&typeof raw==='object'?raw as Record<string,unknown>:{};
+    const enabledCategories:Partial<Record<CommunityTipCategoryId,boolean>>={};
+    if(value.enabledCategories&&typeof value.enabledCategories==='object')for(const {id} of COMMUNITY_TIP_CATEGORIES){
+      const stored=(value.enabledCategories as Record<string,unknown>)[id];if(typeof stored==='boolean')enabledCategories[id]=stored;
+    }
     return { enabled: value.enabled===true, portalEnabled:value.portalEnabled===true,
-      halloweenEnabled:value.halloweenEnabled!==false, halloweenFrequency:value.halloweenFrequency==='normal'?'normal':'frequent' };
+      halloweenEnabled:value.halloweenEnabled!==false, halloweenFrequency:value.halloweenFrequency==='normal'?'normal':'frequent',
+      ...(Object.keys(enabledCategories).length?{enabledCategories}:{}) };
   }
   configure(enabled: boolean): CommunityTipSettings {
     this.store.setConfig('community_tip_settings', { ...this.settings(), enabled });
@@ -89,6 +112,21 @@ export class CommunityTips {
     if(typeof enabled!=='boolean'||(frequency!=='normal'&&frequency!=='frequent'))throw new Error('Halloween-Einstellung ungültig.');
     this.store.setConfig('community_tip_settings',{...this.settings(),halloweenEnabled:enabled,halloweenFrequency:frequency});return this.settings();
   }
+  configureCategories(value:unknown):CommunityTipSettings {
+    if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('Die Hinweis-Kategorien sind ungültig.');
+    const input=value as Record<string,unknown>,next:Partial<Record<CommunityTipCategoryId,boolean>>={};
+    if(Object.keys(input).some(key=>!COMMUNITY_TIP_CATEGORIES.some(category=>category.id===key))
+      ||Object.values(input).some(enabled=>typeof enabled!=='boolean'))throw new Error('Die Hinweis-Kategorien sind ungültig.');
+    for(const {id} of COMMUNITY_TIP_CATEGORIES)if(typeof input[id]==='boolean')next[id]=input[id] as boolean;
+    const current=this.settings();
+    this.store.setConfig('community_tip_settings',{...current,enabledCategories:next,
+      ...(typeof next.communityPortal==='boolean'?{portalEnabled:next.communityPortal}:{}),
+      ...(typeof next.halloween==='boolean'?{halloweenEnabled:next.halloween}:{})});
+    return this.settings();
+  }
+  markDelivered(tip:CommunityTip,now=Date.now()):void {
+    const state=this.state();this.store.setConfig('community_tip_state',{...state,lastDeliveredAt:now,lastDeliveredText:tip.text,lastDeliveredCategory:tip.category});
+  }
   state() {
     const raw = this.store.config<unknown>('community_tip_state', { lastSentAt: 0, streamId: null, sentInStream: [], sentHistory: [] });
     const value = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
@@ -98,6 +136,10 @@ export class CommunityTips {
       sentInStream: Array.isArray(value.sentInStream) ? value.sentInStream.filter((id): id is string => typeof id === 'string') : [],
       sentHistory: Array.isArray(value.sentHistory) ? value.sentHistory.filter((at): at is number => typeof at === 'number' && Number.isFinite(at) && at > 0).slice(-24) : [],
       ...(typeof value.lastCategory === 'string' ? { lastCategory: value.lastCategory } : {}),
+      ...(typeof value.lastTipId === 'string' ? { lastTipId: value.lastTipId } : {}),
+      ...(typeof value.lastDeliveredAt === 'number'&&Number.isFinite(value.lastDeliveredAt)&&value.lastDeliveredAt>0?{lastDeliveredAt:value.lastDeliveredAt}:{}),
+      ...(typeof value.lastDeliveredText === 'string'?{lastDeliveredText:value.lastDeliveredText}:{}),
+      ...(typeof value.lastDeliveredCategory === 'string'?{lastDeliveredCategory:value.lastDeliveredCategory}:{}),
     };
   }
   observe(message: ChatMessage, now = Date.now()): void {
@@ -131,6 +173,17 @@ export class CommunityTips {
   }
 
   preview(availability: TipAvailability): CommunityTip[] { return this.available(availability); }
+  categoryCatalog(availability:TipAvailability) {
+    return COMMUNITY_TIP_CATEGORIES.map(category=>{
+      const enabled=this.categoryEnabled(category.id),tips=this.available(availability,true).filter(tip=>tip.category===category.id);
+      const available=category.id==='halloween'?this.halloweenAvailable(availability):tips.length>0;
+      const reason=!enabled?'Hinweise ausgeschaltet':available?'Funktion verfügbar':category.id==='communityPortal'?'Portal ist deaktiviert oder derzeit nicht erreichbar':category.id==='season'?'Kein passendes Saison-Event aktiv':'Funktion derzeit deaktiviert';
+      const examples=TIPS.filter(tip=>tip.category===category.id).map(tip=>tip.text);
+      if(category.id==='halloween')examples.push(...HALLOWEEN_TIP_MESSAGES);
+      if(category.id==='season'&&!examples.length)examples.push('Beim aktiven Saison-Event kannst du mit dem angezeigten Mitmach-Befehl Punkte sammeln.');
+      return {...category,enabled,available,reason,previews:examples,availablePreviews:tips.map(tip=>tip.text)};
+    });
+  }
   get eligibleActivityMessages():number { return this.activityCount; }
   consumeActivity():void { this.activityCount=0; }
   alignStream(streamId:string|null):void {
@@ -141,7 +194,8 @@ export class CommunityTips {
     const recent = this.sentAt.filter(at => now - at < 60 * 60_000).length;
     const halloween=this.halloweenState(),active=this.halloweenAvailable(availability);
     const halloweenInterval=Math.max(HALLOWEEN_TIP_MINIMUM_GAP_MS,HALLOWEEN_TIP_INTERVALS[this.settings().halloweenFrequency]);
-    return { ...this.settings(), profile, lastTipAt: state.lastSentAt || null,
+    return { ...this.settings(), profile, lastTipAt: state.lastSentAt || null, lastDeliveredAt:state.lastDeliveredAt||null,
+      lastDeliveredText:state.lastDeliveredText||null,lastDeliveredCategory:state.lastDeliveredCategory||null,
       nextEarliestAt: state.lastSentAt ? state.lastSentAt + rules.spacingMs : null,
       activityMessages: this.activityCount, requiredMessages: rules.messages, hourlyLimit: rules.hourly, sentThisHour: recent,
       halloweenActive:active,halloweenLastSentAt:halloween.lastSentAt||null,
@@ -181,16 +235,17 @@ export class CommunityTips {
     if (!selected) return undefined;
     if (this.featureUsedAt.has(selected.id) && now - this.featureUsedAt.get(selected.id)! < 15 * 60_000) return undefined;
     if (input.allowSend && !input.allowSend(selected)) return undefined;
-    this.store.setConfig('community_tip_state', { lastSentAt: now, streamId: input.streamId,
-      sentInStream: selected.id==='halloween-reminder'?sentInStream:[...sentInStream, selected.id], sentHistory: [...this.sentAt.filter(at => now - at < 60 * 60_000), now].slice(-24), lastCategory: selected.category });
+    this.store.setConfig('community_tip_state', { ...state,lastSentAt: now, streamId: input.streamId,
+      sentInStream: selected.id==='halloween-reminder'?sentInStream:[...sentInStream, selected.id], sentHistory: [...this.sentAt.filter(at => now - at < 60 * 60_000), now].slice(-24), lastCategory: selected.category,lastTipId:selected.id });
     this.sentAt.push(now);
     if(selected.id==='halloween-reminder')this.recordHalloweenReminder(now);
     this.activityCount = 0;
     return { ...selected, streamId: input.streamId };
   }
 
-  private available(a: TipAvailability): CommunityTip[] {
+  private available(a: TipAvailability,ignoreCategorySettings=false): CommunityTip[] {
     return TIPS.filter(tip => {
+      if(!ignoreCategorySettings&&!this.categoryEnabled(tip.category as CommunityTipCategoryId))return false;
       if (tip.id === 'community-portal') return this.settings().enabled&&this.settings().portalEnabled&&a.communityPortal===true;
       if (tip.id === 'eightball') return a.eightBall === true;
       if (tip.id === 'rps') return a.rps === true;
@@ -206,7 +261,7 @@ export class CommunityTips {
       if (tip.id === 'wheel') return a.wheel === true;
       if (tip.id === 'vault') return a.vault === true;
       return false;
-    }).concat(a.events && a.activeEventCommand && a.activeEventId!=='halloween' ? [{
+    }).concat(this.categoryEnabled('season')&&a.events && a.activeEventCommand && a.activeEventId!=='halloween' ? [{
       id: `season-${a.activeEventCommand}`, category: a.activeEventCommand === 'trickortreat' ? 'halloween' : 'season',
       text: `Beim ${a.activeEventName || 'Saison-Event'} kannst du mit !${a.activeEventCommand} mitmachen und Punkte sammeln.`,
     }] : []);
@@ -220,8 +275,15 @@ export class CommunityTips {
     return rotated.length?rotated:candidates;
   }
 
+  private categoryEnabled(category:CommunityTipCategoryId):boolean {
+    const settings=this.settings();
+    if(category==='communityPortal'&&!settings.portalEnabled)return false;
+    if(category==='halloween'&&!settings.halloweenEnabled)return false;
+    return settings.enabledCategories?.[category]!==false;
+  }
+
   private halloweenAvailable(a:TipAvailability):boolean {
-    const s=this.settings();return s.enabled&&s.halloweenEnabled&&a.events===true&&a.activeEventId==='halloween'&&a.activeEventCommand==='trickortreat';
+    const s=this.settings();return s.enabled&&s.halloweenEnabled&&this.categoryEnabled('halloween')&&a.events===true&&a.activeEventId==='halloween'&&a.activeEventCommand==='trickortreat';
   }
   private halloweenState():{lastSentAt:number;history:number[];nextVariant:number} {
     const raw=this.store.config<unknown>('community_halloween_tip_state',{lastSentAt:0,history:[],nextVariant:0}),v=raw&&typeof raw==='object'?raw as Record<string,unknown>:{};
