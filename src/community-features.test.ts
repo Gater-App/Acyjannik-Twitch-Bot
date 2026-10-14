@@ -10,7 +10,7 @@ import { loadConfig } from './config.js';
 import { CommandHandler } from './command-handler.js';
 import { GameService } from './game.js';
 import type { ChatMessage } from './types.js';
-import { DEFAULT_8BALL_ANSWERS } from './eight-ball-answers.js';
+import { chooseEightBallAnswer, DEFAULT_8BALL_ANSWERS, eightBallOutcomeForRoll } from './eight-ball-answers.js';
 
 function fixture(): { file: string; directory: string; close: () => void } {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'jannik-community-'));
@@ -32,6 +32,28 @@ test('Versionierte Migration übernimmt Halloween-Punkte, Cooldown und aktiven Z
   features.close(); legacy.close(); f.close();
 });
 
+test('!idee speichert Vorschläge dauerhaft, unterdrückt Dopplungen und trennt private Einreichungen von öffentlichen Statusabfragen', async()=>{
+  const f=fixture(),store=new FeatureStore(f.file),config={...loadConfig({testMode:true}),databasePath:f.file},community=new CommunityFeatures(store,config);
+  const msg=(id:string,user='viewer-idea',name='IdeenFan',text='!idee Wir sollten einen Community-Abend veranstalten')=>({eventId:id,broadcasterUserId:config.broadcasterUserId,senderUserId:user,senderLogin:user,senderDisplayName:name,message:text,sentAt:1_000,isModerator:false} satisfies ChatMessage);
+  try{
+    const noText=await community.handle(msg('idea-help','viewer-help','Fan','!idee'),'idee',[],10_000);assert.match(noText[0]?.message||'',/!idee DEIN VORSCHLAG/u);
+    const saved=await community.handle(msg('idea-1'),'idee',['Wir','sollten','einen','Community-Abend','veranstalten'],20_000);
+    assert.match(saved[0]?.message||'',/Deine Idee ist gespeichert/u);assert.equal(saved[0]?.category,'ideas');
+    const idea=store.communityIdeas({userId:'viewer-idea'})[0];assert.ok(idea);assert.equal(idea.status,'pending');assert.match(saved[0]?.message||'',new RegExp(idea.id.slice(0,8),'u'));
+    const hiddenStatus=await community.handle(msg('idea-status-private','viewer-other','Other','!idee status '+idea.id.slice(0,8)),'idee',['status',idea.id.slice(0,8)],21_000);
+    assert.match(hiddenStatus[0]?.message||'',/nicht gefunden/u);
+    const duplicate=await community.handle(msg('idea-duplicate'),'idee',['Wir','sollten','einen','Community-Abend','veranstalten'],22_000);assert.match(duplicate[0]?.message||'',/schon eingereicht/u);
+    const cooldown=await community.handle(msg('idea-next','viewer-idea','IdeenFan','!idee Ein ganz anderer Vorschlag für alle'),'idee',['Ein','ganz','anderer','Vorschlag','für','alle'],23_000);assert.match(cooldown[0]?.message||'',/warte noch kurz/u);
+    assert.equal(store.moderateCommunityIdea(idea.id,'approve','mod-1',24_000),true);
+    const publicStatus=await community.handle(msg('idea-status-public','viewer-other','Other','!idee status '+idea.id.slice(0,8)),'idee',['status',idea.id.slice(0,8)],25_000);assert.match(publicStatus[0]?.message||'',/freigegeben/u);
+    const second=store.submitCommunityIdea({id:'idea-second',userId:'viewer-second',displayName:'Second',text:'Ein gemeinsamer Spieleabend wäre lustig',now:30_000});assert.equal(second.ok,true);assert.equal(store.moderateCommunityIdea('idea-second','approve','mod-1',31_000),true);
+    const poll=store.createPoll({type:'chat',question:'Welche Idee?',options:[{label:idea.text,ideaId:idea.id},{label:'Ein gemeinsamer Spieleabend wäre lustig',ideaId:'idea-second'}],durationMs:60_000,allowVoteChange:false,createdBy:'mod-1',now:32_000});assert.ok(poll);assert.equal(store.markIdeasVoting([idea.id,'idea-second'],32_000),true);
+    const vote=store.vote(poll!.id,'voter','Voter',1,'idea-vote-event',33_000);assert.equal(vote.ok,true);const duplicateVote=store.vote(poll!.id,'voter','Voter',2,'idea-vote-duplicate',34_000);assert.equal(duplicateVote.ok,false);if(!duplicateVote.ok)assert.equal(duplicateVote.reason,'already-voted');
+    const ended=store.endPoll(poll!.id,40_000);assert.ok(ended);assert.equal(store.communityIdea(idea.id)?.status,'approved','Abstimmungssieg wird nicht automatisch als Zusage gewertet');
+    store.close();const reopened=new FeatureStore(f.file);assert.ok(reopened.communityIdeas({status:'approved'}).some(item=>item.id===idea.id));reopened.close();
+  }finally{try{store.close()}catch{}f.close()}
+});
+
 test('XP ist dedupliziert, Aktivitäts-XP respektiert Cooldown/Spam und Levelkurve steigt quadratisch', () => {
   const f = fixture(); const store = new FeatureStore(f.file);
   assert.equal(store.awardXp('event-1', 'u1', 'Alice', 10, 'bonus:test', 1_000_000, 100), 10);
@@ -46,13 +68,13 @@ test('XP ist dedupliziert, Aktivitäts-XP respektiert Cooldown/Spam und Levelkur
   store.close(); f.close();
 });
 
-test('8-Ball-Standardpool hat mindestens 80 kurze, einzigartige Antworten', () => {
+test('Legacy-8-Ball-Pool bleibt nur für migrierte Konfigurationen erhalten', () => {
   assert.ok(DEFAULT_8BALL_ANSWERS.length >= 80);
   assert.equal(new Set(DEFAULT_8BALL_ANSWERS.map((answer) => answer.toLocaleLowerCase('de-DE'))).size, DEFAULT_8BALL_ANSWERS.length);
   assert.ok(DEFAULT_8BALL_ANSWERS.every((answer) => answer.trim().length > 0 && Array.from(answer).length <= 80));
 });
 
-test('8-Ball verwendet den erweiterten Standardpool, erhält eigene Antworten und den 10-Sekunden-Cooldown', async () => {
+test('Magic 8-Ball liefert kategorisierte Antworten und erzwingt persönliche sowie globale Cooldowns', async () => {
   const f = fixture(), database = new Database(f.file), store = new FeatureStore(f.file);
   const config = { ...loadConfig({ testMode: true }), databasePath: f.file };
   const community = new CommunityFeatures(store, config, async () => undefined, (_min, max) => max);
@@ -63,17 +85,51 @@ test('8-Ball verwendet den erweiterten Standardpool, erhält eigene Antworten un
     senderLogin: user, senderDisplayName: 'OrakelFan', message: text, sentAt: now,
   }, now);
   try {
-    const defaultReply = (await send('!8ball Wird das klappen?', 1_800_000_000_000))[0];
-    assert.equal(defaultReply?.message, `🎱 ${DEFAULT_8BALL_ANSWERS.at(-1)}`);
+    const start=1_800_000_000_000;
+    assert.match((await send('!8ball',start))[0]?.message||'',/Benutzung: !8ball/u);
+    const defaultReply = (await send('!8ball Wird das klappen?', start))[0];
+    assert.match(defaultReply?.message||'',/^VIELLEICHT! 🎱/u);
     assert.equal(defaultReply?.category, 'oracle');
-    assert.match((await send('!8ball Noch eine Frage?', 1_800_000_000_001))[0]?.message || '', /warten/u);
+    assert.match((await send('!8ball Noch eine Frage?',start+1))[0]?.message||'',/@OrakelFan.*30 Sekunden/u);
+    assert.deepEqual(await send('!8ball Noch eine Frage?',start+1_000,'another-viewer'),[],'globaler Cooldown bleibt still');
+    assert.deepEqual(await send('!8ball Noch eine Frage?',start+6_000),[],'Cooldown-Hinweise pro Person höchstens alle 30 Sekunden');
 
     const custom = Array.from({ length: 20 }, (_, index) => `Eigene Orakelantwort ${index + 1}.`);
     store.setConfig('8ball_answers', custom);
-    const customReply = (await send('!8ball Eigene Antwort?', 1_800_000_010_001, 'another-viewer'))[0];
-    assert.equal(customReply?.message, `🎱 ${custom.at(-1)}`);
+    const customReply = (await send('!8ball Wird das nächste Fortnite-Match ein Sieg?',start+6_000,'another-viewer'))[0];
+    assert.equal(customReply?.message,'VIELLEICHT! 🎱 Das Matchmaking entscheidet.');
     assert.equal(customReply?.category, 'oracle');
+    const repeated=(await send('!8ball Wird das klappen?',start+30_000))[0]?.message||'';
+    assert.notEqual(repeated,customReply?.message,'direkt aufeinanderfolgende Antworten werden vermieden');
+    const parallel=await Promise.all([send('!8ball Wird es klappen?',start+40_000,'parallel-a'),send('!8ball Wird es klappen?',start+40_000,'parallel-b')]);
+    assert.equal(parallel.flat().filter(reply=>/^(JA!|NEIN!|VIELLEICHT!) 🎱/u.test(reply.message)).length,1,'parallele Fragen erhalten genau eine Antwort durch den globalen Cooldown');
   } finally { store.close(); database.close(); f.close(); }
+});
+
+test('Magic 8-Ball-Cooldowns bleiben über Neustarts erhalten',()=>{
+  const f=fixture(),now=1_800_000_100_000;
+  let store=new FeatureStore(f.file);
+  assert.equal(store.useCooldownPair('8ball','first-user',now,30_000,5_000),undefined);store.close();
+  store=new FeatureStore(f.file);
+  assert.deepEqual(store.useCooldownPair('8ball','second-user',now+1,30_000,5_000),{blocked:'global',remainingMs:4_999});
+  assert.deepEqual(store.useCooldownPair('8ball','first-user',now+1,30_000,5_000),{blocked:'personal',remainingMs:29_999});
+  store.close();f.close();
+});
+
+test('Magic 8-Ball hält die 40/40/20-Verteilung in 100.000 simulierten gültigen Fragen ein',()=>{
+  const counts={yes:0,no:0,maybe:0};
+  for(let i=0;i<100_000;i++){
+    const response=chooseEightBallAnswer('Wird das heute passieren?',(i%100)+1,i%8);
+    counts[response.outcome]++;
+    assert.match(response.answer,/^(JA!|NEIN!|VIELLEICHT!) 🎱/u);
+  }
+  assert.deepEqual(counts,{yes:40_000,no:40_000,maybe:20_000});
+  assert.match(chooseEightBallAnswer('Wie wird meine Prüfung?',1,0).answer,/^JA! 🎱/u);
+  assert.match(chooseEightBallAnswer('Gewinne ich das Gaming Match?',41,0).answer,/^NEIN! 🎱/u);
+  assert.match(chooseEightBallAnswer('Mag mein Crush mich?',81,0).answer,/^VIELLEICHT! 🎱/u);
+  assert.match(chooseEightBallAnswer('Wird das irgendwann passieren?',1,0).answer,/^JA! 🎱/u);
+  const previous=chooseEightBallAnswer('Wird das irgendwann passieren?',100,7).answer;
+  assert.notEqual(chooseEightBallAnswer('Wird das irgendwann passieren?',100,7,previous).answer,previous);
 });
 
 test('First-chat welcome is opt-in, personalized, deduplicated and stores no chat text',()=>{
@@ -165,16 +221,19 @@ test('Chatintegration routet Event, XP, Minispiele, Duell, Boss und Custom Comma
   const community = new CommunityFeatures(store, config, async (login) => login === 'bob' ? { id: 'bob-id', login, displayName: 'Bob' } : undefined, (min) => min);
   const handler = new CommandHandler(database, game, config, undefined, community);
   let eventNo = 0;
-  const send = async (userId: string, displayName: string, text: string, moderator = false) => {
+  const send = async (userId: string, displayName: string, text: string, moderator = false, vip = false) => {
     const msg: ChatMessage = { eventId: `integration-${++eventNo}`, broadcasterUserId: config.broadcasterUserId,
-      senderUserId: userId, senderLogin: userId, senderDisplayName: displayName, message: text, sentAt: Date.now(), isModerator: moderator };
+      senderUserId: userId, senderLogin: userId, senderDisplayName: displayName, message: text, sentAt: Date.now(), isModerator: moderator, isVip: vip };
     return handler.handle(msg, 1_800_000_000_000 + eventNo);
   };
   try {
-    assert.match((await send('alice', 'Alice', '!startguess'))[0]?.message || '', /Nur Jannik|Mods/u);
-    assert.match((await send(config.broadcasterUserId, 'Jannik', '!startguess'))[0]?.message || '', /Zahlenrunde gestartet/u);
+    assert.match((await send('alice', 'Alice', '!startguess'))[0]?.message || '', /nur Jannik, Moderatoren und Twitch-VIPs/u, 'normale Zuschauer dürfen die Runde nicht starten');
+    assert.match((await send('alice', 'Alice', '!startguess', false, true))[0]?.message || '', /Zahlenrunde gestartet/u, 'verifizierte VIPs dürfen starten');
+    assert.match((await send(config.broadcasterUserId, 'Jannik', '!startguess'))[0]?.message || '', /Eine Zahlenrunde läuft bereits/u, 'ein zweiter Start öffnet keine parallele Runde');
     assert.match((await send('alice', 'Alice', '!guess 1'))[0]?.message || '', /hat die Zahl 1 erraten/u);
-    assert.match((await send('alice', 'Alice', '!8ball Wird das klappen?'))[0]?.message || '', /Auf jeden Fall/u);
+    assert.match((await send('mod-1', 'Moderator', '!startguess', true))[0]?.message || '', /Zahlenrunde gestartet/u, 'Moderatoren dürfen nach Rundenende erneut starten');
+    assert.match((await send('alice', 'Alice', '!guess 1'))[0]?.message || '', /hat die Zahl 1 erraten/u);
+    assert.match((await send('alice', 'Alice', '!8ball Wird das klappen?'))[0]?.message || '', /^(JA!|NEIN!|VIELLEICHT!) 🎱/u);
     assert.match((await send('alice', 'Alice', '!rps stein'))[0]?.message || '', /Du gewinnst/u);
     assert.match((await send('alice', 'Alice', '!level @bob'))[0]?.message || '', /Bob: Level 1/u);
     assert.match((await send('alice', 'Alice', '!level @nobody'))[0]?.message || '', /wurde nicht gefunden/u);

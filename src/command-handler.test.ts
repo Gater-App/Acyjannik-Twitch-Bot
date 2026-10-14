@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import { CommandHandler } from './command-handler.js';
 import { Database } from './database.js';
 import { GameService } from './game.js';
+import { CommunityFeatures } from './community-features.js';
+import { FeatureStore } from './feature-store.js';
 import { testConfig } from './test-config.js';
 import { parseEventSubChatMessage } from './chat.js';
 import type { AppConfig, ChatMessage } from './types.js';
@@ -49,6 +54,22 @@ test('Rangliste und eigener Punktestand werden kompakt ausgegeben', async () => 
   const top = await handler.handle(message(config, '!TOP', 'viewer-1'), 3_000);
   assert.match(top[0]?.message || '', /Top 10/);
   database.close();
+});
+
+test('Spukhaus zählt nur angenommene !trickortreat-Runden und bewahrt bestehende Kürbiswerte', async () => {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'acy-haunted-command-')),file=path.join(dir,'bot.sqlite'),config=testConfig({activeOnStart:true});
+  const database=new Database(file,true),store=new FeatureStore(file),community=new CommunityFeatures(store,config),game=new GameService(database,config,()=>0),handler=new CommandHandler(database,game,config,async()=>undefined,community);
+  try{
+    const accepted=message(config,'!trickortreat','haunted-viewer',{eventId:'haunted-accepted'});
+    const response=await handler.handle(accepted,10_000);assert.equal(response.length,1);
+    assert.equal(community.hauntedHouse.snapshot('haunted-viewer',10_000).progress,1);
+    const pumpkins=game.pumpkins('haunted-viewer');assert.equal(pumpkins,5);
+    assert.deepEqual(await handler.handle(accepted,10_001),[],'Doppelte EventSub-Nachricht bleibt wirkungslos');
+    const cooldown=message(config,'!trickortreat','haunted-viewer',{eventId:'haunted-cooldown'});
+    await handler.handle(cooldown,10_002);
+    assert.equal(community.hauntedHouse.snapshot('haunted-viewer',10_002).progress,1,'Cooldown-Runden tragen nicht bei');
+    assert.equal(game.pumpkins('haunted-viewer'),pumpkins,'Bestehende Kürbispunkte bleiben konsistent');
+  }finally{store.close();database.close();fs.rmSync(dir,{recursive:true,force:true});}
 });
 
 test('Start/Ende und Moderationsrechte werden geprüft', async () => {
@@ -98,7 +119,7 @@ test('!help bietet kurze Themenhilfe und schützt die Admin-Übersicht', async (
   const topic = await handler.handle(message(config, '!help detective', 'viewer-1'), 7_000);
   assert.match(topic[0]?.message || '', /derzeit deaktiviert/u);
   const denied = await handler.handle(message(config, '!help mods', 'viewer-1'), 13_000);
-  assert.match(denied[0]?.message || '', /nur für Jannick/u);
+  assert.match(denied[0]?.message || '', /nur für Jannik/u);
   const mod = await handler.handle(message(config, '!help mods spiele', 'mod-1', { isModerator: true }), 14_000);
   assert.match(mod[0]?.message || '', /!startimposter/u);
   const owner = await handler.handle(message(config, '!help admin'), 19_000);

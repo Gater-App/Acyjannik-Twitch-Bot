@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { wheelSegments } from './dashboard-community-ui.js';
+import { ARCADE_CARD, ARCADE_SCRIPT, wheelSegments } from './dashboard-community-ui.js';
+import { ELIO_STATUS_SCRIPT } from './dashboard-ux.js';
+
+test('Dashboard bietet bei Elios Status einen verständlichen Persönlichkeitsschalter mit Vorschau',()=>{
+  assert.match(ELIO_STATUS_SCRIPT,/id='pet-personality-toggle'/u);assert.match(ELIO_STATUS_SCRIPT,/Vorschau ansehen/u);
+  assert.match(ELIO_STATUS_SCRIPT,/verändern weder Punkte noch Chat-Nachrichten/u);
+  assert.match(ELIO_STATUS_SCRIPT,/petPersonalityEnabled/u);assert.match(ELIO_STATUS_SCRIPT,/p\.moodLabel/u);
+  assert.doesNotMatch(ARCADE_CARD,/pet-personality-toggle/u);assert.doesNotMatch(ARCADE_SCRIPT,/pet-personality-toggle/u);
+});
 
 test('Chaos-Wheel-Segmente bilden Gewichte proportional und vollständig ab',()=>{
   const segments=wheelSegments([{id:'small',title:'Kleines Feld',weight:1},{id:'large',title:'Großes Feld',weight:3}]);

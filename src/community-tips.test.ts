@@ -87,7 +87,7 @@ test('Community Discovery previews only enabled functions and uses the implement
     const all=tips.preview(available),byId=new Map(all.map(t=>[t.id,t.text]));
     for(const id of ['eightball','rps','duel','guess','pet','pet-care','detective-guess','quote','quest','quest-vote','xp','drop','imposter','wheel','vault'])assert.ok(byId.has(id),`${id} is available`);
     assert.match(byId.get('quest')||'',/!quest IDEE/u);assert.match(byId.get('quest')||'',/Moderationsfreigabe/u);
-    assert.match(byId.get('quest-vote')||'',/Jannick oder ein Mod startet/u);
+    assert.match(byId.get('quest-vote')||'',/Jannik oder ein Mod startet/u);
     assert.match(byId.get('drop')||'',/!claim/u);assert.match(byId.get('imposter')||'',/!joinimposter/u);
     assert.match(byId.get('wheel')||'',/!wheel/u);assert.match(byId.get('vault')||'',/!code 427/u);
     const disabled=tips.preview({});assert.equal(disabled.length,0,'disabled/unknown modules are never advertised');
