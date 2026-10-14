@@ -104,6 +104,8 @@ export function loadConfig(options: { testMode?: boolean } = {}): AppConfig {
     redirectUri: stringValue('TWITCH_REDIRECT_URI', 'http://127.0.0.1:3000/oauth/callback'),
     redemptionRedirectUri: stringValue('TWITCH_REDEMPTION_REDIRECT_URI', 'http://127.0.0.1:3000/oauth/redemptions/callback'),
     redemptionTokenFile: stringValue('TWITCH_REDEMPTION_TOKEN_FILE', `${stringValue('TOKEN_FILE','data/oauth-tokens.json')}.broadcaster`),
+    vipRedirectUri: stringValue('TWITCH_VIP_REDIRECT_URI', 'http://127.0.0.1:3000/oauth/vips/callback'),
+    vipTokenFile: stringValue('TWITCH_VIP_TOKEN_FILE', `${stringValue('TOKEN_FILE','data/oauth-tokens.json')}.vip`),
     oauthHost: stringValue('OAUTH_HOST', '127.0.0.1'),
     oauthPort: positiveInt('OAUTH_PORT', 3000),
     oauthStateTtlMs: positiveInt('OAUTH_STATE_TTL_SECONDS', 600) * 1000,

@@ -52,6 +52,8 @@ export interface AppConfig {
   redirectUri: string;
   redemptionRedirectUri: string;
   redemptionTokenFile: string;
+  vipRedirectUri: string;
+  vipTokenFile: string;
   oauthHost: string;
   oauthPort: number;
   oauthStateTtlMs: number;
@@ -81,6 +83,8 @@ export interface ChatMessage {
   message: string;
   sentAt: number;
   isModerator?: boolean;
+  /** Set only from Twitch's EventSub chat badges, never from a browser request. */
+  isVip?: boolean;
 }
 
 export interface Player {
