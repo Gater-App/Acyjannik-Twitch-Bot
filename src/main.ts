@@ -18,6 +18,7 @@ import { ChannelPointsService } from './channel-points.js';
 import type { QuestPolicy } from './feature-store.js';
 import { CommunityTips } from './community-tips.js';
 import { AutomaticChatMessages } from './automatic-chat-messages.js';
+import { singleFlight } from './single-flight.js';
 import { SpotifySongRequests } from './song-requests.js';
 import { ViewerCommunityPortal } from './community-portal.js';
 import { CommunityPortalHealth } from './portal-health.js';
@@ -161,12 +162,14 @@ async function runLiveMode(): Promise<void> {
   const communityPortalHealth=new CommunityPortalHealth(new URL('/community',config.redirectUri).toString());
   let lastWheelLiveCheckAt = 0;
   let checkingWheelLive = false;
-  const featureTicker = setInterval(() => {
-    void (async () => {
+  const runFeatureTick = singleFlight(async () => {
       try {
         const announcements = community.tickMessages();
-        for (const message of announcements) void queue.enqueue(message.message, undefined, message.category);
-        if (announcements.length) return;
+        for (const message of announcements) {
+          void queue.enqueue(message.message, undefined, message.category).catch(error =>
+            logger.warn('Automatische Spielmeldung konnte nicht gesendet werden; der gespeicherte Spielzustand bleibt erhalten.', { error: error instanceof Error ? error.message : 'unbekannt' }));
+        }
+        if (announcements.length) { lastSpecialAnnouncementAt = Date.now(); return; }
         const now = Date.now();
         const snapshots = community.miniGames.snapshot();
         const arcade = community.arcade.snapshot('drop');
@@ -174,7 +177,7 @@ async function runLiveMode(): Promise<void> {
         const dropStatus = (arcade.drop as { status?: string } | undefined)?.status;
         const busy = Boolean(snapshots.imposter || snapshots.detective || features.activeQuest() || features.activePoll(now) || features.activeBoss(now)
           || ['announced','claiming','resolving'].includes(dropStatus || '') || wheel.active
-          || queue.size > 0 || now - lastSpecialAnnouncementAt < 60_000);
+          || queue.busy || now - lastSpecialAnnouncementAt < 60_000);
         const profile = chatPolicy.snapshot().profile, availability = {...community.helpAvailability(),communityPortal:communityTips.settings().portalEnabled};
         const dueMessage=automaticChatMessages.hasDue(now,communityTips.eligibleActivityMessages,busy);
         const wantsTip=communityTips.shouldEvaluate(profile,availability,busy,now)&&automaticChatMessages.canReserveGlobalSlot(now);
@@ -208,7 +211,7 @@ async function runLiveMode(): Promise<void> {
               const currentState=community.miniGames.snapshot(),currentDrop=community.arcade.snapshot('drop'),currentWheel=community.arcade.wheelStatus();
               const currentDropStatus=(currentDrop.drop as {status?:string}|undefined)?.status;
               const currentBusy=Boolean(currentState.imposter||currentState.detective||features.activeQuest()||features.activePoll(Date.now())||features.activeBoss(Date.now())
-                ||['announced','claiming','resolving'].includes(currentDropStatus||'')||currentWheel.active||queue.size>0||Date.now()-lastSpecialAnnouncementAt<60_000);
+                ||['announced','claiming','resolving'].includes(currentDropStatus||'')||currentWheel.active||queue.busy||Date.now()-lastSpecialAnnouncementAt<60_000);
               const currentDue=automaticChatMessages.nextDue(Date.now(),communityTips.eligibleActivityMessages,currentBusy,true);
               if(currentDue&&chatPolicy.shouldSend({message:currentDue.message,now:Date.now()})&&automaticChatMessages.reserveMessageAttempt(currentDue.id,Date.now())){
                 communityTips.consumeActivity();
@@ -229,8 +232,8 @@ async function runLiveMode(): Promise<void> {
           } finally { checkingLive = false; }
         }
       } catch (error) { logger.error('Community-Tipp- oder Spiel-Timer konnte nicht aktualisiert werden.', { error: error instanceof Error ? error.message : 'unbekannt' }); }
-    })();
-  }, 1000);
+  }, error => logger.error('Feature-Ticker konnte nicht ausgeführt werden.', { error: error instanceof Error ? error.message : 'unbekannt' }));
+  const featureTicker = setInterval(runFeatureTick, 1000);
   featureTicker.unref();
 
   try {

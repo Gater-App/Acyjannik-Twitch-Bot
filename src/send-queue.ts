@@ -43,6 +43,7 @@ export class SendQueue {
   }
 
   get size(): number { return this.items.length; }
+  get busy(): boolean { return this.sending || this.items.length > 0; }
   snapshot() { return { queued: this.items.length, suppressed: this.suppressed }; }
 
   private async flush(): Promise<void> {

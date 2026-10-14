@@ -26,3 +26,16 @@ test('Sendewarteschlange begrenzt Duplikate, zeigt Zähler und priorisiert wicht
   await Promise.all([first, regular, duplicate, important]);
   assert.deepEqual(sent, ['【🤖 COMMUNITY】 blocker', '【🤖 COMMUNITY】 Der Mystery Drop startet!', '【🤖 COMMUNITY】 normale Info']);
 });
+
+test('Sendewarteschlange bleibt als beschäftigt markiert, solange Twitch den Versand verarbeitet', async () => {
+  let release: (() => void) | undefined;
+  const queue = new SendQueue(async () => new Promise<void>(resolve => { release = resolve; }), 0);
+  const sending = queue.enqueue('wichtige Meldung');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(queue.size, 0, 'die laufende Nachricht ist nicht mehr in der Warteschlange');
+  assert.equal(queue.busy, true, 'laufender Versand muss andere Automatik zurückhalten');
+  release?.();
+  await sending;
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(queue.busy, false);
+});
