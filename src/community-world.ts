@@ -12,10 +12,16 @@ const BADGES=[
   {id:'community_player',name:'Teamplayer',description:'Erhalte eine belegte Belohnung aus einem Community-Spiel.',rarity:'rare' as const,emoji:'🤝'},
   {id:'xp_collector',name:'XP-Sammler',description:'Sammle seit Start der Community-Welt 100 XP.',rarity:'epic' as const,emoji:'⭐'},
 ];
-const dayKey=(now:number)=>new Date(now).toISOString().slice(0,10);
-function weekKey(now:number):string{const d=new Date(now),day=(d.getUTCDay()+6)%7;d.setUTCDate(d.getUTCDate()-day);return `week-${d.toISOString().slice(0,10)}`;}
-function dayStart(key:string):number{return Date.parse(`${key}T00:00:00.000Z`);}
-function weekStart(key:string):number{return Date.parse(`${key.slice(5)}T00:00:00.000Z`);}
+const BERLIN_DATE=new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Berlin',year:'numeric',month:'2-digit',day:'2-digit'});
+function dayKey(now:number):string{const parts=Object.fromEntries(BERLIN_DATE.formatToParts(now).map(part=>[part.type,part.value]));return `${parts.year}-${parts.month}-${parts.day}`;}
+function weekKey(now:number):string{const localDate=dayKey(now),d=new Date(`${localDate}T00:00:00.000Z`),day=(d.getUTCDay()+6)%7;d.setUTCDate(d.getUTCDate()-day);return `week-${d.toISOString().slice(0,10)}`;}
+function berlinMidnight(key:string):number{
+  const utcGuess=Date.parse(`${key}T00:00:00.000Z`),parts=Object.fromEntries(new Intl.DateTimeFormat('en-GB',{timeZone:'Europe/Berlin',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).formatToParts(utcGuess).map(part=>[part.type,part.value]));
+  const localAsUtc=Date.UTC(Number(parts.year),Number(parts.month)-1,Number(parts.day),Number(parts.hour),Number(parts.minute),Number(parts.second));
+  return utcGuess-(localAsUtc-utcGuess);
+}
+function dayStart(key:string):number{return berlinMidnight(key);}
+function weekStart(key:string):number{return berlinMidnight(key.slice(5));}
 
 /** Viewer-facing progression uses only persisted actions after this module's launch timestamp. */
 export class CommunityWorld {

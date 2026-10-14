@@ -43,3 +43,16 @@ test('community world mission periods roll over and claimed rewards are scoped t
     assert.equal(world.snapshot(user,name,tomorrow,{petEnabled:true,questsEnabled:false,gamesEnabled:false}).missions.find(x=>x.id==='visit_elio')?.progress,0);
   }finally{store.close();}
 });
+
+test('daily missions follow the Berlin calendar day, including its midnight boundary',()=>{
+  const store=new FeatureStore(':memory:'),world=new CommunityWorld(store),user='viewer-berlin',name='Berlin Viewer';
+  try{
+    const before=Date.parse('2026-10-14T21:59:59.000Z'),after=Date.parse('2026-10-14T22:00:01.000Z');
+    store.setConfig('community_world_started_at',before-1_000);
+    store.miniGameTransaction(db=>db.prepare("INSERT INTO community_pet_interactions(event_id,user_id,kind,created_at,source) VALUES('berlin-midnight-feed',?,'feed',?,'portal')").run(user,before));
+    assert.equal(world.snapshot(user,name,before,{petEnabled:true,questsEnabled:false,gamesEnabled:false}).missions.find(x=>x.id==='visit_elio')?.completed,true);
+    const nextDay=world.snapshot(user,name,after,{petEnabled:true,questsEnabled:false,gamesEnabled:false}).missions.find(x=>x.id==='visit_elio');
+    assert.equal(nextDay?.completed,false);
+    assert.equal(nextDay?.progress,0);
+  }finally{store.close();}
+});
