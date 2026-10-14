@@ -53,6 +53,7 @@ test('Automatik braucht drei unterschiedliche echte aktive Zuschauer, Live-Freig
   assert.equal(vault.autoStartReady(now+3,3,false,now-60_000),false);
   assert.equal(vault.autoStartReady(now+3,3,false,now-600_000),true);
   assert.equal(vault.startAutomatic(now+3).ok,true);assert.equal(vault.autoStartReady(now+3+60*60_000-1,3,false,now-600_000),false);
+  assert.equal(vault.isActive(now+4),true,'laufender Tresor gilt für automatische Chat-Tipps als belegt');
   const restarted=new CommunityVault(store);assert.equal((restarted.publicSnapshot(now+4).vault as {status:string}).status,'active');
   store.close();
 });

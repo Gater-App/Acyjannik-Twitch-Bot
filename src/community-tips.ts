@@ -5,14 +5,14 @@ import type { ChatProfile } from './chat-response-policy.js';
 
 export type HalloweenTipFrequency = 'normal' | 'frequent';
 export interface CommunityTipSettings { enabled: boolean; portalEnabled: boolean; halloweenEnabled: boolean; halloweenFrequency: HalloweenTipFrequency; }
-export interface CommunityTipState { lastSentAt: number; streamId: string | null; sentInStream: string[]; sentHistory: number[]; }
+export interface CommunityTipState { lastSentAt: number; streamId: string | null; sentInStream: string[]; sentHistory: number[]; lastCategory?: string; }
 export interface TipAvailability {
-  events?: boolean; eightBall?: boolean; rps?: boolean; duels?: boolean; pet?: boolean; detective?: boolean;
-  quests?: boolean; xp?: boolean; drops?: boolean; imposter?: boolean; wheel?: boolean;
+  events?: boolean; eightBall?: boolean; rps?: boolean; guess?: boolean; duels?: boolean; pet?: boolean; detective?: boolean;
+  quests?: boolean; xp?: boolean; drops?: boolean; imposter?: boolean; wheel?: boolean; vault?: boolean; petCare?: boolean;
   activeEventCommand?: string; activeEventName?: string; activeEventId?: string;
   communityPortal?: boolean;
 }
-export interface CommunityTip { id: string; category: string; text: string; requiresActiveGame?: boolean; }
+export interface CommunityTip { id: string; category: string; text: string; usageKey?: string; }
 export const TIP_ACTIVITY_RULES: Record<ChatProfile, { spacingMs: number; messages: number; hourly: number }> = {
   calm: { spacingMs: 45 * 60_000, messages: 8, hourly: 1 },
   normal: { spacingMs: 30 * 60_000, messages: 6, hourly: 2 },
@@ -34,15 +34,25 @@ const TIPS: CommunityTip[] = [
   { id: 'eightball', category: 'oracle', text: 'Du hast eine Frage? Stell sie dem Orakel mit !8ball FRAGE.' },
   { id: 'rps', category: 'rps', text: 'Lust auf eine schnelle Runde? Fordere das Bot-Orakel mit !rps stein heraus.' },
   { id: 'duel', category: 'duel', text: 'Fordere jemanden aus dem Chat heraus: !duel @Name.' },
-  { id: 'pet', category: 'pet', text: 'Lerne Elio kennen: !pet zeigt die Katze, !feed gibt Katzenfutter und !play startet ein Spiel.' },
-  { id: 'quote', category: 'detective', text: 'Freiwillig ein Zitat einreichen? Erst !quoteoptin, dann !savequote TEXT.' },
-  { id: 'quest', category: 'quest', text: 'Hast du eine Spielidee für alle? Schlage sie mit !quest TEXT vor.' },
+  { id: 'guess', category: 'guess', text: 'Lust auf Zahlenraten? Wenn Jannick eine Runde startet, kannst du mit !guess ZAHL mitraten.' },
+  { id: 'pet', category: 'pet', text: 'Lerne Elio kennen: Mit !pet kannst du den Zustand der Community-Katze ansehen.' },
+  { id: 'pet-care', category: 'pet', usageKey: 'pet', text: 'Elio freut sich über Besuch: Mit !feed und !play kannst du dich um die Community-Katze kümmern.' },
+  { id: 'detective-guess', category: 'detective', text: 'Bei einer laufenden Chat-Detektiv-Runde kannst du mit !wer @Name den Absender eines freigegebenen Zitats erraten.', usageKey: 'detective' },
+  { id: 'quote', category: 'detective', usageKey: 'detective', text: 'Reiche freiwillig ein Zitat ein: erst !quoteoptin, dann !savequote TEXT.' },
+  { id: 'quest', category: 'quest', text: 'Hast du eine Spielidee für alle? Schlage sie mit !quest IDEE vor. Nach Moderationsfreigabe kann sie zur Abstimmung stehen.' },
+  { id: 'quest-vote', category: 'quest', usageKey: 'quest', text: 'Aus einer freigegebenen Quest-Idee kann eine Community-Abstimmung werden. Jannick oder ein Mod startet die ausgewählte Quest.' },
   { id: 'xp', category: 'xp', text: 'Mit !level siehst du deinen Community-Fortschritt und deine XP.' },
+  { id: 'drop', category: 'drop', text: 'Wenn Jannick einen Mystery Drop startet, mach während des Countdowns mit !claim mit.' },
+  { id: 'imposter', category: 'imposter', text: 'Wenn die Imposter-Anmeldung offen ist, kannst du mit !joinimposter mitspielen.' },
+  { id: 'wheel', category: 'wheel', text: 'Beim Chaos Wheel startet Jannick eine Community-Aktion. Mit !wheel kannst du den Rad-Status ansehen.' },
+  { id: 'vault', category: 'vault', text: 'Wenn der Community-Tresor offen ist, knackt ihr gemeinsam den dreistelligen Code: !code 427.' },
   { id: 'community-portal', category: 'communityPortal', text: 'Kennst du schon unser Community-Portal? Schau deine XP an, besuche Elio 🐱 und entdecke die Community-Spiele: https://twitch.gater-app.de/community' },
 ];
 const FEATURE_COMMANDS: Record<string, string> = {
   '8ball': 'eightball', rps: 'rps', duel: 'duel', accept: 'duel',
-  pet: 'pet', feed: 'pet', play: 'pet', petcare: 'pet', savequote: 'quote', quest: 'quest',
+  pet: 'pet', feed: 'pet', play: 'pet', petcare: 'pet', savequote: 'detective', quoteoptin: 'detective', quest: 'quest',
+  wer: 'detective', joinimposter: 'imposter', leaveimposter: 'imposter', sus: 'imposter', guess: 'guess',
+  claim: 'drop', wheel: 'wheel', wheelstatus: 'wheel', code: 'vault',
   trickortreat: 'season-trickortreat', pumpkins: 'season-trickortreat', gift: 'season-gift', egghunt: 'season-egghunt', eventscore: 'season-eventscore',
   level: 'xp', xptop: 'xp', rank: 'xp',
   help: 'community-portal', community: 'community-portal',
@@ -87,6 +97,7 @@ export class CommunityTips {
       streamId: typeof value.streamId === 'string' ? value.streamId : null,
       sentInStream: Array.isArray(value.sentInStream) ? value.sentInStream.filter((id): id is string => typeof id === 'string') : [],
       sentHistory: Array.isArray(value.sentHistory) ? value.sentHistory.filter((at): at is number => typeof at === 'number' && Number.isFinite(at) && at > 0).slice(-24) : [],
+      ...(typeof value.lastCategory === 'string' ? { lastCategory: value.lastCategory } : {}),
     };
   }
   observe(message: ChatMessage, now = Date.now()): void {
@@ -146,8 +157,7 @@ export class CommunityTips {
     if (this.sentAt.filter(at => now - at < 60 * 60_000).length >= rules.hourly) return false;
     const usedInStream = this.activeStreamId === undefined || state.streamId === this.activeStreamId ? state.sentInStream : [];
     if(this.halloweenDue(profile,availability,now))return true;
-    return this.available(availability).some(tip => !usedInStream.includes(tip.id)
-      && (!this.featureUsedAt.has(tip.id) || now - this.featureUsedAt.get(tip.id)! > 15 * 60_000));
+    return this.candidates(availability, usedInStream, now).length > 0;
   }
 
   maybeSend(input: { isLive: boolean | undefined; streamId?: string; profile: ChatProfile; availability: TipAvailability;
@@ -163,8 +173,7 @@ export class CommunityTips {
     const pastHour = this.sentAt.filter(at => now - at < 60 * 60_000);
     if (pastHour.length >= rules.hourly || this.activityCount < rules.messages) return undefined;
     const sentInStream = state.streamId === input.streamId ? state.sentInStream : [];
-    const candidates = this.available(input.availability).filter(tip => !sentInStream.includes(tip.id)
-      && (!this.featureUsedAt.has(tip.id) || now - this.featureUsedAt.get(tip.id)! > 15 * 60_000));
+    const candidates = this.candidates(input.availability, sentInStream, now);
     const halloweenDue=this.halloweenDue(input.profile,input.availability,now),random=input.random??secureRandom;
     if (!candidates.length&&!halloweenDue) return undefined;
     const chooseHalloween=halloweenDue&&(!candidates.length||random(3)<2);
@@ -173,7 +182,7 @@ export class CommunityTips {
     if (this.featureUsedAt.has(selected.id) && now - this.featureUsedAt.get(selected.id)! < 15 * 60_000) return undefined;
     if (input.allowSend && !input.allowSend(selected)) return undefined;
     this.store.setConfig('community_tip_state', { lastSentAt: now, streamId: input.streamId,
-      sentInStream: selected.id==='halloween-reminder'?sentInStream:[...sentInStream, selected.id], sentHistory: [...this.sentAt.filter(at => now - at < 60 * 60_000), now].slice(-24) });
+      sentInStream: selected.id==='halloween-reminder'?sentInStream:[...sentInStream, selected.id], sentHistory: [...this.sentAt.filter(at => now - at < 60 * 60_000), now].slice(-24), lastCategory: selected.category });
     this.sentAt.push(now);
     if(selected.id==='halloween-reminder')this.recordHalloweenReminder(now);
     this.activityCount = 0;
@@ -185,16 +194,30 @@ export class CommunityTips {
       if (tip.id === 'community-portal') return this.settings().enabled&&this.settings().portalEnabled&&a.communityPortal===true;
       if (tip.id === 'eightball') return a.eightBall === true;
       if (tip.id === 'rps') return a.rps === true;
+      if (tip.id === 'guess') return a.guess === true;
       if (tip.id === 'duel') return a.duels === true;
       if (tip.id === 'pet') return a.pet === true;
-      if (tip.id === 'quote') return a.detective === true;
-      if (tip.id === 'quest') return a.quests === true;
+      if (tip.id === 'pet-care') return a.pet === true && a.petCare === true;
+      if (tip.id === 'quote' || tip.id === 'detective-guess') return a.detective === true;
+      if (tip.id === 'quest' || tip.id === 'quest-vote') return a.quests === true;
       if (tip.id === 'xp') return a.xp === true;
+      if (tip.id === 'drop') return a.drops === true;
+      if (tip.id === 'imposter') return a.imposter === true;
+      if (tip.id === 'wheel') return a.wheel === true;
+      if (tip.id === 'vault') return a.vault === true;
       return false;
     }).concat(a.events && a.activeEventCommand && a.activeEventId!=='halloween' ? [{
       id: `season-${a.activeEventCommand}`, category: a.activeEventCommand === 'trickortreat' ? 'halloween' : 'season',
       text: `Beim ${a.activeEventName || 'Saison-Event'} kannst du mit !${a.activeEventCommand} mitmachen und Punkte sammeln.`,
     }] : []);
+  }
+
+  private candidates(availability: TipAvailability, sentInStream: string[], now: number): CommunityTip[] {
+    const state=this.state();
+    const candidates=this.available(availability).filter(tip=>!sentInStream.includes(tip.id)
+      &&(!this.featureUsedAt.has(tip.usageKey||tip.id)||now-this.featureUsedAt.get(tip.usageKey||tip.id)!>15*60_000));
+    const rotated=candidates.filter(tip=>tip.category!==state.lastCategory);
+    return rotated.length?rotated:candidates;
   }
 
   private halloweenAvailable(a:TipAvailability):boolean {

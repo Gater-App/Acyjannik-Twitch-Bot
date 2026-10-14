@@ -27,6 +27,7 @@ export class CommunityVault {
   constructor(private readonly store:FeatureStore,private readonly botUserId=''){}
 
   settings():CommunityVaultSettings{return normalizeVaultSettings(this.store.config('community_vault_settings',DEFAULT_COMMUNITY_VAULT_SETTINGS));}
+  isActive(now=Date.now()):boolean{return this.settings().enabled&&Boolean(this.store.miniGameQuery(db=>db.prepare("SELECT 1 FROM community_vault_rounds WHERE status='active' AND ends_at>? LIMIT 1").get(now)));}
   updateSettings(value:unknown):CommunityVaultSettings {
     const current=this.settings(),raw=value&&typeof value==='object'?value as Partial<CommunityVaultSettings>:{};
     const next=normalizeVaultSettings({...current,...raw});this.store.setConfig('community_vault_settings',next);return next;

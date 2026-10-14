@@ -1001,7 +1001,9 @@ export class DashboardServer {
     const seasonalEvents=this.store.events().map(event=>({id:event.id,name:event.name,command:event.command,active:event.active&&(event.id==='halloween'||modules.events!==false)}));
     const activeEnabled=Boolean(active&&(active.id==='halloween'||modules.events!==false));
     const help:HelpAvailability={...DEFAULT_HELP_AVAILABILITY,xp:modules.xp!==false,events:activeEnabled,
-      pet:arcade?.petEnabled??false,drops:arcade?.dropsEnabled??false,wheel:arcade?.wheelEnabled??false,
+      pet:arcade?.petEnabled??false,petCare:(arcade?.petEnabled??false)&&!Boolean((this.arcade?.snapshot('pet').pet as {paused?:boolean}|undefined)?.paused),
+      drops:arcade?.dropsEnabled??false,wheel:arcade?.wheelEnabled??false,
+      vault:this.vault?.settings().enabled??false,
       imposter:mini?.enabled??false,detective:mini?.enabled??false,quests:modules.quests!==false&&quest.enabled!==false,spark:spark.enabled,
       eightBall:modules.eightBall!==false,rps:modules.rps!==false,guess:modules.guess!==false,duels:modules.duels!==false,seasonalEvents};
     if(activeEnabled&&active){help.activeEventId=active.id;help.activeEventName=active.name;help.activeEventCommand=active.command;}

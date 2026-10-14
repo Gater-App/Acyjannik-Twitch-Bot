@@ -178,7 +178,7 @@ async function runLiveMode(): Promise<void> {
         const arcade = community.arcade.snapshot('drop');
         const wheel = community.arcade.wheelStatus();
         const dropStatus = (arcade.drop as { status?: string } | undefined)?.status;
-        const busy = Boolean(snapshots.imposter || snapshots.detective || features.activeQuest() || features.activePoll(now) || features.activeBoss(now)
+        const busy = Boolean(snapshots.imposter || snapshots.detective || community.vault.isActive(now) || features.activeQuest() || features.activePoll(now) || features.activeBoss(now)
           || ['announced','claiming','resolving'].includes(dropStatus || '') || wheel.active
           || queue.busy || now - lastSpecialAnnouncementAt < 60_000);
         const vaultReady=community.vault.autoStartReady(now,community.vault.activeViewerCount(now),busy,lastSpecialAnnouncementAt);
@@ -228,7 +228,7 @@ async function runLiveMode(): Promise<void> {
               if(communityTips.settings().portalEnabled)availability.communityPortal=await communityPortalHealth.isAvailable();
               const currentState=community.miniGames.snapshot(),currentDrop=community.arcade.snapshot('drop'),currentWheel=community.arcade.wheelStatus();
               const currentDropStatus=(currentDrop.drop as {status?:string}|undefined)?.status;
-              const currentBusy=Boolean(currentState.imposter||currentState.detective||features.activeQuest()||features.activePoll(Date.now())||features.activeBoss(Date.now())
+              const currentBusy=Boolean(currentState.imposter||currentState.detective||community.vault.isActive(Date.now())||features.activeQuest()||features.activePoll(Date.now())||features.activeBoss(Date.now())
                 ||['announced','claiming','resolving'].includes(currentDropStatus||'')||currentWheel.active||queue.busy||Date.now()-lastSpecialAnnouncementAt<60_000);
               const currentDue=automaticChatMessages.nextDue(Date.now(),communityTips.eligibleActivityMessages,currentBusy,true);
               if(currentDue&&chatPolicy.shouldSend({message:currentDue.message,now:Date.now()})&&automaticChatMessages.reserveMessageAttempt(currentDue.id,Date.now())){

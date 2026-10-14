@@ -8,6 +8,7 @@ export interface HelpAvailability {
   activeEventCommand?: string;
   seasonalEvents?: Array<{id:string;name:string;command:string;active:boolean}>;
   pet: boolean;
+  petCare?: boolean;
   drops: boolean;
   wheel: boolean;
   imposter: boolean;

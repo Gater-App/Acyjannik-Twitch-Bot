@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { FeatureStore } from './feature-store.js';
 import { CommunityTips, TIP_ACTIVITY_RULES } from './community-tips.js';
+import type { TipAvailability } from './community-tips.js';
 import type { ChatMessage } from './types.js';
 
 function setup() {
@@ -19,7 +20,7 @@ function message(text: string, eventId: string, extra: Partial<ChatMessage> = {}
     senderLogin: `viewer${eventId}`, senderDisplayName: 'Viewer', message: text, sentAt: 0, ...extra };
 }
 const available = { events: true, activeEventCommand: 'trickortreat', eightBall: true, rps: true, duels: true,
-  pet: true, detective: true, quests: true, xp: true };
+  guess: true, pet: true, petCare: true, detective: true, quests: true, xp: true, drops: true, imposter: true, wheel: true, vault: true };
 const halloweenActive = {...available,activeEventId:'halloween'};
 const halloweenOnly = {events:true,activeEventId:'halloween',activeEventCommand:'trickortreat'};
 
@@ -77,6 +78,60 @@ test('busy games, unavailable/used features, spacing, per-hour caps and global-s
     assert.equal(tips.maybeSend({ ...common, busy: false, allowSend: () => false }), undefined);
     assert.equal(tips.state().lastSentAt, 0, 'global message policy denial must not consume/persist a tip');
   } finally { close(); }
+});
+
+test('Community Discovery previews only enabled functions and uses the implemented viewer commands',()=>{
+  const {tips,close}=setup();
+  try{
+    tips.configure(true);
+    const all=tips.preview(available),byId=new Map(all.map(t=>[t.id,t.text]));
+    for(const id of ['eightball','rps','duel','guess','pet','pet-care','detective-guess','quote','quest','quest-vote','xp','drop','imposter','wheel','vault'])assert.ok(byId.has(id),`${id} is available`);
+    assert.match(byId.get('quest')||'',/!quest IDEE/u);assert.match(byId.get('quest')||'',/Moderationsfreigabe/u);
+    assert.match(byId.get('quest-vote')||'',/Jannick oder ein Mod startet/u);
+    assert.match(byId.get('drop')||'',/!claim/u);assert.match(byId.get('imposter')||'',/!joinimposter/u);
+    assert.match(byId.get('wheel')||'',/!wheel/u);assert.match(byId.get('vault')||'',/!code 427/u);
+    const disabled=tips.preview({});assert.equal(disabled.length,0,'disabled/unknown modules are never advertised');
+    tips.configurePortal(true);
+    assert.equal(tips.preview({...available,communityPortal:false}).some(t=>t.id==='community-portal'),false);
+    assert.equal(tips.preview({...available,communityPortal:true}).some(t=>t.id==='community-portal'),true);
+    assert.equal(tips.preview({...available,petCare:false}).some(t=>t.id==='pet-care'),false,'paused care never advertises feeding or play');
+  }finally{close()}
+});
+
+test('feature use suppresses matching tips and topic rotation survives restart without storing viewers or chat text',()=>{
+  const {tips,store,file,close}=setup();
+  try{
+    tips.configure(true);tips.alignStream('discovery-stream');const now=4_000_000_000;
+    tips.observe(message('!quest Meine Idee','quest-used'),now);
+    for(let i=0;i<6;i++)tips.observe(message(`Quest cooldown activity ${i}`,`quest-activity-${i}`),now+i+1);
+    assert.equal(tips.shouldEvaluate('normal',{quests:true},false,now+100),false,'both quest hints share the same command cooldown');
+    tips.configurePortal(true);
+    for(let i=0;i<6;i++)tips.observe(message(`Discovery activity ${i}`,`discovery-${i}`),now+i);
+    const discoveryAvailability={...available,events:false,communityPortal:true};
+    const first=tips.maybeSend({isLive:true,streamId:'discovery-stream',profile:'normal',availability:discoveryAvailability,busy:false,now:now+100,random:max=>max-1});
+    assert.ok(first);assert.equal(first.id,'community-portal','portal is a distinct category at the end of the fixture');
+    const restoredStore=new FeatureStore(file),restored=new CommunityTips(restoredStore);restored.alignStream('discovery-stream');
+    assert.equal(restored.state().lastCategory,first.category,'topic preference persists after restart');
+    const persisted=JSON.stringify(store.config('community_tip_state',{}));
+    assert.doesNotMatch(persisted,/viewer|Discovery activity|streamer/iu,'state contains no chat text or viewer identity');
+    for(let i=0;i<6;i++)restored.observe(message(`Later discussion ${i}`,`later-${i}`),now+31*60_000+i);
+    const next=restored.maybeSend({isLive:true,streamId:'discovery-stream',profile:'normal',availability:discoveryAvailability,busy:false,now:now+31*60_000+100,random:()=>0});
+    assert.ok(next);assert.notEqual(next.category,first.category,'the next tip rotates to another topic after restart');
+    restoredStore.close();
+  }finally{close()}
+});
+
+test('recent use of promoted game commands temporarily suppresses their own matching tip',()=>{
+  const cases:Array<[string,TipAvailability]>= [['!guess 42',{guess:true}],['!feed',{pet:true,petCare:true}],['!wer @Name',{detective:true}],
+    ['!claim',{drops:true}],['!joinimposter',{imposter:true}],['!wheel',{wheel:true}],['!code 427',{vault:true}]];
+  for(const [command,availability] of cases){
+    const {tips,close}=setup();
+    try{
+      tips.configure(true);tips.alignStream('command-cooldown');tips.observe(message(command,`used-${command}`),10);
+      for(let i=0;i<6;i++)tips.observe(message(`Fresh chat ${command} ${i}`,`fresh-${command}-${i}`),20+i);
+      assert.equal(tips.shouldEvaluate('normal',availability,false,100),false,`${command} suppresses its matching hint for 15 minutes`);
+    }finally{close()}
+  }
 });
 
 test('Community-Portal-Tipp nutzt nur den vorhandenen Aktivitäts- und Profilplan und respektiert !help/!community',()=>{
