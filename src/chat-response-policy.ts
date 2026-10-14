@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 export type ChatProfile = 'calm' | 'normal' | 'lively';
 export interface ChatResponseSettings { profile: ChatProfile; welcomeBots: string[]; }
 export const DEFAULT_CHAT_RESPONSE_SETTINGS: ChatResponseSettings = {
-  profile: 'normal', welcomeBots: ['streamelements', 'nightbot', 'sery_bot', 'moobot'],
+  profile: 'normal', welcomeBots: ['streamelements', 'nightbot', 'sery_bot', 'moobot', 'streamlabs', 'fossabot', 'wizebot', 'botrix'],
 };
 export interface ChatDecisionInput { command?: string; message: string; now?: number; }
 
@@ -27,7 +27,10 @@ export class ChatResponsePolicy {
     return this.snapshot();
   }
   snapshot() { return { ...this.settings, welcomeBots: [...this.settings.welcomeBots], suppressed: this.suppressed, deferred: this.deferred }; }
-  isWelcomeExcluded(login: string) { return this.settings.welcomeBots.includes(login.trim().toLowerCase()); }
+  isWelcomeExcluded(login: string) {
+    const normalized = login.trim().toLowerCase();
+    return DEFAULT_CHAT_RESPONSE_SETTINGS.welcomeBots.includes(normalized) || this.settings.welcomeBots.includes(normalized);
+  }
 
   shouldSend({ command = '', message, now = Date.now() }: ChatDecisionInput): boolean {
     const normalized = command.replace(/^!/u, '').toLowerCase();
@@ -63,6 +66,10 @@ export class ChatResponsePolicy {
     return /fütter|futter|spielt|pflegt|interagiert|erhält|bekomm|\+\d+\s*XP/iu.test(message) && !/nicht|kein|cooldown|fehler/iu.test(message);
   }
   private isPermissionFailure(message: string) { return /nur (jannik|mods|moderatoren|der streamer)|nicht berechtigt|keine berechtigung/iu.test(message); }
-  private isImportant(message: string) { return /gestartet|startet|beendet|aufgelöst|gewinner|abstimmung|umfrage|mystery drop|imposter|detektiv/iu.test(message); }
+  private isImportant(message: string) {
+    // Mentioning a game is not itself an announcement: joins, guesses and other
+    // individual actions must still respect the chat-volume cap.
+    return /(?:anmeldung offen|(?:spiel|runde|abstimmung|umfrage|drop|event|quest)[^.!?]{0,48}\b(?:gestartet|startet|beendet|aufgelöst|geöffnet|vorbei)\b|\b(?:gestartet|startet|beendet|aufgelöst|gewinner|gut erkannt|gleichstand)\b|\b(?:mystery drop|quest-wahl) (?:ist )?(?:geöffnet|vorbei|gestartet|beendet))/iu.test(message);
+  }
   private fingerprint(text: string) { return createHash('sha256').update(text.toLowerCase()).digest('hex').slice(0, 16); }
 }

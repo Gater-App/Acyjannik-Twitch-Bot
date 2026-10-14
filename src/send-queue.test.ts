@@ -18,13 +18,13 @@ test('Sendewarteschlange begrenzt Duplikate, zeigt Zähler und priorisiert wicht
   }, 0, undefined, 500, 2);
   const first = queue.enqueue('blocker');
   await new Promise(resolve => setTimeout(resolve, 0));
-  const regular = queue.enqueue('normale Info');
-  const duplicate = queue.enqueue('normale Info');
+  const regular = queue.enqueue('Imposter-Teilnahme gespeichert.');
+  const duplicate = queue.enqueue('Imposter-Teilnahme gespeichert.');
   const important = queue.enqueue('Der Mystery Drop startet!');
   assert.equal(queue.snapshot().suppressed, 1);
   release?.();
   await Promise.all([first, regular, duplicate, important]);
-  assert.deepEqual(sent, ['【🤖 COMMUNITY】 blocker', '【🤖 COMMUNITY】 Der Mystery Drop startet!', '【🤖 COMMUNITY】 normale Info']);
+  assert.deepEqual(sent, ['【🤖 COMMUNITY】 blocker', '【🤖 COMMUNITY】 Der Mystery Drop startet!', '【🤖 COMMUNITY】 Imposter-Teilnahme gespeichert.']);
 });
 
 test('Sendewarteschlange bleibt als beschäftigt markiert, solange Twitch den Versand verarbeitet', async () => {

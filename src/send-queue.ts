@@ -68,7 +68,7 @@ export class SendQueue {
 }
 
 function priorityFor(message: string): number {
-  return /gestartet|startet|beendet|aufgelöst|gewinner|abstimmung|umfrage|der mystery drop ist geöffnet|der mystery drop ist vorbei|chat-imposter|chat-detektiv/iu.test(message) ? 2 : 1;
+  return /(?:anmeldung offen|(?:spiel|runde|abstimmung|umfrage|drop|event|quest)[^.!?]{0,48}\b(?:gestartet|startet|beendet|aufgelöst|geöffnet|vorbei)\b|\b(?:gestartet|startet|beendet|aufgelöst|gewinner|gut erkannt|gleichstand)\b|\b(?:mystery drop|quest-wahl) (?:ist )?(?:geöffnet|vorbei|gestartet|beendet))/iu.test(message) ? 2 : 1;
 }
 
 const consoleLogger: Logger = {

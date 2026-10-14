@@ -26,3 +26,32 @@ test('lebhaftes Profil erlaubt Einzelreaktionen, bremst Wiederholungen und norma
   assert.equal(policy.shouldSend({ command: '!claim', message: 'Du bist beim Mystery Drop dabei!', now: 10_000 }), true);
   assert.equal(policy.shouldSend({ command: '!claim', message: 'Du bist beim Mystery Drop dabei!', now: 11_000 }), false);
 });
+
+test('Chat-Simulationen halten Einzelaktionen ruhig und lassen Spielstarts und Ergebnisse sichtbar', () => {
+  const simulate = (profile: 'calm' | 'normal' | 'lively') => {
+    const policy = new ChatResponsePolicy({ profile, welcomeBots: [] });
+    const chat = [
+      ['!8ball', '🎱 Die Antwort lautet vielleicht.'],
+      ['!wer', '🕵️ Deine Antwort wurde gespeichert.'],
+      ['!vote', '🗳️ Stimme gespeichert.'],
+      ['!guess', '🔢 Deine Zahl wurde gespeichert.'],
+      ['!startimposter', '🎭 Anmeldung offen! Mit !joinimposter mitspielen.'],
+      ['!endimposter', '🎭 Gut erkannt: Der Imposter war Alex.'],
+    ] as const;
+    return chat.map(([command, message], i) => policy.shouldSend({ command, message, now: 10_000 + i * 1_200 }));
+  };
+
+  assert.deepEqual(simulate('calm'), [true, false, false, false, true, true], 'Ruhig begrenzt individuelle Meldungen, zeigt Start und Ergebnis');
+  assert.deepEqual(simulate('normal'), [true, true, true, false, true, true], 'Normal erlaubt drei kurze Aktionen, bremst weitere Einzelschritte');
+  assert.deepEqual(simulate('lively'), [true, true, true, true, true, true], 'Lebhaft erlaubt mehr Aktivität');
+});
+
+test('gängige Bot-Accounts werden standardmäßig nicht als neue Zuschauer begrüßt', () => {
+  const policy = new ChatResponsePolicy();
+  for (const login of ['streamelements', 'nightbot', 'moobot', 'streamlabs', 'fossabot', 'wizebot', 'botrix'])
+    assert.equal(policy.isWelcomeExcluded(login), true, `${login} ist ausgeschlossen`);
+  assert.equal(policy.isWelcomeExcluded('echter_zuschauer'), false);
+  policy.configure({ profile: 'normal', welcomeBots: ['eigener_bot'] });
+  assert.equal(policy.isWelcomeExcluded('fossabot'), true, 'gespeicherte individuelle Listen heben bekannte Bot-Ausschlüsse nicht auf');
+  assert.equal(policy.isWelcomeExcluded('eigener_bot'), true, 'individuelle Ausschlüsse bleiben erhalten');
+});
