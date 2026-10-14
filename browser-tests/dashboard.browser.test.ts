@@ -32,7 +32,7 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
   const base = `http://127.0.0.1:${port}`;
   process.env.TWITCH_CLIENT_ID = 'test-client';
   process.env.TWITCH_CLIENT_SECRET = 'test-secret';
-  process.env.DASHBOARD_REDIRECT_URI = 'https://bot.example.test/dashboard/oauth/callback';
+  process.env.DASHBOARD_REDIRECT_URI = `${base}/dashboard/oauth/callback`;
   process.env.DASHBOARD_ADMIN_IDS = 'admin-id';
   process.env.DASHBOARD_HOST = '127.0.0.1';
   process.env.DASHBOARD_PORT = String(port);
@@ -107,6 +107,28 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
       await screenshot(`acy-ux50-desktop-${name}`);
     }
 
+    assert.equal(await page.getByRole('heading', { name: 'Stream bereit machen' }).isVisible(), true, 'Startseite enthält eine Einrichtungs-Checkliste');
+    assert.match(await page.locator('#home-status').innerText(), /Bot antwortet[\s\S]*Twitch-Verbindung/u, 'Kompaktstatus zeigt Bot und Twitch');
+    assert.match(await page.locator('#setup-checklist').innerText(), /Chat kann Nachrichten empfangen[\s\S]*OBS-Widget-Link/u, 'Checkliste zeigt Chat-Nachweis und optionale OBS-Einrichtung');
+    await screenshot('acy-dashboard-setup-checklist');
+
+    await navigate('obs');
+    assert.equal(await page.getByRole('heading', { name: 'OBS-Einrichtung' }).isVisible(), true, 'OBS wird als geführter Einrichtungsschritt dargestellt');
+    assert.equal(await page.locator('#obs-type option').count(), 8, 'Assistent listet alle unterstützten Einzel-Widgets');
+    await page.locator('#obs-type').selectOption('vault');
+    assert.match(await page.locator('#obs-description').innerText(), /Geheimcode bleibt verborgen/u, 'Tresorvorschau erklärt den Schutz des Codes');
+    assert.match(await page.locator('#obs-size').innerText(), /900 × 440 Pixel/u, 'Assistent empfiehlt eine verständliche Quellgröße');
+    await screenshot('acy-dashboard-obs-assistant');
+    page.once('dialog', dialog => dialog.accept());
+    await page.locator('#obs-create').click();
+    await page.locator('#obs-result input').waitFor({ state: 'visible', timeout: 4000 }).catch(async () => assert.fail(`Widget-Link wurde nicht erstellt. Meldung: ${await page.locator('#notice').innerText()} · Status: ${await page.locator('#obs-link-status').innerText()} · API: ${apiResponses.join(', ')}`));
+    await page.locator('#obs-test').click();
+    await page.getByText(/Widget-Seite ist erreichbar/u).waitFor({ state: 'visible', timeout: 3000 });
+    assert.match(await page.locator('#obs-test-status').innerText(), /OBS-Sichtbarkeit ist damit noch nicht bestätigt/u, 'Linktest verspricht keine Sichtbarkeit in OBS');
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1), 'OBS-Assistent passt mobil ohne seitliches Scrollen');
+    await page.setViewportSize({ width: 1440, height: 1000 });
+
     await navigate('games');
     await page.locator('#game-catalog').getByRole('button', {name:'Community-Tresor'}).click();
     await assertSubpage('[data-game-page="vault"]', true);
@@ -154,6 +176,17 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     await page.locator('[data-community-target="elio"]').click();
     assert.match(await page.locator('[data-community-page="elio"] .subpage-guide').innerText(), /Status zeigt Lebensphase/u);
     await screenshot('acy-ux50-desktop-community-elio');
+    await page.locator('[data-community-target="quests"]').click();
+    assert.equal(await page.locator('.quest-flow-steps li').count(), 3, 'Quest-Verwaltung erklärt den Ablauf in drei Schritten');
+    assert.equal(await page.getByRole('heading', { name: '1. Neue Vorschläge prüfen' }).isVisible(), true, 'Neue Vorschläge sind der erste sichtbare Schritt');
+    await page.getByText('Noch keine neuen Vorschläge.').waitFor({ state: 'visible' });
+    await page.getByText('Noch keine freigegebenen Aufgaben.').waitFor({ state: 'visible' });
+    await screenshot('acy-dashboard-quests-workflow');
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1), 'Aufgabenablauf passt mobil ohne seitliches Scrollen');
+    await screenshot('acy-dashboard-quests-mobile');
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.locator('[data-community-target="elio"]').click();
     await page.locator('[data-community-page="elio"] .subpage-back').click();
     await assertSubpage('[data-community-page="events"]', true);
     await page.locator('[data-community-target="elio"]').click();
@@ -248,8 +281,9 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     assert.ok(savedSpark.some((topic: { label: string }) => topic.label === 'Browser-Testthema'), 'Themenformular speichert eigene Themen dauerhaft über die API');
     await screenshot('acy-ux50-desktop-community-spark');
 
-    await page.locator('[data-community-target="pranks"]').click();
-    await assertSubpage('[data-community-page="pranks"]',true);
+    await navigate('games');
+    await page.locator('#game-catalog').getByRole('button', { name: /Chaos & Pranks/u }).click();
+    await assertSubpage('[data-game-page="pranks"]',true);
     for(const title of ['Elio übernimmt die Macht 👑','Elio verdächtigt jemanden 🕵️','Tresor-Fehlalarm 🚨','Das unseriöse Orakel 🔮'])assert.equal(await page.getByRole('heading',{name:title}).isVisible(),true);
     await screenshot('acy-chaos-pranks-desktop');
     await page.setViewportSize({width:390,height:844});
@@ -262,6 +296,7 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     await screenshot('acy-chaos-pranks-active-desktop');
     await page.getByRole('button',{name:'Laufenden Prank beenden'}).click();
     await page.locator('#prank-result').getByText('Prank beendet.').waitFor({state:'visible'});
+    await navigate('community');
     await page.locator('[data-community-target="fairness"]').click();
     await assertSubpage('[data-community-page="fairness"]',true);
     await page.getByText(/Theoretisch: Gewinn 62\.00 % · Verlust 33\.00 % · neutral 5\.00 %/u).waitFor({state:'visible'});
