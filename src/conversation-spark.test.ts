@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { FeatureStore } from './feature-store.js';
-import { ConversationSpark, DEFAULT_SPARK_CONFIG, normalizeSparkConfig, RuleBasedTopicDetector } from './conversation-spark.js';
+import { ConversationSpark, DEFAULT_SPARK_CONFIG, normalizeSparkConfig, RuleBasedTopicDetector, SPARK_QUESTION_POOLS } from './conversation-spark.js';
 import type { ChatMessage } from './types.js';
 
 function message(id:string,user:string,text:string,channel='broadcaster-1'):ChatMessage {
@@ -35,6 +35,34 @@ test('regelbasierte Topic-Erkennung normalisiert Schreibweise und verlangt Konte
   assert.deepEqual(detector.detect('Der Boss ist stark'),[]);
   assert.deepEqual(detector.detect('Zero Build im Ranked').map((item)=>item.topic.id),['fortnite']);
   assert.deepEqual(detector.detect('Elden Ring, ich würde ein anderes Build probieren').map((item)=>item.topic.id),['elden-ring']);
+});
+
+test('erkennt harmlose Nicht-Gaming-Themen, Schreibvarianten und zusammengesetzte Begriffe; sensible Themen bleiben außen vor',()=>{
+  const detector=new RuleBasedTopicDetector();
+  assert.deepEqual(detector.detect('Gestern war unser FILMABEND richtig gut').map(x=>x.topic.id),['films']);
+  assert.deepEqual(detector.detect('Welcher SONG hebt die Laune?').map(x=>x.topic.id),['music']);
+  assert.deepEqual(detector.detect('Unser Hundebesitzer erzählt vom Spaziergang').map(x=>x.topic.id),['pets','everyday']);
+  assert.deepEqual(detector.detect('Welche Partei wählt ihr?').map(x=>x.topic.id),[]);
+  assert.deepEqual(detector.detect('Medikamente und Therapie'),[]);
+  assert.equal(Object.values(SPARK_QUESTION_POOLS).flat().length,55);
+});
+
+test('Themenvorschlag braucht mehrere echte Personen und Nachrichten; Vorlage wird gespeichert und Kategorien sind schaltbar',()=>{
+  const store=new FeatureStore(':memory:'),spark=new ConversationSpark(store,'broadcaster-1');
+  enabled(store,{enabledCategories:['films'],sensitivity:'normal'});
+  try{
+    const inputs=[['a','Gestern war der Filmabend großartig'],['b','Ich liebe gute Serien'],['c','Welchen Film schauen wir?'],['a','Das Kino hat tolle Filme'],['b','Serienabend klingt gut']];
+    let proposals:ReturnType<typeof spark.observe>=[];
+    inputs.forEach(([user,text],i)=>{proposals=spark.observe(message('film-'+i,user!,text!),100_000+i*10_000)});
+    assert.equal(proposals.length,1);
+    assert.equal(proposals[0]?.topicId,'films');assert.equal(proposals[0]?.actionType,'question');
+    assert.ok(SPARK_QUESTION_POOLS.films.includes(proposals[0]!.suggestionText!));
+    assert.equal(store.sparkProposals('pending_approval')[0]?.suggestionText,proposals[0]?.suggestionText);
+    const disabledStore=new FeatureStore(':memory:'),disabled=new ConversationSpark(disabledStore,'broadcaster-1');
+    enabled(disabledStore,{enabledCategories:['gaming']});
+    for(let i=0;i<5;i++)assert.equal(disabled.observe(message('off-'+i,['a','b','c','a','b'][i]!,inputs[i]![1]!),200_000+i*10_000).length,0);
+    disabledStore.close();
+  }finally{store.close();}
 });
 
 test('Spark bleibt standardmäßig aus, respektiert Kanalbindung, Schwellen und dedupliziert Events',()=>{

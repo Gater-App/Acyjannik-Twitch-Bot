@@ -32,13 +32,12 @@ export class CommunityFeatures {
     if (message.senderUserId === this.config.botUserId || message.senderLogin.toLowerCase() === this.config.botLogin.toLowerCase()) return undefined;
     const text = message.message.trim().replace(/\s+/gu, ' ');
     if (text.startsWith('!') || Array.from(text).length < 3) return undefined;
-    const created = this.conversationSpark.observe(message, now);
+    this.conversationSpark.observe(message, now);
     const settings = this.store.config('xp_settings', { activityXp: 5, activityCooldownMs: 60_000, dailyGameCap: 100, levelBase: 100 });
     const fingerprint = createHash('sha256').update(text.toLocaleLowerCase()).digest('hex');
     this.store.awardActivity(message.senderUserId, message.senderDisplayName, fingerprint, message.eventId, now,
       settings.activityXp, settings.activityCooldownMs);
-    return this.conversationSpark.config().chatSuggestionsEnabled && created[0]
-      ? `🎮 Im Chat dreht sich gerade viel um ${created[0].topicLabel}! Ein Vorschlag wartet auf Freigabe im Dashboard.` : undefined;
+    return undefined;
   }
 
   firstChatWelcome(message:ChatMessage,now=Date.now(),excludedLogins: string[] = []):string|undefined {

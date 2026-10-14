@@ -209,14 +209,17 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     await navigate('community');
     await page.locator('[data-community-target="spark"]').click();
     assert.equal(await page.locator('#spark-settings textarea').count(), 0, 'eigene Themen werden ohne JSON-Editor verwaltet');
-    await page.getByText('Erkennung und eigene Themen einstellen').click();
+    await page.getByText('Chat-Ideen einstellen').click();
+    assert.equal(await page.getByLabel('Wie früh soll der Bot ein Thema erkennen?').isVisible(), true, 'Erkennung hat eine verständliche Empfindlichkeit');
+    assert.equal(await page.locator('#spark-settings select[name="publishMode"]').isVisible(), true, 'Veröffentlichung kann intern oder erst nach Freigabe erfolgen');
+    assert.equal(await page.locator('#spark-categories input[type="checkbox"]').count(), 11, 'alle Themenkategorien sind einzeln schaltbar');
     assert.equal(await page.getByRole('button', { name: 'Thema hinzufügen' }).isVisible(), true, 'eigene Gesprächsthemen können verständlich ergänzt werden');
     await page.getByRole('button', { name: 'Thema hinzufügen' }).click();
     const newTopic = page.locator('.spark-topic').last();
     await newTopic.getByLabel('Thema', { exact: true }).fill('Browser-Testthema');
-    await newTopic.getByLabel('Erkennungsbegriffe (durch Kommas trennen)', { exact: true }).fill('browser test, ux prüfung');
+    await newTopic.getByLabel('Erkennungsbegriffe, durch Kommas getrennt', { exact: true }).fill('browser test, ux prüfung');
     await page.getByRole('button', { name: 'Einstellungen speichern' }).click();
-    await page.getByText('Einstellungen und Themen gespeichert.').waitFor({ state: 'visible' });
+    await page.getByText('Chat-Ideen gespeichert.').waitFor({ state: 'visible' });
     const savedSpark = await page.evaluate(async () => (await (await fetch('/dashboard/api/spark')).json()).customTopics);
     assert.ok(savedSpark.some((topic: { label: string }) => topic.label === 'Browser-Testthema'), 'Themenformular speichert eigene Themen dauerhaft über die API');
     await screenshot('acy-ux50-desktop-community-spark');
@@ -279,7 +282,11 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     assert.equal(logoutResult.request().method(), 'POST');
     assert.ok(logoutRequestHeaders['x-csrf-token'], 'Logout sendet CSRF-Token');
     assert.equal(logoutRequestHeaders.origin, base, 'Logout sendet Browser-Origin');
-    await page.waitForURL((url) => url.hostname === 'id.twitch.tv' && url.pathname === '/oauth2/authorize', { waitUntil: 'commit', timeout: 5000 });
+    const afterLogout = await fetch(`${base}/dashboard`, { redirect: 'manual' });
+    assert.equal(afterLogout.status, 302, 'nach Logout ist die Admin-Sitzung serverseitig ungültig');
+    assert.equal(afterLogout.headers.get('location'), '/dashboard/login');
+    const loginAgain = await fetch(`${base}/dashboard/login`, { redirect: 'manual' });
+    assert.equal(new URL(loginAgain.headers.get('location') || '').hostname, 'id.twitch.tv', 'abgemeldete Sitzung kann wieder zur Twitch-Anmeldung wechseln');
     assert.deepEqual(pageErrors, [], `Dashboard darf bei Navigation, Elio, Song-Wünschen und Logout keine JavaScript-Ausnahmen werfen: ${pageErrors.join('; ')}`);
     assert.equal(apiResponses.filter((response) => response.startsWith('429 ')).length, 0, 'die geprüfte Navigation und Einrichtung erzeugen keine Rate-Limit-Antworten');
   } finally {

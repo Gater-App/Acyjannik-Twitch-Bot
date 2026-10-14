@@ -39,7 +39,7 @@ export type WidgetType = 'quest' | 'poll' | 'imposter' | 'detective' | 'pet' | '
 export type SparkStatus = 'detected' | 'pending_approval' | 'approved' | 'rejected' | 'expired' | 'executed' | 'canceled';
 export interface SparkProposal {
   id: string; channelId: string; topicId: string; topicLabel: string; score: number; participants: number;
-  messages: number; actionType: 'poll' | 'quest' | 'challenge'; status: SparkStatus; createdAt: number;
+  messages: number; actionType: 'question' | 'poll' | 'quest' | 'challenge'; suggestionText?: string | null; status: SparkStatus; createdAt: number;
   expiresAt: number; decidedBy: string | null; rejectionReason: string | null;
 }
 
@@ -643,6 +643,31 @@ export class FeatureStore {
         INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (21, unixepoch()*1000);
       `))();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 22) {
+      if (currentVersion > 0) this.backupBeforeMigration(22);
+      this.db.transaction(() => {
+        this.db.exec(`
+          DROP INDEX IF EXISTS spark_proposals_status_time;
+          DROP INDEX IF EXISTS spark_one_open_topic;
+          ALTER TABLE spark_proposals RENAME TO spark_proposals_legacy;
+          CREATE TABLE spark_proposals (
+            id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, topic_id TEXT NOT NULL, topic_label TEXT NOT NULL,
+            score INTEGER NOT NULL, participant_count INTEGER NOT NULL, message_count INTEGER NOT NULL,
+            action_type TEXT NOT NULL CHECK(action_type IN ('question','poll','quest','challenge')),
+            suggestion_text TEXT,
+            status TEXT NOT NULL CHECK(status IN ('detected','pending_approval','approved','rejected','expired','executed','canceled')),
+            created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, decided_by TEXT, rejection_reason TEXT
+          );
+          INSERT INTO spark_proposals(id,channel_id,topic_id,topic_label,score,participant_count,message_count,action_type,suggestion_text,status,created_at,expires_at,decided_by,rejection_reason)
+            SELECT id,channel_id,topic_id,topic_label,score,participant_count,message_count,action_type,NULL,status,created_at,expires_at,decided_by,rejection_reason FROM spark_proposals_legacy;
+          DROP TABLE spark_proposals_legacy;
+          CREATE INDEX spark_proposals_status_time ON spark_proposals(status,created_at DESC);
+          CREATE UNIQUE INDEX spark_one_open_topic ON spark_proposals(channel_id,topic_id) WHERE status IN ('detected','pending_approval','approved');
+          INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (22, unixepoch()*1000);
+        `);
+      })();
+    }
   }
 
   private backupBeforeMigration(version: number): void {
@@ -729,9 +754,9 @@ export class FeatureStore {
       const cooldown = this.db.prepare('SELECT until_at FROM spark_cooldowns WHERE channel_id=? AND topic_id IN (?,\'*\') AND until_at>? ORDER BY until_at DESC LIMIT 1')
         .get(input.channelId, input.topicId, input.createdAt) as { until_at: number } | undefined;
       if (open || pending.count >= maxPending || cooldown) return undefined;
-      this.db.prepare(`INSERT INTO spark_proposals(id,channel_id,topic_id,topic_label,score,participant_count,message_count,action_type,status,created_at,expires_at)
-        VALUES(?,?,?,?,?,?,?,?,'pending_approval',?,?)`).run(input.id,input.channelId,input.topicId,input.topicLabel,input.score,
-          input.participants,input.messages,input.actionType,input.createdAt,input.expiresAt);
+      this.db.prepare(`INSERT INTO spark_proposals(id,channel_id,topic_id,topic_label,score,participant_count,message_count,action_type,suggestion_text,status,created_at,expires_at)
+        VALUES(?,?,?,?,?,?,?,?,?,'pending_approval',?,?)`).run(input.id,input.channelId,input.topicId,input.topicLabel,input.score,
+          input.participants,input.messages,input.actionType,input.suggestionText??null,input.createdAt,input.expiresAt);
       this.db.prepare(`INSERT INTO spark_cooldowns(channel_id,topic_id,until_at) VALUES(?,?,?) ON CONFLICT(channel_id,topic_id)
         DO UPDATE SET until_at=excluded.until_at`).run(input.channelId, input.topicId, input.createdAt + topicCooldownMs);
       this.db.prepare(`INSERT INTO spark_cooldowns(channel_id,topic_id,until_at) VALUES(?,'*',?) ON CONFLICT(channel_id,topic_id)
@@ -745,7 +770,7 @@ export class FeatureStore {
     const rows = this.db.prepare(`SELECT * FROM spark_proposals WHERE (?='all' OR status=?) ORDER BY created_at DESC LIMIT ?`)
       .all(status,status,Math.max(1,Math.min(100,limit))) as Array<Record<string, unknown>>;
     return rows.map((r) => ({ id:String(r.id),channelId:String(r.channel_id),topicId:String(r.topic_id),topicLabel:String(r.topic_label),
-      score:Number(r.score),participants:Number(r.participant_count),messages:Number(r.message_count),actionType:r.action_type as SparkProposal['actionType'],
+      score:Number(r.score),participants:Number(r.participant_count),messages:Number(r.message_count),actionType:r.action_type as SparkProposal['actionType'],suggestionText:r.suggestion_text?String(r.suggestion_text):null,
       status:r.status as SparkStatus,createdAt:Number(r.created_at),expiresAt:Number(r.expires_at),decidedBy:r.decided_by ? String(r.decided_by) : null,
       rejectionReason:r.rejection_reason ? String(r.rejection_reason) : null }));
   }

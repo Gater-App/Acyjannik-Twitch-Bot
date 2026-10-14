@@ -161,7 +161,8 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.match(html,/Saisonpunkte für Halloween, Weihnachten und Ostern sind davon getrennt/u,'Saisonpunkte werden klar von XP getrennt');
     assert.match(html,/Privater OBS-Link/u);
     assert.match(html,/Erweiterte Einstellungen/u);
-    assert.match(html,/Erkennung und eigene Themen einstellen/u,'Gesprächs-Funken-Einstellungen sind klar benannt und eigene Themen werden nicht als JSON gepflegt');
+    assert.match(html,/<h2>Chat-Ideen<\/h2>[\s\S]*Wie früh soll der Bot ein Thema erkennen\?/u,'Chat-Ideen bieten eine verständliche Empfindlichkeitsauswahl');
+    assert.match(html,/Nach Freigabe im Chat veröffentlichen/u,'öffentliche Fragen erfordern ausdrücklich Freigabe');
     assert.doesNotMatch(html,/data-setting-target="general"/u,'leere Allgemein-Seite ist nicht in der Navigation');
     assert.match(html,/data-community-target="music"[^>]*>Song-Wünsche/u,'Song-Wünsche sind unter Community erreichbar');
     assert.match(html,/Song wünschen“ für genau 1\.000 Kanalpunkte/u,'das feste Request-Entgelt wird verständlich angezeigt');
@@ -262,6 +263,16 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     });
     assert.equal(sparkPoll.status, 201, await sparkPoll.clone().text());
     assert.equal(store.sparkProposal(sparkProposal.id)?.status, 'executed');
+
+    store.setConfig('spark_settings',{enabled:true,publishMode:'approved-chat'});
+    const questionNow=Date.now()+180_000;
+    const questionProposal=store.createSparkProposal({id:'dashboard-question-test',channelId:'channel-id',topicId:'films',topicLabel:'Filme und Serien',
+      score:18,participants:4,messages:7,actionType:'question',suggestionText:'Welchen Film könntet ihr immer wieder schauen?',createdAt:questionNow,expiresAt:questionNow+60_000},5,60_000,120_000);
+    assert.ok(questionProposal);
+    const questionApprove=await fetch(`${base}/dashboard/api/spark/action`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({id:questionProposal.id,action:'approve'})});
+    assert.equal(questionApprove.status,200);assert.equal(sentChat.at(-1),'Welchen Film könntet ihr immer wieder schauen?');assert.equal(store.sparkProposal(questionProposal.id)?.status,'executed');
+    const repeatQuestion=await fetch(`${base}/dashboard/api/spark/action`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({id:questionProposal.id,action:'approve'})});
+    assert.equal(repeatQuestion.status,409,'bereits veröffentlichte Fragen können nicht doppelt gesendet werden');
 
     const moduleChange = await fetch(`${base}/dashboard/api/modules`, {
       method: 'POST', headers: { Cookie: sessionCookie, Origin: `http://localhost:${port}`, 'X-CSRF-Token': csrf, 'Content-Type': 'application/json' },
