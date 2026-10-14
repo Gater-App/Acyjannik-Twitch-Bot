@@ -1,4 +1,6 @@
 import readline from 'node:readline';
+import { randomInt } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { Database } from './database.js';
 import { loadConfig } from './config.js';
 import { CommandHandler } from './command-handler.js';
@@ -22,6 +24,7 @@ import { singleFlight } from './single-flight.js';
 import { SpotifySongRequests } from './song-requests.js';
 import { ViewerCommunityPortal } from './community-portal.js';
 import { CommunityPortalHealth } from './portal-health.js';
+import { BotLifecycle, RESTART_GOODBYE_MESSAGES, RESTART_WELCOME_MESSAGES } from './bot-lifecycle.js';
 
 const isTestMode = process.argv.includes('--test') || process.env.TEST_MODE === 'true';
 
@@ -69,6 +72,10 @@ async function runLiveMode(): Promise<void> {
   const config = loadConfig();
   const database = new Database(config.databasePath, config.activeOnStart);
   const features = new FeatureStore(config.databasePath);
+  const botLifecycle = new BotLifecycle(features);
+  const returnMarker = botLifecycle.takeReturnCandidate(Date.now());
+  const lifecycleAbort = new AbortController();
+  let returnAttemptStarted = false;
   const community = new CommunityFeatures(features, config, async (login) => {
     const user = (await api.getUsers([login]))[0];
     return user ? { id: user.id, login: user.login, displayName: user.display_name } : undefined;
@@ -117,6 +124,22 @@ async function runLiveMode(): Promise<void> {
       catch(error){logger.warn('Kanalpunkte-EventSub konnte nicht aktiviert werden; Chatbetrieb läuft weiter.',{error:error instanceof Error?error.message:'unbekannt'});}
       if(songRequests)try{await songRequests.ensureSubscription(sessionId);}
       catch(error){logger.warn('Song-Request-EventSub konnte nicht aktiviert werden; übriger Chatbetrieb läuft weiter.',{error:error instanceof Error?error.message:'unbekannt'});}
+      if(returnMarker&&!returnAttemptStarted){
+        returnAttemptStarted=true;
+        void (async()=>{
+          try{await delay(20_000,undefined,{signal:lifecycleAbort.signal});}catch{return;}
+          const currentMarker=botLifecycle.marker();
+          if(!botLifecycle.settings().enabled||currentMarker?.id!==returnMarker.id||currentMarker.phase!=='returning'){botLifecycle.finishWelcome(returnMarker.id,'skipped');return;}
+          if(!eventsub.isConnected){botLifecycle.finishWelcome(returnMarker.id,'skipped');return;}
+          let streamLive=false;
+          try{streamLive=Boolean(await api.getStreamStatus(config.broadcasterUserId));}catch{botLifecycle.finishWelcome(returnMarker.id,'skipped');return;}
+          const finalMarker=botLifecycle.marker();
+          if(!streamLive||!eventsub.isConnected||!botLifecycle.settings().enabled||finalMarker?.id!==returnMarker.id||finalMarker.phase!=='returning'){botLifecycle.finishWelcome(returnMarker.id,'skipped');return;}
+          const message=RESTART_WELCOME_MESSAGES[randomInt(RESTART_WELCOME_MESSAGES.length)]!;
+          try{const sent=await queue.enqueue(message,undefined,'info');botLifecycle.finishWelcome(returnMarker.id,sent?'sent':'failed');}
+          catch{botLifecycle.finishWelcome(returnMarker.id,'failed');}
+        })();
+      }
     },
     async (rawMessage) => {
       const payload=rawMessage.payload as Record<string,unknown>|undefined;
@@ -293,7 +316,7 @@ async function runLiveMode(): Promise<void> {
       async()=>{const now=Date.now(),stream=await api.getStreamStatus(config.broadcasterUserId);if(!stream||community.vault.activeViewerCount(now)<community.vault.settings().minActiveViewers||now-lastSpecialAnnouncementAt<5*60_000)return false;const game=community.miniGames.snapshot(),drop=community.arcade.snapshot('drop'),wheel=community.arcade.wheelStatus(),dropStatus=(drop.drop as {status?:string}|undefined)?.status;return !Boolean(game.imposter||game.detective||features.activeQuest()||features.activePoll(now)||features.activeBoss(now)||['announced','claiming','resolving'].includes(dropStatus||'')||wheel.active||queue.busy);},
       community.moderatorPranks,async(login)=>{const user=(await api.getUsers([login]))[0];return user?{id:user.id,login:user.login,displayName:user.display_name}:undefined;},
       {weights:config.eventWeights,source:process.env.EVENT_WEIGHTS_JSON?.trim()?'EVENT_WEIGHTS_JSON (beim Bot-Start geladen)':'Standardwerte aus src/config.ts'},
-      ()=>communityPortalHealth.isAvailable());
+      ()=>communityPortalHealth.isAvailable(),botLifecycle);
     logger.info('OAuth-Server erreichbar unter http://127.0.0.1:3000/oauth/start');
     await dashboard.start();
     eventsub.start();
@@ -307,16 +330,38 @@ async function runLiveMode(): Promise<void> {
     throw error;
   }
 
-  const shutdown = async () => {
-    clearInterval(featureTicker);
-    await eventsub.stop();
-    await dashboard?.stop();
-    await oauthServer.stop();
-    features.close();
-    database.close();
+  let shutdownPromise:Promise<void>|undefined;
+  const shutdown = ():Promise<void> => {
+    if(shutdownPromise)return shutdownPromise;
+    shutdownPromise=(async()=>{
+      clearInterval(featureTicker);lifecycleAbort.abort();
+      const currentMarker=botLifecycle.marker();let confirmedLive=false;
+      if(botLifecycle.settings().enabled&&currentMarker?.phase==='armed'&&eventsub.isConnected){
+        let timeout:NodeJS.Timeout|undefined;
+        try{confirmedLive=Boolean(await Promise.race([api.getStreamStatus(config.broadcasterUserId),new Promise<never>((_,reject)=>{timeout=setTimeout(()=>reject(new Error('Streamstatus nicht rechtzeitig bestätigt.')),3500);})]));}
+        catch{confirmedLive=false;}finally{if(timeout)clearTimeout(timeout);}
+      }
+      const marker=botLifecycle.beginShutdown(Date.now(),confirmedLive&&eventsub.isConnected);
+      if(marker?.returnAllowed){
+        let timeout:NodeJS.Timeout|undefined;
+        try{
+          const message=RESTART_GOODBYE_MESSAGES[randomInt(RESTART_GOODBYE_MESSAGES.length)]!;
+          const sent=await Promise.race([queue.enqueue(message,undefined,'info'),new Promise<boolean>(resolve=>{timeout=setTimeout(()=>resolve(false),4000);})]);
+          botLifecycle.finishFarewell(marker.id,sent?'sent':'failed');
+        }catch{botLifecycle.finishFarewell(marker.id,'failed');}finally{if(timeout)clearTimeout(timeout);}
+      }
+      await eventsub.stop();
+      await dashboard?.stop();
+      await oauthServer.stop();
+      if(marker)botLifecycle.completeShutdown(marker.id);
+      features.close();
+      database.close();
+    })();
+    return shutdownPromise;
   };
-  process.once('SIGINT', () => { void shutdown().then(() => process.exit(0)); });
-  process.once('SIGTERM', () => { void shutdown().then(() => process.exit(0)); });
+  const terminate=()=>{void shutdown().then(()=>process.exit(0)).catch(error=>{logger.error('Geordnetes Herunterfahren fehlgeschlagen.',{error:error instanceof Error?error.message:'unbekannt'});process.exit(1);});};
+  process.once('SIGINT',terminate);
+  process.once('SIGTERM',terminate);
 }
 
 async function sendChatMessageWithRetry(

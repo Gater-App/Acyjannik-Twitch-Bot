@@ -16,6 +16,7 @@ import { CommunityFeatures } from '../src/community-features.js';
 import { ViewerCommunityPortal } from '../src/community-portal.js';
 import { CommunityVault } from '../src/community-vault.js';
 import { CommunityTips } from '../src/community-tips.js';
+import { BotLifecycle } from '../src/bot-lifecycle.js';
 
 async function freePort(): Promise<number> {
   const server = net.createServer();
@@ -29,6 +30,7 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
   const env = { ...process.env };
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'acy-dashboard-browser-'));
   const store = new FeatureStore(path.join(directory, 'bot.sqlite'));
+  const botLifecycle=new BotLifecycle(store);
   store.awardXp('browser-ux-seed', 'viewer-42', 'Testviewer', 250, 'Browser-Testkonto', Date.now());
   const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
@@ -53,7 +55,7 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
   store.miniGameQuery(db=>db.prepare("UPDATE community_vault_rounds SET secret_code='042' WHERE status='active'").run());
   const portal = new ViewerCommunityPortal(store, communityFeatures, testConfig(), fetchImpl);
   const communityTips=new CommunityTips(store);
-  const dashboard = new DashboardServer(store, () => ({ twitchConnected: true, channel: 'acyjannik', startedAt: 1 }), logger, fetchImpl, undefined, undefined, undefined, miniGames, arcade, async()=>{}, undefined, communityTips, undefined, undefined, portal, communityFeatures.vault, async()=>true, communityFeatures.moderatorPranks,async(login)=>({id:'123456',login,displayName:'Testviewer'}));
+  const dashboard = new DashboardServer(store, () => ({ twitchConnected: true, channel: 'acyjannik', startedAt: 1 }), logger, fetchImpl, undefined, undefined, undefined, miniGames, arcade, async()=>{}, undefined, communityTips, undefined, undefined, portal, communityFeatures.vault, async()=>true, communityFeatures.moderatorPranks,async(login)=>({id:'123456',login,displayName:'Testviewer'}),undefined,undefined,botLifecycle);
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
   try {
     assert.equal(await dashboard.start(), true);
@@ -119,6 +121,14 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     await page.locator('[data-setting-target="messages"]').click();
     const hintPanel=page.locator('#chat-response-settings');
     await hintPanel.getByRole('heading',{name:'Automatische Chat-Hinweise'}).waitFor({state:'visible'});
+    const lifecycleToggle=hintPanel.getByLabel('Bei geplanten Neustarts verabschieden und zurückmelden');
+    assert.equal(await lifecycleToggle.isChecked(),false,'Neustartnachrichten sind anfangs aus');
+    await lifecycleToggle.check();
+    await page.waitForFunction(async()=>Boolean((await(await fetch('/dashboard/api/bot-lifecycle')).json()).enabled));
+    assert.match(await hintPanel.innerText(),/Bot schreibt während eines Live-Streams/u);
+    await hintPanel.getByRole('button',{name:'Geplanten Neustart vorbereiten'}).click();
+    await hintPanel.getByText(/Geplanter Neustart ist vorbereitet/u).waitFor();
+    assert.equal(await hintPanel.getByRole('button',{name:'Geplanten Neustart vorbereiten'}).isDisabled(),true);
     assert.match(await hintPanel.innerText(),/Ruhig[\s\S]*Normal[\s\S]*Lebhaft/u,'Profile und tatsächliche Grenzen werden angezeigt');
     assert.match(await hintPanel.innerText(),/Community-Tresor[\s\S]*!code 427/u,'aktiviertes Spiel zeigt den belegten Zuschauerbefehl');
     assert.match(await hintPanel.innerText(),/Vorschau · kein Versand/u,'Vorschau versendet keine Twitch-Nachricht');

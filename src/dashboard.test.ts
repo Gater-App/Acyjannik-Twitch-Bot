@@ -12,6 +12,7 @@ import { logger } from './logger.js';
 import { CommunityTips } from './community-tips.js';
 import { AutomaticChatMessages } from './automatic-chat-messages.js';
 import { ModeratorPranks } from './moderator-pranks.js';
+import { BotLifecycle } from './bot-lifecycle.js';
 
 async function freePort(): Promise<number> {
   const server = net.createServer();
@@ -51,7 +52,8 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
   const sentChat:string[]=[];
   const communityTips=new CommunityTips(store);
   const automaticMessages=new AutomaticChatMessages(store);
-  const dashboard = new DashboardServer(store, () => ({ twitchConnected: true, channel: 'acyjannik', startedAt: 1 }), logger, fetchImpl,undefined,undefined,undefined,undefined,arcade,async message=>{sentChat.push(message)},undefined,communityTips,automaticMessages);
+  const botLifecycle=new BotLifecycle(store);
+  const dashboard = new DashboardServer(store, () => ({ twitchConnected: true, channel: 'acyjannik', startedAt: 1 }), logger, fetchImpl,undefined,undefined,undefined,undefined,arcade,async message=>{sentChat.push(message)},undefined,communityTips,automaticMessages,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,botLifecycle);
   try {
     assert.equal(await dashboard.start(), true);
     const base = `http://127.0.0.1:${port}`;
@@ -121,6 +123,7 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.match(html,/dashboardPollVisible/u);assert.match(html,/Retry-After/u);assert.doesNotMatch(html,/setInterval\(refreshMini,3000\)|setInterval\(update,3000\)/u,'veraltete aggressive Minispiel-/Streamer-Polls sind nicht mehr aktiv');
     const csrf = html.match(/name="csrf" content="([a-f0-9]+)"/u)?.[1] || '';
     assert.ok(csrf);
+    assert.match(html,/Bot-Lebenszeichen/u);assert.match(html,/Bei geplanten Neustarts verabschieden und zurückmelden/u);
     assert.match(html,/Eigene geplante Nachrichten/u);assert.match(html,/Community-Tipps/u);assert.match(html,/automatic-chat-form/u);assert.match(html,/communityTipCategories/u);
     assert.match(html,/@media\(max-width:520px\)/u);
     assert.match(page.headers.get('content-security-policy') || '', /nonce-/u);
@@ -223,6 +226,12 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.equal(communityTips.settings().halloweenFrequency,'normal','Häufigkeit wird gespeichert');
     const invalidChatSettings=await fetch(`${base}/dashboard/api/chat-messages`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({profile:'quiet',welcomeBots:[]})});
     assert.equal(invalidChatSettings.status,400,'unbekanntes Profil wird abgewiesen');
+    const lifecycleUrl=`${base}/dashboard/api/bot-lifecycle`,lifecycleHeaders={Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'};
+    assert.equal((await(await fetch(lifecycleUrl,{headers:{Cookie:sessionCookie}})).json() as {enabled:boolean}).enabled,false,'Lebenszeichen bleiben standardmäßig aus');
+    const enableLifecycle=await fetch(lifecycleUrl,{method:'POST',headers:lifecycleHeaders,body:JSON.stringify({action:'settings',enabled:true})});assert.equal(enableLifecycle.status,200);assert.equal((await enableLifecycle.json() as {enabled:boolean}).enabled,true);
+    const prepareLifecycle=await fetch(lifecycleUrl,{method:'POST',headers:lifecycleHeaders,body:JSON.stringify({action:'prepare'})});assert.equal(prepareLifecycle.status,200);
+    assert.equal((await prepareLifecycle.json() as {marker:{phase:string}}).marker.phase,'armed');
+    const duplicatePrepare=await fetch(lifecycleUrl,{method:'POST',headers:lifecycleHeaders,body:JSON.stringify({action:'prepare'})});assert.equal(duplicatePrepare.status,409);
 
     const automaticUnauthorized=await fetch(`${base}/dashboard/api/automatic-messages`,{redirect:'manual'});
     assert.equal(automaticUnauthorized.status,401,'automatische Nachrichten bleiben hinter Dashboard-Login');

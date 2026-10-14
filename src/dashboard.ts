@@ -25,6 +25,7 @@ import type { CommunityVault } from './community-vault.js';
 import { SONG_REQUESTS_CARD, SONG_REQUESTS_SCRIPT } from './song-requests-ui.js';
 import { formatPublicChatMessage } from './chat-message-format.js';
 import { AUTOMATIC_CHAT_HINTS_UI_SCRIPT } from './automatic-chat-hints-ui.js';
+import { BOT_RESTART_COOLDOWN_MS, BOT_RESTART_MARKER_TTL_MS, type BotLifecycle } from './bot-lifecycle.js';
 import { ViewerCommunityPortal } from './community-portal.js';
 import { RateLimitBuckets, setRateLimitHeaders, trustedClientAddress, type RateLimitDecision } from './request-limits.js';
 import { PRANKS_CARD, PRANKS_SCRIPT, moderatorPranksPage } from './moderator-pranks-ui.js';
@@ -176,6 +177,7 @@ export class DashboardServer {
     private readonly lookupPrankUser?: (login:string)=>Promise<{id:string;login:string;displayName:string}|undefined>,
     private readonly halloweenOdds?: {weights:EventWeights;source:string},
     private readonly checkPortalHealth?:()=>Promise<boolean>,
+    private readonly botLifecycle?:BotLifecycle,
   ) { this.adminIds = new Set((process.env.DASHBOARD_ADMIN_IDS || '').split(/[ ,]+/u).filter(Boolean)); }
 
   async start(): Promise<boolean> {
@@ -503,6 +505,14 @@ export class DashboardServer {
       const w=this.halloweenOdds?.weights||{TREAT:48,TRICK:25,JACKPOT:5,GHOST:8,WITCH:8,EMPTY_HOUSE:5,GOLDEN_PUMPKIN:1};const total=Object.values(w).reduce((a,b)=>a+b,0);
       this.json(res,200,{weights:w,total,source:this.halloweenOdds?.source||'Standardwerte aus src/config.ts',historyAvailable:false,shares:{positive:100*((w.TREAT+w.JACKPOT+w.WITCH+w.GOLDEN_PUMPKIN)/total),negative:100*((w.TRICK+w.GHOST)/total),neutral:100*(w.EMPTY_HOUSE/total)}});return;
     }
+    if(route==='bot-lifecycle'&&req.method==='GET'){
+      const lifecycle=this.botLifecycle;
+      const settings=lifecycle?.settings()??{enabled:false,lastPlannedAt:0};
+      const marker=lifecycle?.marker()??null;
+      const cooldownUntil=settings.lastPlannedAt?settings.lastPlannedAt+BOT_RESTART_COOLDOWN_MS:null;
+      const markerActive=Boolean(marker&&['armed','shutting-down','awaiting-return','returning'].includes(marker.phase)&&Date.now()-marker.plannedAt<BOT_RESTART_MARKER_TTL_MS);
+      this.json(res,200,{enabled:settings.enabled,marker,cooldownUntil,canPrepare:Boolean(settings.enabled&&(!cooldownUntil||cooldownUntil<=Date.now())&&!markerActive)});return;
+    }
     if (route === 'overview' && req.method === 'GET') { this.json(res, 200, { admin: { login: session.login }, status: { ...this.store.overview(), ...this.getStatus() } }); return; }
     if (route === 'status' && req.method === 'GET') { const runtime=this.getStatus();this.json(res,200,{dashboardResponding:true,eventSubSocket:runtime.twitchConnected,chatReceive:'unknown',botChatSend:'unknown',broadcasterOAuth:this.channelPoints?(this.channelPoints.connected()?'connected':'disconnected'):'unknown',errorPresent:Boolean(runtime.lastError),channel:runtime.channel,chatQueue:runtime.queued??0,chatSuppressed:(runtime.suppressed??0)+(runtime.chatResponse?.suppressed??0),chatDeferred:runtime.chatResponse?.deferred??0});return; }
     if (route === 'streamer-state' && req.method === 'GET') { const guess=this.store.state<{expiresAt:number}|null>('guess',null);this.json(res,200,{guess:guess&&guess.expiresAt>Date.now()?guess:null,guessEnabled:this.store.config<Record<string,boolean>>('modules',{}).guess!==false});return; }
@@ -582,6 +592,14 @@ export class DashboardServer {
     if (req.method !== 'POST') { this.json(res, 405, { error: 'Methode nicht erlaubt.' }); return; }
     const body = await this.readJson(req); if (!body) { this.json(res, 400, { error: 'Ungültiger JSON-Body.' }); return; }
     const now = Date.now();
+    if(route==='bot-lifecycle'){
+      if(!this.botLifecycle){this.json(res,503,{error:'Bot-Lebenszeichen sind nicht verfügbar.'});return;}
+      if(body.action==='settings'&&typeof body.enabled==='boolean'){this.json(res,200,{enabled:this.botLifecycle.setEnabled(body.enabled).enabled});return;}
+      if(body.action==='prepare'){
+        const result=this.botLifecycle.prepare(now);this.json(res,result.ok?200:409,result);return;
+      }
+      this.json(res,400,{error:'Aktion ungültig.'});return;
+    }
     if(route==='chat-messages'){
       if(!['calm','normal','lively'].includes(String(body.profile))) { this.json(res,400,{error:'Bitte ein gültiges Antwortprofil auswählen.'});return; }
       if(body.communityTipsEnabled!==undefined&&typeof body.communityTipsEnabled!=='boolean'){this.json(res,400,{error:'Bitte Ein oder Aus für Community-Tipps wählen.'});return;}

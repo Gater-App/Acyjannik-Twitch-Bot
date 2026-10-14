@@ -68,7 +68,7 @@ export class SendQueue {
 }
 
 function priorityFor(message: string): number {
-  return /(?:anmeldung offen|(?:spiel|runde|abstimmung|umfrage|drop|event|quest)[^.!?]{0,48}\b(?:gestartet|startet|beendet|aufgelöst|geöffnet|vorbei)\b|\b(?:gestartet|startet|beendet|aufgelöst|gewinner|gut erkannt|gleichstand)\b|\b(?:mystery drop|quest-wahl) (?:ist )?(?:geöffnet|vorbei|gestartet|beendet))/iu.test(message) ? 2 : 1;
+  return /(?:anmeldung offen|geplantes update|bits sortieren|bot-nickerchen|schrauben nachziehen|schrauben wieder drin|elio übernimmt|nichts kaputt gemacht|frisch poliert|hab ich was verpasst|zurück und schöner|bin wieder da|wieder wach|(?:spiel|runde|abstimmung|umfrage|drop|event|quest)[^.!?]{0,48}\b(?:gestartet|startet|beendet|aufgelöst|geöffnet|vorbei)\b|\b(?:gestartet|startet|beendet|aufgelöst|gewinner|gut erkannt|gleichstand)\b|\b(?:mystery drop|quest-wahl) (?:ist )?(?:geöffnet|vorbei|gestartet|beendet))/iu.test(message) ? 2 : 1;
 }
 
 const consoleLogger: Logger = {
