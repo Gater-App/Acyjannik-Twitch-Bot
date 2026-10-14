@@ -699,6 +699,15 @@ export class FeatureStore {
         INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (23, unixepoch()*1000);
       `))();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 24) {
+      if (currentVersion > 0) this.backupBeforeMigration(24);
+      const columns = new Set((this.db.prepare('PRAGMA table_info(community_pet_interactions)').all() as Array<{name:string}>).map(column=>column.name));
+      this.db.transaction(() => {
+        if (!columns.has('source')) this.db.exec("ALTER TABLE community_pet_interactions ADD COLUMN source TEXT NOT NULL DEFAULT 'chat' CHECK(source IN ('chat','portal'))");
+        this.db.exec("UPDATE community_pet_interactions SET source='portal' WHERE event_id LIKE 'viewer:%'; INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (24, unixepoch()*1000);");
+      })();
+    }
   }
 
   private backupBeforeMigration(version: number): void {

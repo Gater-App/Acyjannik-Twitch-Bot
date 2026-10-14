@@ -14,6 +14,9 @@ export interface PetState {
   name: string; level: number; xp: number; hunger: number; happiness: number; energy: number;
   stage: 'egg'|'baby'|'young'|'adult'|'legendary'; paused: boolean; animation: string; updatedAt: number;
 }
+export interface PetPortalAction {
+  ok:boolean; message:string; remainingMs:number; changes?:{hunger:number;happiness:number;energy:number;xp:number;level:number}; leveledUp?:boolean;
+}
 interface PetRow {name:string;level:number;xp:number;hunger:number;happiness:number;energy:number;stage:PetState['stage'];paused:number;animation:string;updated_at:number}
 const DEFAULT_SETTINGS: ArcadeSettings = { petEnabled:false,dropsEnabled:false,wheelEnabled:false,wheelAutoPilotEnabled:true,autoDrops:false,petCooldownMs:120_000,dropDurationMs:60_000,wheelCooldownMs:300_000,allowChatSpin:false,activityRetentionDays:90,wheelChallengeDurationMs:300_000 };
 const DEFAULT_CHALLENGES:ReadonlyArray<{id:string;title:string;actionType:ChaosWheelActionType}> = [
@@ -41,6 +44,19 @@ export class CommunityArcade {
     this.store.setConfig('arcade_settings',next);
   }
   pet():PetState { return this.store.miniGameQuery(db=>this.toPet(db.prepare('SELECT * FROM community_pet WHERE id=1').get() as PetRow)); }
+  petPortalStatus(userId:string,now=Date.now()):{enabled:boolean;paused:boolean;remainingMs:number;cooldownMs:number} {
+    return this.store.miniGameQuery(db=>{
+      const p=db.prepare('SELECT paused FROM community_pet WHERE id=1').get() as {paused:number};
+      const previous=db.prepare('SELECT MAX(created_at) at FROM community_pet_interactions WHERE user_id=?').get(userId) as {at:number|null};
+      const cooldownMs=this.settings().petCooldownMs;
+      return {enabled:this.settings().petEnabled,paused:p.paused===1,cooldownMs,remainingMs:previous.at===null?0:Math.max(0,cooldownMs-(now-previous.at))};
+    });
+  }
+  interactFromPortal(m:ChatMessage,kind:'feed'|'play',now=Date.now()):PetPortalAction {
+    const settings=this.settings();
+    if(!settings.petEnabled)return {ok:false,message:'Elio macht gerade Pause; die Katzenpflege ist derzeit deaktiviert.',remainingMs:0};
+    return this.interact(m,kind,settings,now,true);
+  }
   snapshot(type:'pet'|'drop'|'wheel',now=Date.now()):Record<string,unknown> {
     return this.store.miniGameQuery(db=>{
       if(type==='pet'){
@@ -78,7 +94,7 @@ export class CommunityArcade {
         this.store.miniGameTransaction(db=>db.prepare("UPDATE community_pet SET paused=?,animation='idle',updated_at=? WHERE id=1").run(command==='petpause'?1:0,now));return command==='petpause'?'Elio 🐱 macht eine Pflegepause.':'Elio 🐱 ist wieder für Pflege und Spiel bereit.';
       }
       const kind=command==='feed'?'feed':command==='play'?'play':'care';
-      return this.interact(m,kind,s,now);
+      return this.interact(m,kind,s,now).message;
     }
     if(['claim','drop','dropstats','drops','startdrop','canceldrop','dropconfig'].includes(command)){
       if(!s.dropsEnabled&&command!=='drops')return '🎁 Mystery Drops sind derzeit deaktiviert.';
@@ -159,8 +175,8 @@ export class CommunityArcade {
     }
     const batch=this.store.miniGameTransaction(db=>{
       const oldest=now-2*60_000;
-      db.prepare('UPDATE community_pet_interactions SET announced_at=created_at WHERE announced_at IS NULL AND created_at<?').run(oldest);
-      const rows=db.prepare('SELECT event_id,user_id,kind FROM community_pet_interactions WHERE announced_at IS NULL AND created_at>=? AND created_at<=? ORDER BY created_at').all(now-60_000,now) as Array<{event_id:string;user_id:string;kind:string}>;
+      db.prepare("UPDATE community_pet_interactions SET announced_at=created_at WHERE source='chat' AND announced_at IS NULL AND created_at<?").run(oldest);
+      const rows=db.prepare("SELECT event_id,user_id,kind FROM community_pet_interactions WHERE source='chat' AND announced_at IS NULL AND created_at>=? AND created_at<=? ORDER BY created_at").all(now-60_000,now) as Array<{event_id:string;user_id:string;kind:string}>;
       const participants=new Set(rows.map(row=>row.user_id));
       const last=this.store.config<number>('pet_chat_batch_last_at',0);
       if(participants.size<3||(last>0&&now-last<60_000))return undefined;
@@ -269,22 +285,23 @@ export class CommunityArcade {
     const modules=this.store.config<Record<string,boolean>>('modules',{}),poll=this.store.config<{enabled?:boolean}>('poll_settings',{}),quest=this.store.config<{enabled?:boolean}>('quest_settings',{});
     return modules.quests!==false&&modules.polls!==false&&poll.enabled!==false&&quest.enabled!==false&&!this.store.activeQuest()&&!this.store.activePoll(Date.now())&&this.store.approvedQuests(2).length>=2;
   }
-  private interact(m:ChatMessage,kind:'feed'|'play'|'care',s:ArcadeSettings,now:number):string {
+  private interact(m:ChatMessage,kind:'feed'|'play'|'care',s:ArcadeSettings,now:number,portal=false):PetPortalAction {
     return this.store.miniGameTransaction(db=>{
       const p=db.prepare('SELECT * FROM community_pet WHERE id=1').get() as PetRow;
-      if(p.paused)return 'Elio macht gerade Pause.';
-      if(db.prepare('SELECT 1 FROM community_pet_interactions WHERE event_id=?').get(m.eventId))return 'Diese Elio-Interaktion wurde bereits verarbeitet.';
+      if(p.paused)return {ok:false,message:'Elio macht gerade Pflegepause.',remainingMs:0};
+      if(db.prepare('SELECT 1 FROM community_pet_interactions WHERE event_id=?').get(m.eventId))return {ok:false,message:'Diese Elio-Aktion wurde bereits verarbeitet.',remainingMs:0};
       const previous=db.prepare('SELECT MAX(created_at) at FROM community_pet_interactions WHERE user_id=?').get(m.senderUserId) as {at:number|null};
-      if(previous.at&&now-previous.at<s.petCooldownMs)return `⏳ Bitte noch ${Math.ceil((s.petCooldownMs-(now-previous.at))/1000)}s bis zur nächsten Pet-Aktion warten.`;
+      if(previous.at!==null&&now-previous.at<s.petCooldownMs){const remainingMs=s.petCooldownMs-(now-previous.at);return {ok:false,message:`⏳ Bitte noch ${Math.ceil(remainingMs/1000)}s bis zur nächsten Pet-Aktion warten.`,remainingMs};}
       const hunger=kind==='feed'?Math.min(100,p.hunger+8):p.hunger;
       const happiness=Math.min(100,p.happiness+(kind==='feed'?2:kind==='play'?8:5));
       const energy=kind==='play'?Math.max(10,p.energy-5):Math.min(100,p.energy+(kind==='care'?1:0));
       const xp=p.xp+(kind==='play'?5:2),level=1+Math.floor(xp/100),stage=stageFor(level);
       const animation=level>p.level?(stage!==p.stage?'evolution':'levelup'):kind==='feed'?'feed':kind==='play'?'play':'care';
-      db.prepare('INSERT INTO community_pet_interactions(event_id,user_id,kind,created_at) VALUES(?,?,?,?)').run(m.eventId,m.senderUserId,kind,now);
+      db.prepare('INSERT INTO community_pet_interactions(event_id,user_id,kind,created_at,source) VALUES(?,?,?,?,?)').run(m.eventId,m.senderUserId,kind,now,portal?'portal':'chat');
       db.prepare('DELETE FROM community_pet_interactions WHERE created_at<?').run(now-7*86_400_000);
       db.prepare('UPDATE community_pet SET hunger=?,happiness=?,energy=?,xp=?,level=?,stage=?,animation=?,updated_at=? WHERE id=1').run(hunger,happiness,energy,xp,level,stage,animation,now);
-      return kind==='feed'?`@${clean(m.senderDisplayName,32)} gibt ${p.name} Katzenfutter oder ein Leckerli. Sättigung ${hunger}%, Zufriedenheit ${happiness}%.`:kind==='play'?`@${clean(m.senderDisplayName,32)} spielt mit ${p.name} an der Spielangel oder mit dem Wollknäuel. +5 Elio-XP (Level ${level}).`:`@${clean(m.senderDisplayName,32)} kümmert sich um ${p.name}. Zufriedenheit ${happiness}%, Energie ${energy}%.`;
+      const message=kind==='feed'?`@${clean(m.senderDisplayName,32)} gibt ${p.name} Katzenfutter oder ein Leckerli. Sättigung ${hunger}%, Zufriedenheit ${happiness}%.`:kind==='play'?`@${clean(m.senderDisplayName,32)} spielt mit ${p.name} an der Spielangel oder mit dem Wollknäuel. +5 Elio-XP (Level ${level}).`:`@${clean(m.senderDisplayName,32)} kümmert sich um ${p.name}. Zufriedenheit ${happiness}%, Energie ${energy}%.`;
+      return {ok:true,message,remainingMs:s.petCooldownMs,changes:{hunger:hunger-p.hunger,happiness:happiness-p.happiness,energy:energy-p.energy,xp:xp-p.xp,level:level-p.level},leveledUp:level>p.level};
     });
   }
   private startDrop(actor:string,now:number,rarityArg?:string):string {

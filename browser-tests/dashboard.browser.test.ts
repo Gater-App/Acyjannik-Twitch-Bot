@@ -324,3 +324,36 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     for (const key of Object.keys(process.env)) if (!(key in env)) delete process.env[key];
   }
 });
+
+test('Elio-Aktionen geben Browserfeedback, aktualisieren Werte und sperren den Cooldown',async()=>{
+  const env={...process.env},directory=fs.mkdtempSync(path.join(os.tmpdir(),'acy-elio-browser-')),store=new FeatureStore(path.join(directory,'state.sqlite')),port=await freePort();
+  process.env.TWITCH_CLIENT_ID='test-client';process.env.TWITCH_CLIENT_SECRET='test-secret';process.env.DASHBOARD_REDIRECT_URI=`http://127.0.0.1:${port}/dashboard/oauth/callback`;process.env.DASHBOARD_ADMIN_IDS='admin-id';process.env.DASHBOARD_HOST='127.0.0.1';process.env.DASHBOARD_PORT=String(port);
+  const cfg=testConfig({clientId:'test-client',clientSecret:'test-secret',redirectUri:`http://127.0.0.1:${port}/dashboard/oauth/callback`}),features=new CommunityFeatures(store,cfg);
+  features.arcade.updateSettings({...features.arcade.settings(),petEnabled:true,petCooldownMs:1000});
+  store.miniGameQuery(db=>db.prepare("UPDATE community_pet SET xp=95,level=1 WHERE id=1").run());
+  const fetchImpl:typeof fetch=async input=>String(input).endsWith('/oauth2/token')?Response.json({access_token:'ephemeral-viewer-token'}):String(input).endsWith('/oauth2/validate')?Response.json({client_id:'test-client',user_id:'portal-viewer'}):String(input).endsWith('/helix/users')?Response.json({data:[{id:'portal-viewer',login:'viewer',display_name:'Portal Viewer'}]}):Response.error();
+  const portal=new ViewerCommunityPortal(store,features,cfg,fetchImpl),dashboard=new DashboardServer(store,()=>({twitchConnected:false,channel:'acyjannik',startedAt:Date.now()}),logger,fetchImpl,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,portal);
+  let browser:Awaited<ReturnType<typeof chromium.launch>>|undefined;
+  try{
+    assert.equal(await dashboard.start(),true);const base=`http://127.0.0.1:${port}`;
+    const login=await fetch(base+'/community/login/twitch',{redirect:'manual'}),redirect=new URL(login.headers.get('location')||''),state=redirect.searchParams.get('state')||'',stateCookie=login.headers.get('set-cookie')?.split(';')[0]||'';
+    const callback=await fetch(`${base}/dashboard/oauth/callback?code=test&state=${state}`,{headers:{cookie:stateCookie},redirect:'manual'}),viewerCookie=callback.headers.getSetCookie().find(value=>value.startsWith('community_viewer='))?.split(';')[0]||'';
+    assert.equal(callback.status,303);assert.ok(viewerCookie);
+    browser=await chromium.launch({headless:true});const page=await browser.newPage({reducedMotion:'reduce'});
+    await page.context().addCookies([{name:'community_viewer',value:viewerCookie.split('=')[1]!,domain:'127.0.0.1',path:'/community',httpOnly:true,secure:false,sameSite:'Lax'}]);
+    const pageErrors:string[]=[];page.on('pageerror',error=>pageErrors.push(error.message));await page.goto(base+'/community',{waitUntil:'domcontentloaded'});
+    const feed=page.getByRole('button',{name:'Füttern'}),play=page.getByRole('button',{name:'Mit Elio spielen'});await feed.waitFor({state:'visible'});
+    await play.click();await page.locator('#pet-action-status').getByText(/Level aufgestiegen/u).waitFor({timeout:3000}).catch(async()=>{assert.fail(`pet status=${await page.locator('#pet-action-status').textContent()} pet=${await page.locator('#pet').innerText()} errors=${pageErrors.join('|')}`)});
+    assert.match(await page.locator('#pet .item').first().innerText(),/Level 2/u,'Elio-Level wird nach erfolgreichem Spielen aktualisiert');
+    assert.equal(await page.locator('#pet-card').evaluate(node=>node.classList.contains('pet-level-up')),true,'Levelaufstieg erhält eine dezente Animation');
+    await feed.waitFor({state:'visible'});assert.equal(await feed.isDisabled(),true,'Feed-Schaltfläche bleibt während des Cooldowns gesperrt');
+    await page.locator('#pet-cooldown').getByText(/Nächste Pflegeaktion in/u).waitFor({timeout:2000});
+    await page.waitForFunction(()=>!(document.querySelector('[data-pet-action="feed"]') as HTMLButtonElement).disabled,undefined,{timeout:3000});
+    await page.route('**/community/api/pet',route=>route.abort());await feed.click();await page.locator('#pet-action-status').getByText(/Verbindung ist fehlgeschlagen/u).waitFor({timeout:3000});assert.equal(await feed.isDisabled(),false,'nach einem Netzwerkfehler bleibt die Schaltfläche nicht blockiert');await page.unroute('**/community/api/pet');
+    await feed.click();await page.locator('#pet-action-status').getByText(/Elio wurde gefüttert/u).waitFor({timeout:3000});
+    await page.waitForFunction(()=>/Hunger\s*78%/u.test(document.querySelector('#pet .item:nth-child(2)')?.textContent||''),undefined,{timeout:3000});
+    store.miniGameQuery(db=>db.prepare('UPDATE community_pet SET paused=1 WHERE id=1').run());await page.reload({waitUntil:'domcontentloaded'});
+    await page.locator('#pet-action-status').getByText(/Pflegepause/u).waitFor({timeout:3000});assert.equal(await feed.isDisabled(),true,'pausierte Pflege deaktiviert die Aktion');
+    assert.deepEqual(pageErrors,[],'Elio-Aktionen dürfen keine JavaScript-Fehler auslösen');
+  }finally{await browser?.close();await dashboard.stop();store.close();fs.rmSync(directory,{recursive:true,force:true});for(const [key,value] of Object.entries(env))process.env[key]=value;for(const key of Object.keys(process.env))if(!(key in env))delete process.env[key];}
+});
