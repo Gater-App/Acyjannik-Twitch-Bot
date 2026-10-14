@@ -36,6 +36,7 @@ export class TwitchApi {
     private readonly oauth: TwitchOAuth,
     private readonly fetchImpl: typeof fetch = fetch,
     private readonly logger: Logger = consoleLogger,
+    private readonly wait: (ms: number) => Promise<void> = ms => new Promise(resolve => setTimeout(resolve, ms)),
   ) {}
 
   async getUsers(logins: string[]): Promise<TwitchUser[]> {
@@ -136,8 +137,11 @@ export class TwitchApi {
 
   private async request<T = unknown>(path: string, init: RequestInit = {}, allowRefresh = true): Promise<T> {
     let token = await this.oauth.getAccessToken();
-    let response = await this.fetchImpl(`https://api.twitch.tv/helix${path}`, {
-      ...init,
+    const method = (init.method || 'GET').toUpperCase();
+    const retrySafeRead = method === 'GET';
+    let refreshed = false;
+    const send = () => this.fetchImpl(`https://api.twitch.tv/helix${path}`, {
+      ...init, signal: init.signal || AbortSignal.timeout(15_000),
       headers: {
         'Client-Id': this.clientId,
         Authorization: `Bearer ${token}`,
@@ -145,27 +149,46 @@ export class TwitchApi {
         ...(init.headers || {}),
       },
     });
-    if (response.status === 401 && allowRefresh) {
-      token = await this.oauth.refreshAccessToken();
-      response = await this.fetchImpl(`https://api.twitch.tv/helix${path}`, {
-        ...init,
-        headers: {
-          'Client-Id': this.clientId,
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-          ...(init.headers || {}),
-        },
-      });
+    let response: Response | undefined;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try { response = await send(); }
+      catch (error) {
+        if (retrySafeRead && attempt < 2) { await this.wait(250 * (2 ** attempt)); continue; }
+        throw new TwitchApiError(503, retrySafeRead ? 'Twitch-Verbindung vorübergehend nicht verfügbar.' : 'Twitch-Verbindung unklar; der Vorgang wurde nicht automatisch wiederholt.');
+      }
+      if (response.status === 401 && allowRefresh && !refreshed) {
+        const latestToken = await this.oauth.getAccessToken();
+        token = latestToken === token ? await this.oauth.refreshAccessToken() : latestToken;
+        refreshed = true;
+        try { response = await send(); }
+        catch { throw new TwitchApiError(503, retrySafeRead ? 'Twitch-Verbindung nach Token-Erneuerung fehlgeschlagen.' : 'Twitch-Ergebnis nach Token-Erneuerung unklar; bitte Status prüfen.'); }
+      }
+      if (response.ok || !(retrySafeRead && (response.status === 429 || response.status >= 500) && attempt < 2)) break;
+      const retryAfterMs = retryAfter(response);
+      const delay = response.status === 429 ? retryAfterMs : 250 * (2 ** attempt);
+      if (delay !== undefined && delay > 5_000) break;
+      await this.wait(delay ?? 250 * (2 ** attempt));
     }
+    if (!response) throw new TwitchApiError(503, 'Twitch lieferte keine Antwort.');
     if (!response.ok) {
-      const body = await response.text();
-      const reset = Number(response.headers.get('Ratelimit-Reset'));
-      const retryAfterMs = response.status === 429 && Number.isFinite(reset) ? Math.max(1000, reset * 1000 - Date.now()) : undefined;
-      throw new TwitchApiError(response.status, `Twitch Helix HTTP ${response.status}: ${body.slice(0, 200)}`, retryAfterMs);
+      const detail = response.status === 401 ? 'OAuth-Zugriff fehlt oder wurde widerrufen.' : `Twitch Helix HTTP ${response.status}.`;
+      throw new TwitchApiError(response.status, detail, retryAfter(response));
     }
     if (response.status === 204) return {} as T;
-    return JSON.parse(await response.text()) as T;
+    let payload: unknown;
+    try { payload = JSON.parse(await response.text()); }
+    catch { throw new TwitchApiError(502, 'Twitch lieferte eine ungültige JSON-Antwort.'); }
+    if (!payload || typeof payload !== 'object' || !Array.isArray((payload as {data?:unknown}).data))
+      throw new TwitchApiError(502, 'Twitch lieferte eine unvollständige API-Antwort.');
+    return payload as T;
   }
+}
+
+function retryAfter(response: Response): number | undefined {
+  const seconds = Number(response.headers.get('Retry-After'));
+  if (Number.isFinite(seconds) && seconds > 0) return Math.ceil(seconds * 1000);
+  const reset = Number(response.headers.get('Ratelimit-Reset'));
+  return Number.isFinite(reset) && reset > 0 ? Math.max(1000, Math.ceil(reset * 1000 - Date.now())) : undefined;
 }
 
 const consoleLogger: Logger = {

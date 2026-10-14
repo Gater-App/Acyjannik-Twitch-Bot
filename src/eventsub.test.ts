@@ -73,3 +73,58 @@ test('EventSub uses a reconnect URL once, then falls back to a fresh session aft
     await new Promise<void>((resolve) => rateLimited.close(() => resolve()));
   }
 });
+
+test('EventSub does not reset exponential backoff on short-lived welcomed sessions', { timeout: 7_000 }, async () => {
+  const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+  await new Promise<void>(resolve => server.once('listening', resolve));
+  const address = server.address(); assert.ok(address && typeof address !== 'string');
+  const delays: number[] = [];
+  let reachedSecondBackoff!: () => void;
+  const secondBackoff = new Promise<void>(resolve => { reachedSecondBackoff = resolve; });
+  let sessions = 0;
+  server.on('connection', socket => {
+    const id = ++sessions;
+    socket.send(JSON.stringify({ metadata: { message_type: 'session_welcome' }, payload: { session: { id: `short-${id}`, keepalive_timeout_seconds: 60 } } }));
+    setTimeout(() => socket.close(), 30);
+  });
+  const client = new EventSubClient(async () => undefined, async () => undefined, {
+    info() {}, error() {}, warn(_message, details) {
+      const delay = (details as {delayMs?:number}|undefined)?.delayMs;
+      if (typeof delay === 'number') { delays.push(delay); if (delays.length === 2) reachedSecondBackoff(); }
+    },
+  }, `ws://127.0.0.1:${address.port}`);
+  try {
+    client.start(); await secondBackoff;
+    assert.deepEqual(delays.slice(0, 2), [1000, 2000]);
+  } finally {
+    await client.stop();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
+test('EventSub baut nach Abonnement-Widerruf eine neue Sitzung auf und stimmt Abonnements erneut ab', { timeout: 6_000 }, async () => {
+  const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+  await new Promise<void>(resolve => server.once('listening', resolve));
+  const address = server.address(); assert.ok(address && typeof address !== 'string');
+  const sessions: string[] = [];
+  let recovered!: () => void;
+  const recoveredPromise = new Promise<void>(resolve => { recovered = resolve; });
+  let connections = 0;
+  server.on('connection', socket => {
+    const id = ++connections;
+    socket.send(JSON.stringify({ metadata: { message_type: 'session_welcome' }, payload: { session: { id: `session-${id}`, keepalive_timeout_seconds: 60 } } }));
+    if (id === 1) setTimeout(() => socket.send(JSON.stringify({
+      metadata: { message_type: 'revocation', message_id: 'revoked-event' },
+      payload: { subscription: { type: 'channel.chat.message', status: 'notification_failures_exceeded' } },
+    })), 20);
+  });
+  const client = new EventSubClient(async id => { sessions.push(id); if (id === 'session-2') recovered(); }, async () => undefined,
+    { info() {}, warn() {}, error() {} }, `ws://127.0.0.1:${address.port}`);
+  try {
+    client.start(); await recoveredPromise;
+    assert.deepEqual(sessions, ['session-1', 'session-2']);
+  } finally {
+    await client.stop();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});

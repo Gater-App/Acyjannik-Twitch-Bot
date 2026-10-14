@@ -51,6 +51,7 @@ export class FileTokenStore {
 
 export class TwitchOAuth {
   private tokens?: StoredTokens;
+  private refreshInFlight: Promise<void> | undefined;
   private readonly authorizationWaiters: Array<() => void> = [];
 
   constructor(
@@ -116,7 +117,11 @@ export class TwitchOAuth {
 
   async refreshAccessToken(): Promise<string> {
     if (!this.tokens?.refreshToken) throw new Error('Kein Twitch-Refresh-Token vorhanden.');
-    await this.refresh(this.tokens.refreshToken);
+    if (!this.refreshInFlight) {
+      const refresh = this.refresh(this.tokens.refreshToken);
+      this.refreshInFlight = refresh;
+      try { await refresh; } finally { if (this.refreshInFlight === refresh) this.refreshInFlight = undefined; }
+    } else await this.refreshInFlight;
     return this.tokens.accessToken;
   }
 

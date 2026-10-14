@@ -28,6 +28,24 @@ test('Refresh-Token-Rotation wird gespeichert ohne Tokens zu loggen', async () =
   await fs.rm(directory, { recursive: true, force: true });
 });
 
+test('parallele OAuth-401s teilen sich einen Refresh statt ein rotierendes Token doppelt einzulösen', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'twitch-oauth-single-refresh-'));
+  const tokenPath = path.join(directory, 'tokens.json'), store = new FileTokenStore(tokenPath);
+  await store.save({ accessToken: 'old-access', refreshToken: 'old-refresh' });
+  let calls = 0;
+  const fetchMock: typeof fetch = async () => {
+    calls++;
+    await new Promise(resolve => setTimeout(resolve, 10));
+    return Response.json({ access_token: 'new-access', refresh_token: 'rotated-refresh', expires_in: 3600, token_type: 'bearer' });
+  };
+  const oauth = new TwitchOAuth('client', 'secret', 'http://127.0.0.1/callback', [], store, fetchMock);
+  await oauth.initialize();
+  await Promise.all([oauth.refreshAccessToken(), oauth.refreshAccessToken()]);
+  assert.equal(calls, 1);
+  assert.equal((await store.load())?.refreshToken, 'rotated-refresh');
+  await fs.rm(directory, { recursive: true, force: true });
+});
+
 test('Token-Refresh erhält den gespeicherten Broadcaster-Scope, wenn Twitch ihn nicht erneut mitsendet', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'twitch-oauth-scopes-'));
   const tokenPath = path.join(directory, 'tokens.json');

@@ -7,6 +7,7 @@ interface EventSubMessage {
   metadata?: { message_type?: string; message_id?: string };
   payload?: {
     session?: { id: string; keepalive_timeout_seconds?: number; reconnect_url?: string };
+    subscription?: { type?: unknown; status?: unknown };
   };
 }
 
@@ -16,6 +17,7 @@ export class EventSubClient {
   private stopped = true;
   private retryTimer: NodeJS.Timeout | undefined;
   private keepaliveTimer: NodeJS.Timeout | undefined;
+  private stabilityTimer: NodeJS.Timeout | undefined;
   private retryAttempt = 0;
   private reconnectUrl: string | undefined;
   private keepaliveTimeoutSeconds = 10;
@@ -40,6 +42,7 @@ export class EventSubClient {
     this.stopped = true;
     if (this.retryTimer) clearTimeout(this.retryTimer);
     if (this.keepaliveTimer) clearTimeout(this.keepaliveTimer);
+    if (this.stabilityTimer) clearTimeout(this.stabilityTimer);
     const sockets = [...new Set([this.socket, this.pendingSocket].filter((socket): socket is WebSocket => Boolean(socket)))];
     this.socket = undefined;
     this.pendingSocket = undefined;
@@ -73,7 +76,7 @@ export class EventSubClient {
           }
         }
       } catch { /* handleMessage reports malformed frames where appropriate. */ }
-      void this.handleMessage(raw, !reconnectUrlAttempt).catch((error: unknown) => {
+      void this.handleMessage(raw, !reconnectUrlAttempt, socket).catch((error: unknown) => {
         this.logger.error('EventSub-Nachricht konnte nicht verarbeitet werden.', { error: error instanceof Error ? error.message : 'unbekannt' });
         socket.close();
       });
@@ -81,6 +84,7 @@ export class EventSubClient {
     socket.on('error', (error) => this.logger.warn('EventSub-WebSocket-Fehler.', { error: error.message }));
     socket.on('close', () => {
       const wasActive = this.socket === socket;
+      if (wasActive && this.stabilityTimer) { clearTimeout(this.stabilityTimer); this.stabilityTimer = undefined; }
       if (wasActive) this.socket = undefined;
       if (this.pendingSocket === socket) this.pendingSocket = undefined;
       // Twitch reconnect URLs are single-use and short-lived. Never keep
@@ -96,7 +100,7 @@ export class EventSubClient {
     });
   }
 
-  private async handleMessage(raw: string, configureSubscriptions = true): Promise<void> {
+  private async handleMessage(raw: string, configureSubscriptions = true, socket?: WebSocket): Promise<void> {
     let message: EventSubMessage & Record<string, unknown>;
     try { message = JSON.parse(raw) as EventSubMessage & Record<string, unknown>; } catch { this.logger.warn('Ungültige EventSub-Nachricht ignoriert.'); return; }
     const type = message.metadata?.message_type;
@@ -106,7 +110,7 @@ export class EventSubClient {
       this.keepaliveTimeoutSeconds = session.keepalive_timeout_seconds || 10;
       this.armKeepalive(this.keepaliveTimeoutSeconds);
       if (configureSubscriptions) await this.onSessionReady(session.id);
-      this.retryAttempt = 0;
+      if (socket) this.armStabilityReset(socket);
       return;
     }
     if (type === 'session_keepalive') {
@@ -117,7 +121,6 @@ export class EventSubClient {
       const reconnectUrl = message.payload?.session?.reconnect_url;
       if (reconnectUrl) {
         this.reconnectUrl = reconnectUrl;
-        this.retryAttempt = 0;
         const previous = this.socket;
         if (previous) this.connect(reconnectUrl, true, previous);
       }
@@ -130,8 +133,23 @@ export class EventSubClient {
       return;
     }
     if (type === 'revocation') {
-      this.logger.error('Twitch hat ein EventSub-Abonnement widerrufen.', { messageId: message.metadata?.message_id || 'unbekannt' });
+      const subscription = message.payload?.subscription;
+      this.logger.error('Twitch hat ein EventSub-Abonnement widerrufen; die Verbindung wird zur Neuabstimmung aufgebaut.', {
+        messageId: message.metadata?.message_id || 'unbekannt',
+        subscriptionType: typeof subscription?.type === 'string' ? subscription.type : 'unbekannt',
+        status: typeof subscription?.status === 'string' ? subscription.status : 'unbekannt',
+      });
+      socket?.close(1011, 'EventSub subscription revoked');
     }
+  }
+
+  private armStabilityReset(socket: WebSocket): void {
+    if (this.stabilityTimer) clearTimeout(this.stabilityTimer);
+    this.stabilityTimer = setTimeout(() => {
+      this.stabilityTimer = undefined;
+      if (this.socket === socket && socket.readyState === WebSocket.OPEN) this.retryAttempt = 0;
+    }, 60_000);
+    this.stabilityTimer.unref();
   }
 
   private armKeepalive(seconds: number): void {
