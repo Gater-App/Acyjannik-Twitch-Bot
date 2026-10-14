@@ -24,3 +24,9 @@ test('Moderatorhilfe nutzt kurze Unterkategorien und bewahrt Rollenprüfung',()=
   assert.match(helpReply(['mods','events'],viewer,active),/nur für Jannick/u);
   assert.ok(helpReply(['mods','spiele'],{...viewer,isModerator:true},active).length<300);
 });
+
+test('Community-Tresor taucht nur bei Aktivierung in der Hilfe auf',()=>{
+  assert.match(helpReply(['tresor'],viewer,{...active,vault:true}),/!code 427.*Community-Portal/u);
+  assert.match(helpReply(['spiele'],viewer,{...active,vault:true}),/!code 427/u);
+  assert.match(helpReply(['tresor'],viewer,{...active,vault:false}),/derzeit deaktiviert/u);
+});

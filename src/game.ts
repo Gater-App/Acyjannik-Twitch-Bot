@@ -1,5 +1,6 @@
 import type { AppConfig, GameOutcome, HalloweenEvent, Player } from './types.js';
 import { Database } from './database.js';
+import { randomInt as cryptoRandomInt } from 'node:crypto';
 
 const EVENT_KEYS: HalloweenEvent[] = [
   'TREAT', 'TRICK', 'JACKPOT', 'GHOST', 'WITCH', 'EMPTY_HOUSE', 'GOLDEN_PUMPKIN',
@@ -7,13 +8,31 @@ const EVENT_KEYS: HalloweenEvent[] = [
 
 export function chooseEvent(weights: AppConfig['eventWeights'], random: () => number): HalloweenEvent {
   const total = EVENT_KEYS.reduce((sum, event) => sum + weights[event], 0);
-  const roll = Math.min(0.999999999, Math.max(0, random())) * total;
+  validateWeights(weights,total);
+  const sample = random();
+  if (!Number.isFinite(sample)) throw new Error('Zufallsquelle lieferte keinen gültigen Wert.');
+  const roll = Math.floor(Math.min(1 - Number.EPSILON, Math.max(0, sample)) * total);
+  return chooseEventFromRoll(weights,roll);
+}
+
+export function chooseEventFromRoll(weights:AppConfig['eventWeights'],roll:number):HalloweenEvent {
+  const total=EVENT_KEYS.reduce((sum,event)=>sum+weights[event],0);validateWeights(weights,total);
+  if(!Number.isSafeInteger(roll)||roll<0||roll>=total)throw new Error('Zufallswert liegt außerhalb der Ereignisgewichte.');
   let cursor = 0;
   for (const event of EVENT_KEYS) {
     cursor += weights[event];
     if (roll < cursor) return event;
   }
-  return 'EMPTY_HOUSE';
+  throw new Error('Ereignisgewicht konnte nicht zugeordnet werden.');
+}
+
+export function chooseEventSecure(weights:AppConfig['eventWeights']):HalloweenEvent {
+  const total=EVENT_KEYS.reduce((sum,event)=>sum+weights[event],0);validateWeights(weights,total);
+  return chooseEventFromRoll(weights,cryptoRandomInt(total));
+}
+
+function validateWeights(weights:AppConfig['eventWeights'],total:number):void {
+  if (!Number.isSafeInteger(total) || total <= 0 || total>=2**48 || EVENT_KEYS.some(event => !Number.isSafeInteger(weights[event]) || weights[event] < 0)) throw new Error('Ereignisgewichte müssen nichtnegative ganze Zahlen mit positiver Summe im unterstützten Zufallsbereich sein.');
 }
 
 function randomInt(min: number, max: number, random: () => number): number {
@@ -21,23 +40,32 @@ function randomInt(min: number, max: number, random: () => number): number {
 }
 
 export function resolveOutcome(event: HalloweenEvent, config: AppConfig, random: () => number): Pick<GameOutcome, 'event' | 'delta'> {
+  return resolveOutcomeUsing(event,config,(min,max)=>randomInt(min,max,random));
+}
+
+function resolveOutcomeSecure(event:HalloweenEvent,config:AppConfig):Pick<GameOutcome,'event'|'delta'> {
+  return resolveOutcomeUsing(event,config,(min,max)=>cryptoRandomInt(min,max+1));
+}
+
+function resolveOutcomeUsing(event:HalloweenEvent,config:AppConfig,pick:(min:number,max:number)=>number):Pick<GameOutcome,'event'|'delta'> {
   switch (event) {
-    case 'TREAT': return { event, delta: randomInt(config.gameValues.treat.min, config.gameValues.treat.max, random) };
-    case 'TRICK': return { event, delta: -randomInt(config.gameValues.trick.min, config.gameValues.trick.max, random) };
-    case 'JACKPOT': return { event, delta: randomInt(config.gameValues.jackpot.min, config.gameValues.jackpot.max, random) };
-    case 'GHOST': return { event, delta: -randomInt(config.gameValues.ghost.min, config.gameValues.ghost.max, random) };
-    case 'WITCH': return { event, delta: randomInt(config.gameValues.witch.min, config.gameValues.witch.max, random) };
+    case 'TREAT': return { event, delta: pick(config.gameValues.treat.min, config.gameValues.treat.max) };
+    case 'TRICK': return { event, delta: -pick(config.gameValues.trick.min, config.gameValues.trick.max) };
+    case 'JACKPOT': return { event, delta: pick(config.gameValues.jackpot.min, config.gameValues.jackpot.max) };
+    case 'GHOST': return { event, delta: -pick(config.gameValues.ghost.min, config.gameValues.ghost.max) };
+    case 'WITCH': return { event, delta: pick(config.gameValues.witch.min, config.gameValues.witch.max) };
     case 'EMPTY_HOUSE': return { event, delta: 0 };
-    case 'GOLDEN_PUMPKIN': return { event, delta: randomInt(config.gameValues.goldenPumpkin.min, config.gameValues.goldenPumpkin.max, random) };
+    case 'GOLDEN_PUMPKIN': return { event, delta: pick(config.gameValues.goldenPumpkin.min, config.gameValues.goldenPumpkin.max) };
   }
 }
 
 export class GameService {
+  private readonly random:(()=>number)|undefined;
   constructor(
     private readonly database: Database,
     private readonly config: AppConfig,
-    private readonly random: () => number = Math.random,
-  ) {}
+    random?: () => number,
+  ) { this.random=random; }
 
   get active(): boolean { return this.database.isActive; }
 
@@ -57,8 +85,8 @@ export class GameService {
   play(userId: string, displayName: string, now = Date.now()):
     { ok: true; outcome: GameOutcome } | { ok: false; reason: 'inactive' | 'cooldown'; remainingMs?: number } {
     if (!this.active) return { ok: false, reason: 'inactive' };
-    const event = chooseEvent(this.config.eventWeights, this.random);
-    const resolved = resolveOutcome(event, this.config, this.random);
+    const event = this.random?chooseEvent(this.config.eventWeights,this.random):chooseEventSecure(this.config.eventWeights);
+    const resolved = this.random?resolveOutcome(event,this.config,this.random):resolveOutcomeSecure(event,this.config);
     const applied = this.database.applyPlay(userId, displayName, resolved.delta, now, this.config.cooldownMs);
     if (!applied.accepted) return { ok: false, reason: 'cooldown', remainingMs: applied.remainingMs };
     return { ok: true, outcome: { ...resolved, pumpkins: applied.player.pumpkins } };
@@ -67,6 +95,7 @@ export class GameService {
   pumpkins(userId: string): number { return this.database.getPlayer(userId).pumpkins; }
   top(limit = 10): Player[] { return this.database.topPlayers(limit); }
 }
+
 
 export function formatCooldown(remainingMs: number): string {
   const minutes = Math.ceil(remainingMs / 60_000);

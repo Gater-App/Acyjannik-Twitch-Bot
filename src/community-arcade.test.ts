@@ -38,9 +38,10 @@ test('Versionierte Elio-Migration ersetzt nur den alten Standardnamen und erhäl
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'elio-pet-migration-'));const sub=path.join(directory,'data');fs.mkdirSync(sub);
   const legacyPath=path.join(sub,'legacy.sqlite');let store=new FeatureStore(legacyPath);new CommunityArcade(store,'broadcaster');
   store.setConfig('8ball_answers', LEGACY_DEFAULT_8BALL_ANSWERS);
-  store.miniGameTransaction(db=>{db.prepare("UPDATE community_pet SET name='Fünkchen',level=2,xp=125 WHERE id=1").run();db.prepare("UPDATE chaos_wheel_challenges SET id='legacy-generated-id',title='Der Drache bekommt einen Energieschub!',action_type='boost_pet' WHERE id='builtin:pet-energy'").run();db.prepare('DELETE FROM schema_migrations WHERE version IN (13,14,15,16,17,18,19,20,21,22)').run()});store.close();
+  store.miniGameTransaction(db=>{db.prepare("UPDATE community_pet SET name='Fünkchen',level=2,xp=125 WHERE id=1").run();db.prepare("UPDATE chaos_wheel_challenges SET id='legacy-generated-id',title='Der Drache bekommt einen Energieschub!',action_type='boost_pet' WHERE id='builtin:pet-energy'").run();db.prepare("INSERT INTO community_pet_interactions(event_id,user_id,kind,created_at,source) VALUES('viewer:legacy','viewer','feed',100,'chat')").run();db.prepare('DELETE FROM schema_migrations WHERE version IN (13,14,15,16,17,18,19,20,21,22,23,24,25,26)').run()});store.close();
   store=new FeatureStore(legacyPath);assert.equal(new CommunityArcade(store,'broadcaster').pet().name,'Elio');assert.equal(new CommunityArcade(store,'broadcaster').pet().level,2);assert.equal(new CommunityArcade(store,'broadcaster').pet().xp,125);
   assert.deepEqual(store.config('8ball_answers', []), DEFAULT_8BALL_ANSWERS, 'alter Standardpool wird beim Upgrade ersetzt');
+  assert.equal(store.miniGameQuery(db=>(db.prepare("SELECT source FROM community_pet_interactions WHERE event_id='viewer:legacy'").get() as {source:string}).source),'portal','alte Portalaktionen werden auch beim Upgrade privat gehalten');
   assert.equal(new CommunityArcade(store,'broadcaster').manageChallenges().find(x=>x.id==='legacy-generated-id')?.title,'Elio bekommt einen Energieschub!');store.close();
   const customPath=path.join(sub,'custom.sqlite');store=new FeatureStore(customPath);store.miniGameTransaction(db=>{db.prepare("UPDATE community_pet SET name='Miez',level=17,xp=1650 WHERE id=1").run();db.prepare('DELETE FROM schema_migrations WHERE version>=14').run()});store.close();
   store=new FeatureStore(customPath);const preserved=new CommunityArcade(store,'broadcaster').pet();assert.equal(preserved.name,'Miez');assert.equal(preserved.level,17);assert.equal(preserved.xp,1650);store.close();fs.rmSync(directory,{recursive:true,force:true});
@@ -56,6 +57,20 @@ test('Community-Aktionen werden nur aus gespeicherten, deduplizierten Interaktio
   assert.equal(afterRestart.tick(10_003).some(text=>text.includes('Elio schnurrt')),false);
   const rows=store.miniGameQuery(db=>(db.prepare('SELECT COUNT(*) n FROM community_pet_interactions WHERE announced_at IS NOT NULL').get() as {n:number}).n);
   assert.equal(rows,3);
+  store.close();
+});
+
+test('Elio portal interactions stay private and never enter the public chat batch',()=>{
+  const {store,arcade}=setup();arcade.updateSettings({...arcade.settings(),petEnabled:true});
+  for(const user of ['portal-1','portal-2','portal-3']){
+    const result=arcade.interactFromPortal(message(user,`portal-${user}`,'!feed'),'feed',10_000);
+    assert.equal(result.ok,true);
+  }
+  assert.equal(arcade.tickMessages(10_001).some(item=>item.category==='pet'),false);
+  const portalRows=store.miniGameQuery(db=>(db.prepare("SELECT COUNT(*) n FROM community_pet_interactions WHERE source='portal'").get() as {n:number}).n);
+  assert.equal(portalRows,3);
+  for(const user of ['chat-1','chat-2','chat-3'])arcade.handle(message(user,`chat-${user}`,'!feed'),'feed',[],11_000);
+  assert.match(arcade.tick(11_001).find(text=>text.includes('Elio schnurrt'))||'',/3 aus dem Chat.*3 Aktionen/u);
   store.close();
 });
 
@@ -188,7 +203,7 @@ test('Migration deaktiviert alte manuelle Felder und schließt laufende manuelle
   store.miniGameQuery(db=>{
     db.prepare("INSERT INTO chaos_wheel_challenges(id,title,weight,active,action_type) VALUES('old-manual','Fünf Minuten nur Pistolen',2,1,'manual_challenge')").run();
     db.prepare("INSERT INTO chaos_wheel_spins(id,challenge_id,title,status,created_by,created_at,action_type) VALUES('old-spin','old-manual','Fünf Minuten nur Pistolen','active','mod',10,'manual_challenge')").run();
-    db.prepare('DELETE FROM schema_migrations WHERE version IN (17,18,19,20,21,22)').run();
+    db.prepare('DELETE FROM schema_migrations WHERE version IN (17,18,19,20,21,22,23,24,25,26)').run();
   });store.close();
   store=new FeatureStore(database);
   assert.equal(store.miniGameQuery(db=>db.prepare("SELECT active FROM chaos_wheel_challenges WHERE id='old-manual'").get() as {active:number}).active,0);

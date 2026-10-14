@@ -35,7 +35,7 @@ export interface CustomCommand {
 export type QuestStatus = 'pending' | 'approved' | 'active' | 'completed' | 'failed' | 'rejected' | 'canceled';
 export type QuestSource = 'chat' | 'channel_points' | 'dashboard';
 export type PollStatus = 'active' | 'ended' | 'canceled';
-export type WidgetType = 'quest' | 'poll' | 'imposter' | 'detective' | 'pet' | 'drop' | 'wheel';
+export type WidgetType = 'quest' | 'poll' | 'imposter' | 'detective' | 'pet' | 'drop' | 'wheel' | 'vault';
 export type SparkStatus = 'detected' | 'pending_approval' | 'approved' | 'rejected' | 'expired' | 'executed' | 'canceled';
 export interface SparkProposal {
   id: string; channelId: string; topicId: string; topicLabel: string; score: number; participants: number;
@@ -143,6 +143,7 @@ const RESERVED_COMMANDS = new Set([
   'quoteoptin','quoteoptout','savequote','myquotes','deletequote','detektiv','startdetektiv','wer','quote','skipdetektiv','enddetektiv',
   'pet','feed','play','petcare','petstats','petname','pethelp','petevolution','setpetname','petpause','petresume',
   'claim','drop','dropstats','drops','startdrop','canceldrop','dropconfig','wheel','spin','wheelstatus','startwheel','cancelwheel','wheelpause','wheelresume',
+  'code','orakel','unschuldig','prankoptout','prankoptin',
 ]);
 
 export class FeatureStore {
@@ -668,6 +669,75 @@ export class FeatureStore {
         `);
       })();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 23) {
+      if (currentVersion > 0) this.backupBeforeMigration(23);
+      this.db.transaction(() => this.db.exec(`
+        CREATE TABLE IF NOT EXISTS community_vault_rounds (
+          id TEXT PRIMARY KEY, secret_code TEXT NOT NULL CHECK(length(secret_code)=3), status TEXT NOT NULL CHECK(status IN ('active','opened','expired','canceled')),
+          started_at INTEGER NOT NULL, ends_at INTEGER NOT NULL, attempts_count INTEGER NOT NULL DEFAULT 0, is_auto INTEGER NOT NULL DEFAULT 0,
+          last_public_hint TEXT, last_public_hint_at INTEGER, winner_user_id TEXT, winner_name TEXT, result_code TEXT,
+          announcement_sent INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS community_vault_one_active ON community_vault_rounds(status) WHERE status='active';
+        CREATE TABLE IF NOT EXISTS community_vault_attempts (
+          event_id TEXT PRIMARY KEY, round_id TEXT NOT NULL, user_id TEXT NOT NULL, display_name TEXT NOT NULL,
+          exact_count INTEGER NOT NULL, misplaced_count INTEGER NOT NULL, submitted_at INTEGER NOT NULL,
+          FOREIGN KEY(round_id) REFERENCES community_vault_rounds(id)
+        );
+        CREATE INDEX IF NOT EXISTS community_vault_attempts_round_user ON community_vault_attempts(round_id,user_id,submitted_at);
+        CREATE TABLE IF NOT EXISTS community_vault_awards (
+          round_id TEXT NOT NULL, user_id TEXT NOT NULL, award_type TEXT NOT NULL, xp INTEGER NOT NULL,
+          PRIMARY KEY(round_id,user_id,award_type), FOREIGN KEY(round_id) REFERENCES community_vault_rounds(id)
+        );
+        CREATE TABLE widget_tokens_v23(id TEXT PRIMARY KEY,widget_type TEXT NOT NULL CHECK(widget_type IN ('quest','poll','imposter','detective','pet','drop','wheel','vault')),
+          token_hash TEXT NOT NULL UNIQUE,created_at INTEGER NOT NULL,expires_at INTEGER,revoked_at INTEGER);
+        INSERT INTO widget_tokens_v23 SELECT * FROM widget_tokens;
+        DROP TABLE widget_tokens;
+        ALTER TABLE widget_tokens_v23 RENAME TO widget_tokens;
+        CREATE INDEX widget_tokens_active ON widget_tokens(widget_type,revoked_at,expires_at);
+        INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (23, unixepoch()*1000);
+      `))();
+    }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 24) {
+      if (currentVersion > 0) this.backupBeforeMigration(24);
+      const columns = new Set((this.db.prepare('PRAGMA table_info(community_pet_interactions)').all() as Array<{name:string}>).map(column=>column.name));
+      this.db.transaction(() => {
+        if (!columns.has('source')) this.db.exec("ALTER TABLE community_pet_interactions ADD COLUMN source TEXT NOT NULL DEFAULT 'chat' CHECK(source IN ('chat','portal'))");
+        this.db.exec("UPDATE community_pet_interactions SET source='portal' WHERE event_id LIKE 'viewer:%'; INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (24, unixepoch()*1000);");
+      })();
+    }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 25) {
+      if (currentVersion > 0) this.backupBeforeMigration(25);
+      this.db.transaction(() => {
+        const spinColumns=new Set((this.db.prepare('PRAGMA table_info(chaos_wheel_spins)').all() as Array<{name:string}>).map(x=>x.name));
+        if(!spinColumns.has('wheel_fields_json'))this.db.exec('ALTER TABLE chaos_wheel_spins ADD COLUMN wheel_fields_json TEXT');
+        this.db.prepare('INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (25, ?)').run(Date.now());
+      })();
+    }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 26) {
+      if (currentVersion > 0) this.backupBeforeMigration(26);
+      this.db.transaction(() => {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS community_world_badges (
+            user_id TEXT NOT NULL, badge_id TEXT NOT NULL, unlocked_at INTEGER NOT NULL,
+            PRIMARY KEY(user_id,badge_id)
+          );
+          CREATE INDEX IF NOT EXISTS community_world_badges_user ON community_world_badges(user_id,unlocked_at DESC);
+          CREATE TABLE IF NOT EXISTS community_world_mission_claims (
+            user_id TEXT NOT NULL, mission_id TEXT NOT NULL, period_key TEXT NOT NULL,
+            claimed_at INTEGER NOT NULL, reward_xp INTEGER NOT NULL CHECK(reward_xp >= 0),
+            PRIMARY KEY(user_id,mission_id,period_key)
+          );
+          CREATE INDEX IF NOT EXISTS community_world_mission_claims_user ON community_world_mission_claims(user_id,claimed_at DESC);
+          INSERT OR IGNORE INTO feature_config(key,value) VALUES ('community_world_started_at','${Date.now()}');
+        `);
+        this.db.prepare('INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (26, ?)').run(Date.now());
+      })();
+    }
   }
 
   private backupBeforeMigration(version: number): void {
@@ -1141,6 +1211,13 @@ export class FeatureStore {
   }
 
   widgetSnapshot(type: WidgetType, now: number): Record<string, unknown> {
+    if (type === 'vault') {
+      const row=this.db.prepare("SELECT status,started_at,ends_at,attempts_count,last_public_hint,last_public_hint_at,winner_name,result_code,updated_at FROM community_vault_rounds ORDER BY updated_at DESC LIMIT 1")
+        .get() as {status:string;started_at:number;ends_at:number;attempts_count:number;last_public_hint:string|null;last_public_hint_at:number|null;winner_name:string|null;result_code:string|null;updated_at:number}|undefined;
+      if(!row || (row.status!=='active' && now-row.updated_at>15_000))return {type,visible:false,capturedAt:now};
+      return {type,visible:true,vault:{status:row.status,startedAt:row.started_at,endsAt:row.ends_at,attempts:row.attempts_count,
+        lastHint:row.last_public_hint,winnerName:row.winner_name,result:row.status==='opened'?'Tresor geöffnet':row.status==='expired'?'Zeit abgelaufen':null,resultCode:row.status==='active'?null:row.result_code},capturedAt:now};
+    }
     if (type === 'imposter') {
       const row = this.db.prepare("SELECT id,phase,phase_ends_at,result_json,updated_at FROM imposter_rounds WHERE phase IN ('registration','role_distribution','playing','voting','results','finished') ORDER BY updated_at DESC LIMIT 1").get() as {id:string;phase:string;phase_ends_at:number|null;result_json:string|null;updated_at:number}|undefined;
       if (!row || (row.phase === 'finished' && now - row.updated_at>12_000)) return {type,visible:false,capturedAt:now};

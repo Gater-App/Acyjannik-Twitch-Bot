@@ -9,6 +9,19 @@ test('Sendewarteschlange sendet seriell und hält Antworten in Reihenfolge', asy
   assert.deepEqual(sent, ['【🤖 COMMUNITY】 eins', '【🤖 COMMUNITY】 zwei', '【🤖 COMMUNITY】 drei']);
 });
 
+test('Sendewarteschlange meldet echte Sendungen und unterdrückte Duplikate getrennt', async () => {
+  let release: (() => void) | undefined;
+  const queue = new SendQueue(async message => { if(message.includes('blocker')) await new Promise<void>(resolve=>{release=resolve;}); }, 0);
+  const blocker = queue.enqueue('blocker');
+  await new Promise(resolve=>setTimeout(resolve,0));
+  const first = queue.enqueue('gleicher Hinweis');
+  const duplicate = queue.enqueue('gleicher Hinweis');
+  assert.equal(await duplicate, false);
+  release?.();
+  await blocker;
+  assert.equal(await first, true);
+});
+
 test('Sendewarteschlange begrenzt Duplikate, zeigt Zähler und priorisiert wichtige Ankündigungen', async () => {
   const sent: string[] = [];
   let release: (() => void) | undefined;

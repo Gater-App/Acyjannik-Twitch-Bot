@@ -11,6 +11,8 @@ import { CommunityArcade } from './community-arcade.js';
 import { logger } from './logger.js';
 import { CommunityTips } from './community-tips.js';
 import { AutomaticChatMessages } from './automatic-chat-messages.js';
+import { ModeratorPranks } from './moderator-pranks.js';
+import { BotLifecycle } from './bot-lifecycle.js';
 
 async function freePort(): Promise<number> {
   const server = net.createServer();
@@ -50,7 +52,8 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
   const sentChat:string[]=[];
   const communityTips=new CommunityTips(store);
   const automaticMessages=new AutomaticChatMessages(store);
-  const dashboard = new DashboardServer(store, () => ({ twitchConnected: true, channel: 'acyjannik', startedAt: 1 }), logger, fetchImpl,undefined,undefined,undefined,undefined,arcade,async message=>{sentChat.push(message)},undefined,communityTips,automaticMessages);
+  const botLifecycle=new BotLifecycle(store);
+  const dashboard = new DashboardServer(store, () => ({ twitchConnected: true, channel: 'acyjannik', startedAt: 1 }), logger, fetchImpl,undefined,undefined,undefined,undefined,arcade,async message=>{sentChat.push(message)},undefined,communityTips,automaticMessages,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,botLifecycle);
   try {
     assert.equal(await dashboard.start(), true);
     const base = `http://127.0.0.1:${port}`;
@@ -120,7 +123,8 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.match(html,/dashboardPollVisible/u);assert.match(html,/Retry-After/u);assert.doesNotMatch(html,/setInterval\(refreshMini,3000\)|setInterval\(update,3000\)/u,'veraltete aggressive Minispiel-/Streamer-Polls sind nicht mehr aktiv');
     const csrf = html.match(/name="csrf" content="([a-f0-9]+)"/u)?.[1] || '';
     assert.ok(csrf);
-    assert.match(html,/Eigene Nachrichten/u);assert.match(html,/Community-Tipps/u);assert.match(html,/automatic-chat-form/u);
+    assert.match(html,/Bot-Lebenszeichen/u);assert.match(html,/Bei geplanten Neustarts verabschieden und zurückmelden/u);
+    assert.match(html,/Eigene geplante Nachrichten/u);assert.match(html,/Community-Tipps/u);assert.match(html,/automatic-chat-form/u);assert.match(html,/communityTipCategories/u);
     assert.match(html,/@media\(max-width:520px\)/u);
     assert.match(page.headers.get('content-security-policy') || '', /nonce-/u);
     assert.doesNotMatch(page.headers.get('content-security-policy') || '', /unsafe-inline/u);
@@ -128,7 +132,9 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.match(html,/Community-Aktionen/u);
     assert.match(html,/OBS: Widgets für den Stream/u);
     assert.match(html,/streamerEntry\.href='\/streamer'/u,'Normales Dashboard bietet einen sichtbaren Einstieg in den Streamer-Modus');
-    assert.match(html,/Schritt für Schritt in OBS einrichten/u);
+    assert.match(html,/3\. Anzeige in OBS einfügen/u);
+    assert.match(html,/Link technisch testen/u);
+    assert.match(html,/OBS-Sichtbarkeit ist damit noch nicht bestätigt/u);
     assert.match(html,/Teilnehmer-Link:/u);
     assert.match(html,/Twitch-Anmeldung für Mitspieler öffnen/u);
     assert.match(html,/Chat-Stil: COMMUNITY/u);
@@ -148,18 +154,21 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.match(html,/Nächster Phasenwechsel in/u,'geführter Imposter-Status zeigt den Countdown');
     assert.match(html,/Mindestzahl von/u,'Rollenverteilung bleibt gesperrt bis genug Mitspielende angemeldet sind');
     assert.match(html,/Chat-Nachrichten/u,'das Antwortverhalten ist im Dashboard auffindbar');
-    for (const label of ['Übersicht','Spiele','Community','OBS','Chatbefehle','Einstellungen']) assert.match(html,new RegExp(label,'u'));
+    for (const label of ['Übersicht','Spiele &amp; Aktionen','Community','Stream-Einrichtung','Chatbefehle','Einstellungen']) assert.match(html,new RegExp(label,'u'));
     assert.match(html,/<nav class="main-nav" aria-label="Hauptnavigation">[\s\S]*data-view-target="overview"[\s\S]*data-view-target="games"[\s\S]*data-view-target="community"[\s\S]*data-view-target="obs"[\s\S]*data-view-target="settings"/u,'die Navigation wechselt zwischen fünf echten Ansichten');
     assert.match(html,/id="dashboard-legacy-source" class="legacy-source"/u,'alte Funktionsquellen werden beim Laden verborgen und danach den Ansichten zugeordnet');
     assert.match(html,/data-game-page="imposter"[\s\S]*data-game-page="detective"[\s\S]*data-game-page="drop"[\s\S]*data-game-page="wheel"/u,'Spiele haben getrennte Ansichten');
-    assert.match(html,/id="home-status"[\s\S]*id="home-current"[\s\S]*id="home-warnings"/u,'Startseite ist auf Status, aktuelles Spiel, Aktionen und Warnungen begrenzt');
+    assert.match(html,/id="home-status"[\s\S]*id="home-current"[\s\S]*id="setup-checklist"[\s\S]*id="home-warnings"/u,'Startseite zeigt Status, aktives Spiel, Einrichtungsstatus und Warnungen');
     assert.match(html,/id="dashboard-app"/u,'Dashboard ist als getrennte App-Ansicht gerendert');
     assert.match(html,/Community-Boss[\s\S]*hideCard\('Community-Boss'\)/u,'Boss-Feature wird in der normalen Oberfläche nur ausgeblendet');
     assert.match(html,/Chat-Umfrage[\s\S]*hideCard\('Chat-Umfrage'\)/u,'allgemeine Umfrage wird in der normalen Oberfläche nur ausgeblendet');
     assert.match(html,/Weitere Chatspiele[\s\S]*Experimentell[\s\S]*!8ball Frage[\s\S]*!duel @Name[\s\S]*!startguess[\s\S]*!rps schere/u,'experimentelle Chatspiele bleiben mit konkreten Befehlen auffindbar');
-    assert.match(html,/Gemeinsame Vorschläge[\s\S]*Community-Quests[\s\S]*Gesprächs-Funken/u,'Quest- und Funkenvorschläge sind nach Herkunft gekennzeichnet');
+    assert.match(html,/1\. Neue Vorschläge prüfen/u,'Aufgabenprüfung ist der erste Schritt des Community-Aufgabenablaufs');
+    assert.match(html,/Chat-Ideen-Vorschläge prüfen[\s\S]*getrennt und benötigen weiterhin deine Freigabe/u,'Chat-Ideen bleiben als eigene Vorschlagsquelle im gemeinsamen Prüfablauf gekennzeichnet');
+    assert.match(html,/data-game-target="pranks">Chaos &amp; Pranks/u,'Pranks sind bei Spiele und Aktionen eingeordnet');
+    assert.match(html,/data-game-page="pranks"/u,'Pranks haben eine eigene Steuerungsansicht');
     assert.match(html,/Saisonpunkte für Halloween, Weihnachten und Ostern sind davon getrennt/u,'Saisonpunkte werden klar von XP getrennt');
-    assert.match(html,/Privater OBS-Link/u);
+    assert.match(html,/Privater OBS-Widget-Link/u);
     assert.match(html,/Erweiterte Einstellungen/u);
     assert.match(html,/<h2>Chat-Ideen<\/h2>[\s\S]*Wie früh soll der Bot ein Thema erkennen\?/u,'Chat-Ideen bieten eine verständliche Empfindlichkeitsauswahl');
     assert.match(html,/Nach Freigabe im Chat veröffentlichen/u,'öffentliche Fragen erfordern ausdrücklich Freigabe');
@@ -190,17 +199,39 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.equal(welcomeSave.status,200);
     assert.equal((await (await fetch(`${base}/dashboard/api/welcome`,{headers:{Cookie:sessionCookie}})).json() as {enabled:boolean}).enabled,true);
     const chatSettingsBefore=await fetch(`${base}/dashboard/api/chat-messages`,{headers:{Cookie:sessionCookie}});
-    const initialChatSettings=await chatSettingsBefore.json() as {profile:string;communityTips:{enabled:boolean;portalEnabled:boolean}};
+    const initialChatSettings=await chatSettingsBefore.json() as {profile:string;communityTips:{enabled:boolean;portalEnabled:boolean;halloweenEnabled:boolean;halloweenFrequency:string;halloweenActive:boolean;halloweenPreviews:string[]}};
     assert.equal(initialChatSettings.profile,'normal');
     assert.equal(initialChatSettings.communityTips.enabled,false,'old installations remain opted out');
     assert.equal(initialChatSettings.communityTips.portalEnabled,false,'Portal-Tipp bleibt auf bestehenden Installationen aus');
-    const chatSettingsSave=await fetch(`${base}/dashboard/api/chat-messages`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({profile:'calm',welcomeBots:['StreamElements','nightbot'],communityTipsEnabled:true,communityPortalTipsEnabled:true})});
+    assert.equal(initialChatSettings.communityTips.halloweenEnabled,true,'Häufigere Erinnerung ist Standard, sofern Community-Tipps und Event aktiv sind');
+    assert.equal(initialChatSettings.communityTips.halloweenFrequency,'frequent');
+    assert.equal(initialChatSettings.communityTips.halloweenActive,false,'inaktives Event wird nicht beworben');
+    assert.equal(initialChatSettings.communityTips.halloweenPreviews.length,5);
+    const automaticSummary=await (await fetch(`${base}/dashboard/api/chat-messages`,{headers:{Cookie:sessionCookie}})).json() as {categories:Array<{id:string;name:string;enabled:boolean;available:boolean}>;automaticChat:{reason:string}};
+    assert.ok(automaticSummary.categories.some(category=>category.id==='vault'&&category.name==='Community-Tresor'));
+    assert.match(automaticSummary.automaticChat.reason,/Automatische Hinweise sind ausgeschaltet/u);
+    const chatSettingsSave=await fetch(`${base}/dashboard/api/chat-messages`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({profile:'calm',welcomeBots:['StreamElements','nightbot'],communityTipsEnabled:true,communityPortalTipsEnabled:true,communityHalloweenEnabled:false,communityHalloweenFrequency:'normal'})});
     assert.equal(chatSettingsSave.status,200,await chatSettingsSave.clone().text());
     assert.deepEqual(store.config('chat_response_settings',{}),{profile:'calm',welcomeBots:['streamelements','nightbot']});
     assert.equal(communityTips.settings().enabled,true,'dashboard can opt in community tips');
+    const categorySave=await fetch(`${base}/dashboard/api/chat-messages`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({profile:'calm',welcomeBots:['streamelements','nightbot'],communityTipCategories:{pet:false,quest:true,halloween:false}})});
+    assert.equal(categorySave.status,200);assert.equal(communityTips.settings().enabledCategories?.pet,false);
+    const categorySettings=await (await fetch(`${base}/dashboard/api/chat-messages`,{headers:{Cookie:sessionCookie}})).json() as {categories:Array<{id:string;enabled:boolean}>;tipPreviews:Array<{id:string}>};
+    assert.equal(categorySettings.categories.find(category=>category.id==='pet')?.enabled,false);
+    assert.equal(categorySettings.tipPreviews.some(tip=>tip.id==='pet'),false,'abgewählte Kategorie wird nicht in den tatsächlichen Versandkandidaten geführt');
+    const invalidCategories=await fetch(`${base}/dashboard/api/chat-messages`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({profile:'normal',welcomeBots:[],communityTipCategories:{unsupported:true}})});
+    assert.equal(invalidCategories.status,400,'unbekannte Kategorien werden nicht persistiert');
     assert.equal(communityTips.settings().portalEnabled,true,'Dashboard kann Portal-Hinweise getrennt aktivieren');
+    assert.equal(communityTips.settings().halloweenEnabled,false,'Halloween-Erinnerungsschalter wird gespeichert');
+    assert.equal(communityTips.settings().halloweenFrequency,'normal','Häufigkeit wird gespeichert');
     const invalidChatSettings=await fetch(`${base}/dashboard/api/chat-messages`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({profile:'quiet',welcomeBots:[]})});
     assert.equal(invalidChatSettings.status,400,'unbekanntes Profil wird abgewiesen');
+    const lifecycleUrl=`${base}/dashboard/api/bot-lifecycle`,lifecycleHeaders={Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'};
+    assert.equal((await(await fetch(lifecycleUrl,{headers:{Cookie:sessionCookie}})).json() as {enabled:boolean}).enabled,false,'Lebenszeichen bleiben standardmäßig aus');
+    const enableLifecycle=await fetch(lifecycleUrl,{method:'POST',headers:lifecycleHeaders,body:JSON.stringify({action:'settings',enabled:true})});assert.equal(enableLifecycle.status,200);assert.equal((await enableLifecycle.json() as {enabled:boolean}).enabled,true);
+    const prepareLifecycle=await fetch(lifecycleUrl,{method:'POST',headers:lifecycleHeaders,body:JSON.stringify({action:'prepare'})});assert.equal(prepareLifecycle.status,200);
+    assert.equal((await prepareLifecycle.json() as {marker:{phase:string}}).marker.phase,'armed');
+    const duplicatePrepare=await fetch(lifecycleUrl,{method:'POST',headers:lifecycleHeaders,body:JSON.stringify({action:'prepare'})});assert.equal(duplicatePrepare.status,409);
 
     const automaticUnauthorized=await fetch(`${base}/dashboard/api/automatic-messages`,{redirect:'manual'});
     assert.equal(automaticUnauthorized.status,401,'automatische Nachrichten bleiben hinter Dashboard-Login');
@@ -239,6 +270,16 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.equal(afterWheel.canSpin,false,'Cooldown blockiert einen unmittelbaren weiteren Spin');
     assert.equal(afterWheel.activeAction,null,'automatische Aktion wartet nicht auf eine manuelle Auflösung');
     assert.ok(afterWheel.entries.every(entry=>entry.actionType!=='manual_challenge'));
+    const wheelTokenResponse=await fetch(`${base}/dashboard/api/widgets/token`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({type:'wheel',action:'rotate'})});
+    assert.equal(wheelTokenResponse.status,201);
+    const wheelToken=new URL((await wheelTokenResponse.json() as {url:string}).url).searchParams.get('token')||'';
+    const wheelPage=await fetch(`${base}/widgets/wheel?token=${wheelToken}`),wheelHtml=await wheelPage.text();
+    assert.equal(wheelPage.status,200);assert.match(wheelHtml,/<svg id="wheel"/u,'OBS zeigt ein echtes SVG-Rad');assert.match(wheelHtml,/cubic-bezier\(\.10,\.02,\.12,1\)/u,'Drehung bremst weich ab');assert.match(wheelHtml,/prefers-reduced-motion/u,'reduzierte Bewegung wird beachtet');assertInlineScriptsParse(wheelHtml);
+    const wheelSnapshot=await fetch(`${base}/widgets/api/wheel?token=${wheelToken}`),wheelWidget=await wheelSnapshot.json() as {visible:boolean;wheel:{id:string;title:string;selectedKey:string;fields:Array<{id:string;title:string;weight:number}>}};
+    assert.equal(wheelWidget.visible,true);assert.ok(wheelWidget.wheel.fields.length>=2);
+    const selectedField=wheelWidget.wheel.fields.find(field=>field.id===wheelWidget.wheel.selectedKey);
+    assert.ok(selectedField,'ausgewähltes Backend-Feld ist im gewichteten Rad enthalten');assert.equal(selectedField.title,wheelWidget.wheel.title,'Titel stimmt mit dem tatsächlich gespeicherten Gewinner überein');
+    assert.equal('createdBy' in wheelWidget.wheel,false,'keine internen oder persönlichen Spin-Daten werden veröffentlicht');
     const manualWheelAction=await fetch(`${base}/dashboard/api/arcade`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({action:'challenge',title:'Manuell',weight:1,actionType:'manual_challenge'})});
     assert.equal(manualWheelAction.status,400,'Dashboard-API lehnt manuelle Radfelder ab');
 
@@ -395,4 +436,28 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     for (const [key, value] of Object.entries(env)) process.env[key] = value;
     for (const key of Object.keys(process.env)) if (!(key in env)) delete process.env[key];
   }
+});
+
+test('Moderator-OAuth öffnet nur die Prank-Oberfläche und serverseitig nur deren API',async()=>{
+  const env={...process.env},directory=fs.mkdtempSync(path.join(os.tmpdir(),'acy-prank-dashboard-')),store=new FeatureStore(path.join(directory,'features.sqlite')),port=await freePort();
+  process.env.TWITCH_CLIENT_ID='test-client';process.env.TWITCH_CLIENT_SECRET='test-secret';process.env.DASHBOARD_REDIRECT_URI='https://bot.example.test/dashboard/oauth/callback';process.env.DASHBOARD_ADMIN_IDS='admin-id';process.env.AUTHORIZED_MODERATOR_IDS='mod-id';process.env.DASHBOARD_HOST='127.0.0.1';process.env.DASHBOARD_PORT=String(port);
+  let verifiedUserId='mod-id';const fetchImpl:typeof fetch=async(input,init)=>{const url=String(input);if(url.endsWith('/oauth2/token'))return Response.json({access_token:'temporary'});if(url.endsWith('/oauth2/validate'))return Response.json({client_id:'test-client',user_id:verifiedUserId,login:verifiedUserId==='mod-id'?'mod':'admin'});if(url.endsWith('/helix/users'))return Response.json({data:[{id:verifiedUserId,login:verifiedUserId==='mod-id'?'mod':'admin',display_name:'Test User'}]});throw Error(`Unexpected URL ${url}`)};
+  const pranks=new ModeratorPranks(store,()=>false,()=>false);
+  const dashboard=new DashboardServer(store,()=>({twitchConnected:false,channel:'acyjannik',startedAt:1}),logger,fetchImpl,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,pranks,async(login)=>login==='target'?{id:'123456',login:'target',displayName:'Target'}:undefined);
+  try{
+    assert.equal(await dashboard.start(),true);const base=`http://127.0.0.1:${port}`;
+    const login=await fetch(`${base}/dashboard/login`,{redirect:'manual'}),state=new URL(login.headers.get('location')||'').searchParams.get('state')||'',stateCookie=login.headers.get('set-cookie')?.split(';')[0]||'';
+    const callback=await fetch(`${base}/dashboard/oauth/callback?code=x&state=${state}`,{headers:{Cookie:stateCookie},redirect:'manual'});assert.equal(callback.status,303);
+    const session=callback.headers.getSetCookie().find(x=>x.startsWith('community_admin='))?.split(';')[0]||'';
+    const page=await fetch(`${base}/dashboard`,{headers:{Cookie:session}});assert.equal(page.status,200);const html=await page.text();assert.match(html,/Chaos &amp; Pranks/u);assert.doesNotMatch(html,/data-dashboard-view="overview"|DASHBOARD_ADMIN/u);
+    const csrf=html.match(/<meta name="csrf" content="([^"]+)/u)?.[1]||'';assert.ok(csrf);
+    assert.equal((await fetch(`${base}/dashboard/api/overview`,{headers:{Cookie:session}})).status,403);
+    assert.equal((await fetch(`${base}/streamer`,{headers:{Cookie:session}})).status,403);
+    assert.equal((await fetch(`${base}/dashboard/api/fairness`,{headers:{Cookie:session}})).status,403);
+    assert.equal((await fetch(`${base}/dashboard/api/pranks`,{headers:{Cookie:session}})).status,200);
+    await fetch(`${base}/dashboard/api/pranks`,{method:'POST',headers:{Cookie:session,Origin:'https://bot.example.test','X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({action:'settings',settings:{enabled:{chief:true}}})});
+    const start=await fetch(`${base}/dashboard/api/pranks`,{method:'POST',headers:{Cookie:session,Origin:'https://bot.example.test','X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({action:'start',kind:'chief'})});assert.equal(start.status,200);
+    assert.equal((await fetch(`${base}/dashboard/api/minigames`,{headers:{Cookie:session}})).status,403);
+    assert.equal((await fetch(`${base}/dashboard/api/pranks`)).status,401);
+  }finally{await dashboard.stop();store.close();fs.rmSync(directory,{recursive:true,force:true});for(const key of Object.keys(process.env))if(!(key in env))delete process.env[key];for(const [key,value] of Object.entries(env))process.env[key]=value}
 });

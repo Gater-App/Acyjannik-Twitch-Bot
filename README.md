@@ -129,6 +129,12 @@ Ein Neustart meldet bestehende Dashboard-Sitzungen ab. Dashboard-Änderungen
 werden in `admin_audit` protokolliert. Das Dashboard ist standardmäßig an
 `127.0.0.1` gebunden und nicht für das öffentliche Netz gedacht.
 
+`AUTHORIZED_MODERATOR_IDS` kann numerische Twitch-IDs berechtigter Mods
+enthalten. Diese Konten erhalten nach Twitch-OAuth ausschließlich die separate
+Ansicht „Chaos & Pranks“; Admin-APIs, Fairnessdaten und Streamer-Steuerung bleiben
+gesperrt. Die vier Pranks sind standardmäßig ausgeschaltet und müssen dort einzeln
+aktiviert werden.
+
 Die Oberfläche umfasst Statusanzeige und Aktualisierung, Modul-Schalter,
 Eventstart/-ende und Eventanlage, XP-Korrekturen, Nutzer-XP-Suche und
 Custom-Command-Verwaltung sowie erweiterte JSON-Einstellungen für XP-Kurve,
@@ -500,6 +506,16 @@ docker compose up -d --build halloween-bot
 
 `docker compose down -v` löscht die persistenten Volumes und ist für normale
 Updates nicht erforderlich. Updates erfolgen mit `docker compose up -d --build`.
+
+Wenn im Dashboard unter **Einstellungen → Chat & Nachrichten → Bot-Lebenszeichen**
+die Funktion aktiviert ist, kann ein Update vorab angekündigt werden: dort
+unmittelbar vor dem Deployment **Geplanten Neustart vorbereiten** wählen und
+innerhalb von 15 Minuten `docker compose up -d --build halloween-bot`
+ausführen. Der Marker liegt in der persistenten SQLite-Konfiguration. Ohne
+Vorbereitung erzeugen SIGTERM, SIGINT, Abstürze und automatische Neustarts
+keine Abschieds- oder Rückkehrnachrichten. Die Rückkehr wird nur einmal nach
+EventSub-Verbindung, 20 Sekunden Stabilisierung, bestätigtem Live-Status und
+angenommenem Chatversand versucht. Es gilt ein Cooldown von 30 Minuten.
 
 ## Entwicklung und Tests
 

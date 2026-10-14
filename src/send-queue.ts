@@ -7,7 +7,7 @@ interface QueueItem {
   replyParentMessageId?: string;
   priority: number;
   key: string;
-  resolve: () => void;
+  resolve: (sent: boolean) => void;
   reject: (error: unknown) => void;
 }
 
@@ -24,18 +24,18 @@ export class SendQueue {
     private readonly maxQueueSize = 100,
   ) {}
 
-  enqueue(message: string, replyParentMessageId?: string, category: ChatCategory = 'community'): Promise<void> {
+  enqueue(message: string, replyParentMessageId?: string, category: ChatCategory = 'community'): Promise<boolean> {
     message = formatPublicChatMessage(message, category, this.maxLength);
     assertChatMessageLength(message, this.maxLength);
-    return new Promise<void>((resolve, reject) => {
+    return new Promise<boolean>((resolve, reject) => {
       const key = `${replyParentMessageId || ''}:${message.trim().toLocaleLowerCase()}`;
-      if (this.items.some(item => item.key === key)) { this.suppressed++; resolve(); return; }
+      if (this.items.some(item => item.key === key)) { this.suppressed++; resolve(false); return; }
       if (this.items.length >= this.maxQueueSize) {
         const lowest = this.items.reduce((best, item, index, all) => item.priority < all[best]!.priority ? index : best, 0);
         const incomingPriority = priorityFor(message);
-        if (incomingPriority <= this.items[lowest]!.priority) { this.suppressed++; resolve(); return; }
+        if (incomingPriority <= this.items[lowest]!.priority) { this.suppressed++; resolve(false); return; }
         const [removed] = this.items.splice(lowest, 1);
-        removed?.resolve(); this.suppressed++;
+        removed?.resolve(false); this.suppressed++;
       }
       this.items.push({ message, key, priority: priorityFor(message), ...(replyParentMessageId ? { replyParentMessageId } : {}), resolve, reject });
       void this.flush();
@@ -54,7 +54,7 @@ export class SendQueue {
     if (!item) { this.sending = false; return; }
     try {
       await this.send(item.message, item.replyParentMessageId);
-      item.resolve();
+      item.resolve(true);
     } catch (error) {
       this.logger.warn('Chatnachricht konnte nicht gesendet werden.', { error: error instanceof Error ? error.message : 'unbekannt' });
       item.reject(error);
@@ -68,7 +68,7 @@ export class SendQueue {
 }
 
 function priorityFor(message: string): number {
-  return /(?:anmeldung offen|(?:spiel|runde|abstimmung|umfrage|drop|event|quest)[^.!?]{0,48}\b(?:gestartet|startet|beendet|aufgelöst|geöffnet|vorbei)\b|\b(?:gestartet|startet|beendet|aufgelöst|gewinner|gut erkannt|gleichstand)\b|\b(?:mystery drop|quest-wahl) (?:ist )?(?:geöffnet|vorbei|gestartet|beendet))/iu.test(message) ? 2 : 1;
+  return /(?:anmeldung offen|geplantes update|bits sortieren|bot-nickerchen|schrauben nachziehen|schrauben wieder drin|elio übernimmt|nichts kaputt gemacht|frisch poliert|hab ich was verpasst|zurück und schöner|bin wieder da|wieder wach|(?:spiel|runde|abstimmung|umfrage|drop|event|quest)[^.!?]{0,48}\b(?:gestartet|startet|beendet|aufgelöst|geöffnet|vorbei)\b|\b(?:gestartet|startet|beendet|aufgelöst|gewinner|gut erkannt|gleichstand)\b|\b(?:mystery drop|quest-wahl) (?:ist )?(?:geöffnet|vorbei|gestartet|beendet))/iu.test(message) ? 2 : 1;
 }
 
 const consoleLogger: Logger = {

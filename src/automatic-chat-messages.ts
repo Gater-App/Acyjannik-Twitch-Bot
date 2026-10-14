@@ -26,6 +26,13 @@ export class AutomaticChatMessages {
     return this.store.miniGameQuery(db=>(db.prepare('SELECT * FROM automatic_chat_messages ORDER BY created_at,id').all() as MessageRow[]).map(row=>this.toPublic(row,now)));
   }
 
+  globalStatus(now=Date.now()):{lastAttemptAt:number|null;sentThisHour:number;hourlyLimit:number;nextEarliestAt:number|null;canSend:boolean} {
+    const state=this.globalState(),sentThisHour=state.history.filter(at=>now-at<60*60_000).length;
+    const nextEarliestAt=state.lastAttemptAt?state.lastAttemptAt+AUTO_CHAT_MIN_GLOBAL_GAP_MS:null;
+    return {lastAttemptAt:state.lastAttemptAt||null,sentThisHour,hourlyLimit:4,nextEarliestAt,
+      canSend:(!state.lastAttemptAt||now-state.lastAttemptAt>=AUTO_CHAT_MIN_GLOBAL_GAP_MS)&&sentThisHour<4};
+  }
+
   save(input:{id?:string;title:unknown;message:unknown;intervalMinutes:unknown;enabled?:unknown;activeChatOnly?:unknown},now=Date.now()):AutomaticChatMessage {
     const title=clean(input.title), message=clean(input.message);
     const intervalMinutes=Number(input.intervalMinutes);

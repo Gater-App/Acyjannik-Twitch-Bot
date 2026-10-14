@@ -53,6 +53,16 @@ test('parallel scheduled senders can reserve only one shared chat slot',async()=
   f.close();
 });
 
+test('Status zeigt den gemeinsamen Abstand und das Stundenlimit an',()=>{
+  const f=fixture(),now=100_000;
+  assert.equal(f.service.globalStatus(now).canSend,true);
+  for(let i=0;i<4;i++)assert.equal(f.service.reserveGlobalSlot(now+i*AUTO_GAP),true);
+  const status=f.service.globalStatus(now+4*AUTO_GAP);
+  assert.equal(status.sentThisHour,4);assert.equal(status.hourlyLimit,4);assert.equal(status.canSend,false);
+  assert.equal(status.nextEarliestAt,now+4*AUTO_GAP);
+  f.close();
+});
+
 test('existing community-tip cooldown is folded into the shared plan',()=>{
   const f=fixture();f.store.setConfig('community_tip_state',{lastSentAt:5_000,streamId:'stream',sentInStream:['xp'],sentHistory:[5_000]});
   const shared=new AutomaticChatMessages(f.store);
