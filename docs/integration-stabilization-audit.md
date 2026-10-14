@@ -1,6 +1,8 @@
 # ACY Twitch Bot – Integrations- und Stabilisierungsaudit
 
-Stand: 15.10.2026 · lokaler Testlauf · keine Produktionszugriffe
+Ursprüngliche Bestandsaufnahme: 15.10.2026 · lokaler Stabilisierungsaudit.
+
+Der spätere Production-Release ist in [docs/release-report-2026-10-15.md](release-report-2026-10-15.md) dokumentiert.
 
 ## Git-Bestand
 
@@ -102,6 +104,6 @@ Ein zusätzlicher, eigenständiger Migrationstest für Version 31 wurde nach die
 5. **Abstimmungen und Magic 8-Ball:** Browserklicktests für allgemeine Poll-Erstellung/Ende und das 8-Ball-Einstellungsformular ergänzen.
 6. **Release-Splitting:** Änderungen datei- und featureweise reviewen und nur konfliktfrei separierbare Einheiten committen. `dashboard.ts`, `feature-store.ts` und gemeinsame Integrationsdateien benötigen manuelle Aufteilung.
 
-## Freigabegrenze
+## Freigabegrenze zum Zeitpunkt dieser Bestandsaufnahme
 
-Der Stand ist lokal gut testbar, aber noch nicht für Production-Abnahme freigegeben. Keine Commits, Pushes, Merges, Deployments, PM2-Neustarts, Produktionsmigrationen, echten Twitch-/Spotify-Aktionen, OAuth-Änderungen oder OBS-Auslösungen wurden vorgenommen.
+Diese Aussage beschreibt nur den damaligen Zeitpunkt: Der Stand war lokal testbar; es waren noch keine Commits, Pushes, Merges, Deployments, PM2-Neustarts, Produktionsmigrationen, echten Twitch-/Spotify-Aktionen, OAuth-Änderungen oder OBS-Auslösungen vorgenommen. Den späteren Release- und Produktionsstatus dokumentiert der verlinkte Release-Report.
