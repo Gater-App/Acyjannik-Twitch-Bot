@@ -6,6 +6,7 @@ import { QuestPollFeatures } from './quest-poll.js';
 import { ConversationSpark } from './conversation-spark.js';
 import { MiniGames } from './mini-games.js';
 import { CommunityArcade } from './community-arcade.js';
+import { CommunityVault } from './community-vault.js';
 import { categoryForCommand, type ChatCategory } from './chat-message-format.js';
 import type { OutboundChatMessage } from './chat-message-format.js';
 import type { HelpAvailability } from './help.js';
@@ -20,13 +21,14 @@ export class CommunityFeatures {
   readonly conversationSpark: ConversationSpark;
   readonly miniGames: MiniGames;
   readonly arcade: CommunityArcade;
+  readonly vault: CommunityVault;
 
   constructor(
     private readonly store: FeatureStore,
     private readonly config: AppConfig,
     private readonly lookupUser: UserLookup = async () => undefined,
     private readonly random: RandomInclusive = secureRandomInclusive,
-  ) { this.questPoll = new QuestPollFeatures(store, config); this.conversationSpark = new ConversationSpark(store, config.broadcasterUserId); this.miniGames = new MiniGames(store, config); this.arcade = new CommunityArcade(store,config.broadcasterUserId); }
+  ) { this.questPoll = new QuestPollFeatures(store, config); this.conversationSpark = new ConversationSpark(store, config.broadcasterUserId); this.miniGames = new MiniGames(store, config); this.arcade = new CommunityArcade(store,config.broadcasterUserId); this.vault = new CommunityVault(store,config.botUserId); }
 
   observeActivity(message: ChatMessage, now = Date.now()): string | undefined {
     if (message.senderUserId === this.config.botUserId || message.senderLogin.toLowerCase() === this.config.botLogin.toLowerCase()) return undefined;
@@ -60,7 +62,7 @@ export class CommunityFeatures {
     const events=this.store.events().map(event=>({id:event.id,name:event.name,command:event.command,active:event.active&&(event.id==='halloween'||modules.events!==false)}));
     const activeEnabled=Boolean(active&&(active.id==='halloween'||modules.events!==false));
     return {xp:modules.xp!==false,events:activeEnabled,...(activeEnabled&&active?{activeEventName:active.name,activeEventCommand:active.command}:{}),seasonalEvents:events,
-      pet:arcade.petEnabled,drops:arcade.dropsEnabled,wheel:arcade.wheelEnabled,imposter:mini.enabled,detective:mini.enabled,
+      pet:arcade.petEnabled,drops:arcade.dropsEnabled,wheel:arcade.wheelEnabled,imposter:mini.enabled,detective:mini.enabled,vault:this.vault.settings().enabled,
       quests:modules.quests!==false&&eventSettings.enabled!==false,spark:spark.enabled,
       eightBall:modules.eightBall!==false,rps:modules.rps!==false,guess:modules.guess!==false,duels:modules.duels!==false};
   }
@@ -68,7 +70,7 @@ export class CommunityFeatures {
   tick(now = Date.now(), advanceMiniGames = true): string[] { return this.tickMessages(now, advanceMiniGames).map(item => item.message); }
   tickMessages(now = Date.now(), advanceMiniGames = true): OutboundChatMessage[] {
     this.refreshScheduledEvents(now); this.questPoll.tick(now); this.conversationSpark.tick(now);
-    return [...(advanceMiniGames ? this.miniGames.tickMessages(now) : []), ...this.arcade.tickMessages(now)];
+    return [...(advanceMiniGames ? this.miniGames.tickMessages(now) : []), ...this.arcade.tickMessages(now), ...this.vault.tickMessages(now)];
   }
 
   async handle(message: ChatMessage, command: string, args: string[], now = Date.now()): Promise<CommandReply[]> {
@@ -76,6 +78,8 @@ export class CommunityFeatures {
     const name = cleanName(message.senderDisplayName);
     const say = (value: string, category: ChatCategory = categoryForCommand(command)): CommandReply[] => [{ message: clampChatMessage(value, this.config.appChatMessageLength), category,
       ...(message.messageId ? { replyParentMessageId: message.messageId } : {}) }];
+
+    if(command==='code') { this.vault.guess(message,args,now); return []; }
 
     const sparkResponse = await this.conversationSpark.handleCommand(message, command, args, now);
     if (sparkResponse !== undefined) return say(sparkResponse);

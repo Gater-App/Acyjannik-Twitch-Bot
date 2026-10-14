@@ -38,7 +38,7 @@ test('Versionierte Elio-Migration ersetzt nur den alten Standardnamen und erhäl
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'elio-pet-migration-'));const sub=path.join(directory,'data');fs.mkdirSync(sub);
   const legacyPath=path.join(sub,'legacy.sqlite');let store=new FeatureStore(legacyPath);new CommunityArcade(store,'broadcaster');
   store.setConfig('8ball_answers', LEGACY_DEFAULT_8BALL_ANSWERS);
-  store.miniGameTransaction(db=>{db.prepare("UPDATE community_pet SET name='Fünkchen',level=2,xp=125 WHERE id=1").run();db.prepare("UPDATE chaos_wheel_challenges SET id='legacy-generated-id',title='Der Drache bekommt einen Energieschub!',action_type='boost_pet' WHERE id='builtin:pet-energy'").run();db.prepare('DELETE FROM schema_migrations WHERE version IN (13,14,15,16,17,18,19,20,21,22)').run()});store.close();
+  store.miniGameTransaction(db=>{db.prepare("UPDATE community_pet SET name='Fünkchen',level=2,xp=125 WHERE id=1").run();db.prepare("UPDATE chaos_wheel_challenges SET id='legacy-generated-id',title='Der Drache bekommt einen Energieschub!',action_type='boost_pet' WHERE id='builtin:pet-energy'").run();db.prepare('DELETE FROM schema_migrations WHERE version IN (13,14,15,16,17,18,19,20,21,22,23)').run()});store.close();
   store=new FeatureStore(legacyPath);assert.equal(new CommunityArcade(store,'broadcaster').pet().name,'Elio');assert.equal(new CommunityArcade(store,'broadcaster').pet().level,2);assert.equal(new CommunityArcade(store,'broadcaster').pet().xp,125);
   assert.deepEqual(store.config('8ball_answers', []), DEFAULT_8BALL_ANSWERS, 'alter Standardpool wird beim Upgrade ersetzt');
   assert.equal(new CommunityArcade(store,'broadcaster').manageChallenges().find(x=>x.id==='legacy-generated-id')?.title,'Elio bekommt einen Energieschub!');store.close();
@@ -188,7 +188,7 @@ test('Migration deaktiviert alte manuelle Felder und schließt laufende manuelle
   store.miniGameQuery(db=>{
     db.prepare("INSERT INTO chaos_wheel_challenges(id,title,weight,active,action_type) VALUES('old-manual','Fünf Minuten nur Pistolen',2,1,'manual_challenge')").run();
     db.prepare("INSERT INTO chaos_wheel_spins(id,challenge_id,title,status,created_by,created_at,action_type) VALUES('old-spin','old-manual','Fünf Minuten nur Pistolen','active','mod',10,'manual_challenge')").run();
-    db.prepare('DELETE FROM schema_migrations WHERE version IN (17,18,19,20,21,22)').run();
+    db.prepare('DELETE FROM schema_migrations WHERE version IN (17,18,19,20,21,22,23)').run();
   });store.close();
   store=new FeatureStore(database);
   assert.equal(store.miniGameQuery(db=>db.prepare("SELECT active FROM chaos_wheel_challenges WHERE id='old-manual'").get() as {active:number}).active,0);

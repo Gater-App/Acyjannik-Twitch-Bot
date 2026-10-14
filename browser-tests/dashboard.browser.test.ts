@@ -13,6 +13,7 @@ import { testConfig } from '../src/test-config.js';
 import { logger } from '../src/logger.js';
 import { CommunityFeatures } from '../src/community-features.js';
 import { ViewerCommunityPortal } from '../src/community-portal.js';
+import { CommunityVault } from '../src/community-vault.js';
 
 async function freePort(): Promise<number> {
   const server = net.createServer();
@@ -45,8 +46,11 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
   const arcade = new CommunityArcade(store, 'channel-1');
   const miniGames = new MiniGames(store, testConfig());
   const communityFeatures = new CommunityFeatures(store, testConfig());
+  communityFeatures.vault.updateSettings({enabled:true});
+  assert.equal(communityFeatures.vault.startManual(Date.now()).ok,true);
+  store.miniGameQuery(db=>db.prepare("UPDATE community_vault_rounds SET secret_code='042' WHERE status='active'").run());
   const portal = new ViewerCommunityPortal(store, communityFeatures, testConfig(), fetchImpl);
-  const dashboard = new DashboardServer(store, () => ({ twitchConnected: true, channel: 'acyjannik', startedAt: 1 }), logger, fetchImpl, undefined, undefined, undefined, miniGames, arcade, undefined, undefined, undefined, undefined, undefined, portal);
+  const dashboard = new DashboardServer(store, () => ({ twitchConnected: true, channel: 'acyjannik', startedAt: 1 }), logger, fetchImpl, undefined, undefined, undefined, miniGames, arcade, async()=>{}, undefined, undefined, undefined, undefined, portal, communityFeatures.vault, async()=>true);
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
   try {
     assert.equal(await dashboard.start(), true);
@@ -101,6 +105,23 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
       await navigate(name);
       await screenshot(`acy-ux50-desktop-${name}`);
     }
+
+    await navigate('games');
+    await page.locator('#game-catalog').getByRole('button', {name:'Community-Tresor'}).click();
+    await assertSubpage('[data-game-page="vault"]', true);
+    await page.getByRole('heading', { name: '🔐 Community-Tresor' }).waitFor({ state: 'visible' });
+    await page.waitForFunction(() => document.querySelector('#vault-status')?.textContent?.includes('Tresor offen'));
+    assert.equal(JSON.stringify(await page.evaluate(async()=>await (await fetch('/dashboard/api/vault')).json())).includes('042'),false,'Dashboard-Snapshot gibt den Geheimcode während des Spiels nicht aus');
+    const duplicateStart=await page.evaluate(async()=>{const csrf=(document.querySelector('meta[name=csrf]') as HTMLMetaElement).content;return (await fetch('/dashboard/api/vault/action',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify({action:'start'})})).status});
+    assert.equal(duplicateStart,409,'eine zweite Tresor-Runde wird abgewiesen');
+    await screenshot('acy-community-vault-desktop');
+    await page.setViewportSize({width:390,height:844});
+    const vaultSize=await page.evaluate(()=>({viewport:document.documentElement.clientWidth,content:document.documentElement.scrollWidth}));
+    assert.ok(vaultSize.content<=vaultSize.viewport+1,`Community-Tresor passt mobil ohne seitliches Scrollen: ${JSON.stringify(vaultSize)}`);
+    await screenshot('acy-community-vault-mobile');
+    await page.setViewportSize({width:1440,height:1000});
+    await page.locator('[data-game-page="vault"] .subpage-back').click();
+    assert.equal(await page.locator('#game-catalog').isVisible(),true,'Tresor-Unterseite kann zum Spielekatalog zurückkehren');
 
     await navigate('games');
     await page.getByRole('button', { name: /Chat-Imposter/u }).click();
@@ -262,6 +283,10 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     portalPage.on('pageerror', (error) => pageErrors.push(error.message));
     await portalPage.goto(`${base}/community`, { waitUntil: 'domcontentloaded', timeout: 10000 });
     await portalPage.getByRole('link', { name: 'Mit Twitch anmelden' }).waitFor({ state: 'visible' });
+    const publicVaultState=await portalPage.evaluate(async()=>await(await fetch('/community/api/state',{cache:'no-store'})).json());
+    assert.equal(publicVaultState.public.vault.status,'active','Community-Portal zeigt den laufenden Tresor');
+    assert.equal(publicVaultState.personal,null,'unangemeldete Zuschauer erhalten keine persönlichen Tipps');
+    assert.equal(JSON.stringify(publicVaultState).includes('042'),false,'Community-API gibt den laufenden Geheimcode nicht aus');
     assert.equal(await portalPage.getByRole('link', { name: /Dashboard/u }).count(), 0, 'öffentliches Portal verweist nicht auf die Admin-Verwaltung');
     for (const [label, width, height] of [['desktop', 1440, 1000], ['iphone', 390, 844]] as const) {
       await portalPage.setViewportSize({ width, height });

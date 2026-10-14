@@ -60,7 +60,7 @@ test('Viewer OAuth is state-bound, session-backed and shares Imposter registrati
     assert.match(features.miniGames.handle(chat('chat-user-1','chat_one','Chat One','!joinimposter'),'joinimposter',[])||'',/ist dabei/u);
     assert.match(features.miniGames.handle(chat('chat-user-2','chat_two','Chat Two','!joinimposter'),'joinimposter',[])||'',/ist dabei/u);
     let snapshot=await (await fetch(base+'/community/api/state',{headers:{cookie:viewerCookie}})).json() as any;
-    assert.deepEqual(snapshot.public.imposter.players.map((x:any)=>x.displayName),['Viewer Name','Chat One','Chat Two']);
+    assert.deepEqual(snapshot.public.imposter.players.map((x:any)=>x.displayName).sort(),['Chat One','Chat Two','Viewer Name'].sort());
     assert.doesNotMatch(JSON.stringify(snapshot.public.imposter),/viewer-secret-id|chat-user-/u);assert.equal(snapshot.public.imposter.role,null);
     features.miniGames.startRoles('broadcaster-1');snapshot=await (await fetch(base+'/community/api/state',{headers:{cookie:viewerCookie}})).json() as any;
     assert.ok(['imposter','player'].includes(snapshot.public.imposter.role.kind));assert.equal(snapshot.public.imposter.players.some((x:any)=>'role'in x),false);

@@ -104,7 +104,7 @@ async function runLiveMode(): Promise<void> {
   );
   let channelPoints:ChannelPointsService|undefined;
   let songRequests:SpotifySongRequests|undefined;
-  let lastSpecialAnnouncementAt = 0;
+  let lastSpecialAnnouncementAt = botStartedAt;
   const eventsub = new EventSubClient(
     async (sessionId) => {
       await api.ensureChatSubscription(sessionId, config.broadcasterUserId, config.botUserId);
@@ -144,12 +144,13 @@ async function runLiveMode(): Promise<void> {
       }
       let replies;
       communityTips.observe(chatMessage);
+      community.vault.observeActivity(chatMessage);
       try { replies = await handler.handle(chatMessage); }
       catch(error){logger.error('Twitch-Chatnachricht konnte im Command-Handler nicht verarbeitet werden.',{error:error instanceof Error?error.message:'unbekannt'});return;}
       const command=chatMessage.message.trim().split(/\s+/u)[0]?.toLowerCase()||'';
       if(command.startsWith('!'))logger.info('Twitch-Chatbefehl verarbeitet.',{command:/^![a-z0-9_-]{1,32}$/u.test(command)?command:'!other',replyCount:replies.length});
       for (const reply of replies) {
-        if (['drop','wheel','imposter','detective','quest','poll','season','pet','boss','attack','help','communityPortal'].includes(reply.category || '')) lastSpecialAnnouncementAt = Date.now();
+        if (['drop','wheel','imposter','detective','quest','poll','season','pet','boss','attack','help','communityPortal','vault'].includes(reply.category || '')) lastSpecialAnnouncementAt = Date.now();
         if (!chatPolicy.shouldSend({ command: command.startsWith('!') ? command : '', message: reply.message })) continue;
         try { await queue.enqueue(reply.message, reply.replyParentMessageId, reply.category); }
         catch { /* SendQueue logs the safe transport failure; EventSub stays connected. */ }
@@ -162,6 +163,8 @@ async function runLiveMode(): Promise<void> {
   const communityPortalHealth=new CommunityPortalHealth(new URL('/community',config.redirectUri).toString());
   let lastWheelLiveCheckAt = 0;
   let checkingWheelLive = false;
+  let lastVaultLiveCheckAt = 0;
+  let checkingVaultLive = false;
   const runFeatureTick = singleFlight(async () => {
       try {
         const announcements = community.tickMessages();
@@ -178,6 +181,21 @@ async function runLiveMode(): Promise<void> {
         const busy = Boolean(snapshots.imposter || snapshots.detective || features.activeQuest() || features.activePoll(now) || features.activeBoss(now)
           || ['announced','claiming','resolving'].includes(dropStatus || '') || wheel.active
           || queue.busy || now - lastSpecialAnnouncementAt < 60_000);
+        const vaultReady=community.vault.autoStartReady(now,community.vault.activeViewerCount(now),busy,lastSpecialAnnouncementAt);
+        if(vaultReady&&!checkingVaultLive&&now-lastVaultLiveCheckAt>=15_000){
+          checkingVaultLive=true;lastVaultLiveCheckAt=now;
+          try{
+            const stream=await api.getStreamStatus(config.broadcasterUserId);
+            if(stream&&community.vault.autoStartReady(Date.now(),community.vault.activeViewerCount(),busy,lastSpecialAnnouncementAt)){
+              const started=community.vault.startAutomatic(Date.now());
+              if(started.ok){lastSpecialAnnouncementAt=Date.now();try{await queue.enqueue(started.message,undefined,'vault');}
+                catch(error){logger.warn('Tresor-Startmeldung konnte nicht gesendet werden; die Runde bleibt im Dashboard sichtbar.',{error:error instanceof Error?error.message:'unbekannt'});}
+                return;
+              }
+            }
+          }catch(error){logger.warn('Automatischer Tresor-Start wegen unbekanntem Live-Status zurückgestellt.',{error:error instanceof Error?error.message:'unbekannt'});}
+          finally{checkingVaultLive=false;}
+        }
         const profile = chatPolicy.snapshot().profile, availability = {...community.helpAvailability(),communityPortal:communityTips.settings().portalEnabled};
         const dueMessage=automaticChatMessages.hasDue(now,communityTips.eligibleActivityMessages,busy);
         const wantsTip=communityTips.shouldEvaluate(profile,availability,busy,now)&&automaticChatMessages.canReserveGlobalSlot(now);
@@ -265,7 +283,8 @@ async function runLiveMode(): Promise<void> {
     const viewerPortal=new ViewerCommunityPortal(features,community,{...config,redirectUri:process.env.DASHBOARD_REDIRECT_URI?.trim()||config.redirectUri},fetch);
     dashboard = new DashboardServer(features, () => ({twitchConnected:eventsub.isConnected,channel:config.channelLogin,startedAt:botStartedAt,...queue.snapshot(),chatResponse:chatPolicy.snapshot()}),
       logger,fetch,()=>community.conversationSpark.snapshot(),channelPoints,()=>oauthServer.startUrlFor('channel-points'),community.miniGames,community.arcade,
-      async(message,category)=>{await queue.enqueue(message,undefined,category);},chatPolicy,communityTips,automaticChatMessages,songRequests,viewerPortal);
+      async(message,category)=>{await queue.enqueue(message,undefined,category);},chatPolicy,communityTips,automaticChatMessages,songRequests,viewerPortal,community.vault,
+      async()=>{const now=Date.now(),stream=await api.getStreamStatus(config.broadcasterUserId);if(!stream||community.vault.activeViewerCount(now)<community.vault.settings().minActiveViewers||now-lastSpecialAnnouncementAt<5*60_000)return false;const game=community.miniGames.snapshot(),drop=community.arcade.snapshot('drop'),wheel=community.arcade.wheelStatus(),dropStatus=(drop.drop as {status?:string}|undefined)?.status;return !Boolean(game.imposter||game.detective||features.activeQuest()||features.activePoll(now)||features.activeBoss(now)||['announced','claiming','resolving'].includes(dropStatus||'')||wheel.active||queue.busy);});
     logger.info('OAuth-Server erreichbar unter http://127.0.0.1:3000/oauth/start');
     await dashboard.start();
     eventsub.start();
