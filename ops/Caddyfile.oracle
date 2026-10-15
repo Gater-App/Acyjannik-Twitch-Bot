@@ -18,6 +18,21 @@ twitch.gater-app.de {
 		reverse_proxy 127.0.0.1:3001
 	}
 
+	@community path /community /community/*
+	handle @community {
+		reverse_proxy 127.0.0.1:3001
+	}
+
+	@help path /hilfe
+	handle @help {
+		reverse_proxy 127.0.0.1:3001
+	}
+
+	@streamer path /streamer
+	handle @streamer {
+		reverse_proxy 127.0.0.1:3001
+	}
+
 	@widgets path /widgets/*
 	handle @widgets {
 		reverse_proxy 127.0.0.1:3001
