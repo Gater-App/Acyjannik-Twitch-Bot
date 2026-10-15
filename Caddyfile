@@ -3,6 +3,11 @@
 		Strict-Transport-Security "max-age=31536000"
 	}
 
+	@health path /health
+	handle @health {
+		reverse_proxy halloween-bot:3001
+	}
+
 	@oauth path /oauth/*
 	handle @oauth {
 		reverse_proxy halloween-bot:3000
