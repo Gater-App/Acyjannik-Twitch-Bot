@@ -59,6 +59,11 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
   try {
     assert.equal(await dashboard.start(), true);
     const base = `http://127.0.0.1:${port}`;
+    const health=await fetch(`${base}/health`);
+    assert.equal(health.status,200,'Liveness-Endpunkt ist ohne Anmeldung erreichbar');
+    assert.deepEqual(await health.json(),{status:'alive'});
+    assert.equal(health.headers.get('cache-control'),'no-store');
+    assert.equal((await fetch(`${base}/health`,{method:'POST'})).status,405,'Health-Endpunkt erlaubt keine Schreibzugriffe');
     const publicHelp=await fetch(`${base}/hilfe`);
     assert.equal(publicHelp.status,200,'Hilfeseite ist ohne Twitch-Anmeldung lesbar');
     const publicHtml=await publicHelp.text();

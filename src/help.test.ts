@@ -12,6 +12,7 @@ test('Chat-Hilfe ist knapp, Aliase funktionieren und nennen nur aktivierte Funkt
   assert.match(helpReply(['drops'],viewer,active),/!claim/u);
   assert.match(helpReply(['wheel'],viewer,active),/!wheel/u);
   assert.match(helpReply(['imposter'],viewer,active),/!joinimposter/u);
+  assert.match(helpReply(['imposter'],viewer,active),/!sus @Name im Twitch-Chat ist öffentlich/u);
   assert.match(helpReply(['events'],viewer,active),/Weihnachten.*!gift/u);
   assert.match(helpReply(['ostern'],viewer,{...active,seasonalEvents:[{id:'easter',name:'Ostern',command:'egghunt',active:true}]}),/Ostern läuft.*!egghunt/u);
   assert.ok(helpReply(['spiele'],viewer,active).length<250);
