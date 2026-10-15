@@ -106,7 +106,7 @@ async function runLiveMode(): Promise<void> {
   const communityTips = new CommunityTips(features);
   const automaticChatMessages = new AutomaticChatMessages(features);
   const handler = new CommandHandler(database, game, config, undefined, community, chatPolicy, communityTips);
-  let lastChatReceiveAt:number|undefined,lastBotChatSendAt:number|undefined,lastBotChatSendErrorAt:number|undefined;
+  let lastChatReceiveAt:number|undefined,lastEventProcessedAt:number|undefined,lastBotChatSendAt:number|undefined,lastBotChatSendErrorAt:number|undefined;
   const queue = new SendQueue(
     async (message, replyParentMessageId) => {
       const result = await sendChatMessageWithRetry(api, config.broadcasterUserId, config.botUserId, message, replyParentMessageId);
@@ -157,8 +157,8 @@ async function runLiveMode(): Promise<void> {
         const payload=rawMessage.payload as Record<string,unknown>|undefined,event=payload?.event as Record<string,unknown>|undefined,reward=event?.reward as Record<string,unknown>|undefined;
         const rewardId=String(reward?.id||'');
         try{
-          if(songRequests?.settings().rewardId===rewardId)await songRequests.acceptEventSub(rawMessage);
-          else if(channelPoints?.settings().rewardId===rewardId)await channelPoints.acceptEventSub(rawMessage);
+          if(songRequests?.settings().rewardId===rewardId){await songRequests.acceptEventSub(rawMessage);lastEventProcessedAt=Date.now();}
+          else if(channelPoints?.settings().rewardId===rewardId){await channelPoints.acceptEventSub(rawMessage);lastEventProcessedAt=Date.now();}
         }
         catch(error){logger.error('Kanalpunkte-Einlösung konnte nicht verarbeitet werden.',{error:error instanceof Error?error.message:'unbekannt'});}
         return;
@@ -185,6 +185,7 @@ async function runLiveMode(): Promise<void> {
       community.vault.observeActivity(chatMessage);
       try { replies = await handler.handle(chatMessage); }
       catch(error){logger.error('Twitch-Chatnachricht konnte im Command-Handler nicht verarbeitet werden.',{error:error instanceof Error?error.message:'unbekannt'});return;}
+      lastEventProcessedAt=Date.now();
       const command=chatMessage.message.trim().split(/\s+/u)[0]?.toLowerCase()||'';
       if(command.startsWith('!'))logger.info('Twitch-Chatbefehl verarbeitet.',{command:/^![a-z0-9_-]{1,32}$/u.test(command)?command:'!other',replyCount:replies.length});
       for (const reply of replies) {
@@ -331,7 +332,7 @@ async function runLiveMode(): Promise<void> {
     songRequests=new SpotifySongRequests(features,redemptionApi,redemptionOauth,config.broadcasterUserId,logger);
     await songRequests.initialize();
     const viewerPortal=new ViewerCommunityPortal(features,community,{...config,redirectUri:process.env.DASHBOARD_REDIRECT_URI?.trim()||config.redirectUri},fetch,vipService,vipExperience,()=>lastStreamSnapshot?{id:lastStreamSnapshot.id,live:lastKnownStreamLive===true}:undefined);
-    dashboard = new DashboardServer(features, () => ({twitchConnected:eventsub.isConnected,channel:config.channelLogin,startedAt:botStartedAt,...queue.snapshot(),chatResponse:chatPolicy.snapshot(),streamLive:lastKnownStreamLive,streamStatusCheckedAt,...(lastStreamSnapshot?{streamSnapshot:{...(lastStreamSnapshot.title?{title:lastStreamSnapshot.title}:{}),...(lastStreamSnapshot.game_name?{gameName:lastStreamSnapshot.game_name}:{}),...(typeof lastStreamSnapshot.viewer_count==='number'?{viewerCount:lastStreamSnapshot.viewer_count}:{}),...(lastStreamSnapshot.started_at?{startedAt:lastStreamSnapshot.started_at}:{})}}:{}),...(lastChatReceiveAt?{lastChatReceiveAt}:{}),...(lastBotChatSendAt?{lastBotChatSendAt}:{}),...(lastBotChatSendErrorAt?{lastBotChatSendErrorAt}:{})}),
+    dashboard = new DashboardServer(features, () => ({twitchConnected:eventsub.isConnected,channel:config.channelLogin,startedAt:botStartedAt,...queue.snapshot(),chatResponse:chatPolicy.snapshot(),streamLive:lastKnownStreamLive,streamStatusCheckedAt,...(lastStreamSnapshot?{streamSnapshot:{...(lastStreamSnapshot.title?{title:lastStreamSnapshot.title}:{}),...(lastStreamSnapshot.game_name?{gameName:lastStreamSnapshot.game_name}:{}),...(typeof lastStreamSnapshot.viewer_count==='number'?{viewerCount:lastStreamSnapshot.viewer_count}:{}),...(lastStreamSnapshot.started_at?{startedAt:lastStreamSnapshot.started_at}:{})}}:{}),...(lastChatReceiveAt?{lastChatReceiveAt}:{}),...(lastEventProcessedAt?{lastEventProcessedAt}:{}),...(lastBotChatSendAt?{lastBotChatSendAt}:{}),...(lastBotChatSendErrorAt?{lastBotChatSendErrorAt}:{})}),
       logger,fetch,()=>community.conversationSpark.snapshot(),channelPoints,()=>oauthServer.startUrlFor('channel-points'),community.miniGames,community.arcade,
       async(message,category)=>{if(!chatPolicy.shouldSend({message,now:Date.now()}))return;await queue.enqueue(message,undefined,category);},chatPolicy,communityTips,automaticChatMessages,songRequests,viewerPortal,community.vault,
       async()=>{const now=Date.now(),settings=community.vault.settings();if(!settings.enabled)return 'Der Community-Tresor ist ausgeschaltet. Aktiviere ihn zuerst in den Einstellungen.';const remaining=community.vault.cooldownRemainingMs(now);if(remaining>0)return `⏳ Der globale Tresor-Cooldown läuft noch ${Math.ceil(remaining/60_000)} Min.`;if(community.vault.isActive(now))return '⏳ Der Tresor läuft bereits.';const stream=await api.getStreamStatus(config.broadcasterUserId);recordStreamStatus(stream);if(!stream)return '📴 Der Twitch-Stream ist derzeit offline.';const active=community.vault.activeViewerCount(now),minimum=settings.minActiveViewers;if(active<minimum)return `⏳ Der Start braucht ${minimum} aktive Zuschauer; aktuell sind ${active} bestätigt.`;const wait=5*60_000-(now-lastSpecialAnnouncementAt);if(wait>0)return `⏳ Nach einer wichtigen Chat-Aktion bitte noch ${Math.ceil(wait/60_000)} Min. warten.`;const game=community.miniGames.snapshot(),drop=community.arcade.snapshot('drop'),wheel=community.arcade.wheelStatus(),dropStatus=(drop.drop as {status?:string}|undefined)?.status;if(game.imposter||game.detective||features.activeQuest()||features.activePoll(now)||features.activeBoss(now)||['announced','claiming','resolving'].includes(dropStatus||'')||wheel.active)return '⏳ Ein anderes Community-Spiel läuft gerade.';if(queue.busy)return '⏳ Der Chat verarbeitet gerade eine wichtige Meldung.';return true;},

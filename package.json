@@ -14,8 +14,9 @@
     "test-mode": "tsx src/main.ts --test",
     "demo:games": "tsx src/mini-games-demo.ts",
     "demo:arcade": "tsx src/community-arcade-demo.ts",
-    "test": "node --import tsx --test src/*.test.ts",
+    "test": "node --import tsx --test src/*.test.ts scripts/*.test.mjs",
     "test:browser": "node --import tsx --test browser-tests/*.browser.test.ts",
+    "release:manifest": "node scripts/create-release-manifest.mjs",
     "check": "npm run build && npm test"
   },
   "dependencies": {

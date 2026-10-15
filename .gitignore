@@ -4,10 +4,9 @@ coverage/
 .env
 .env.*
 !.env.example
-data/*.sqlite
-data/*.sqlite-*
-data/oauth-tokens.json
-data/spotify-tokens.json
-data/*.oauth-state*
+# Runtime-only data can contain databases, OAuth tokens, sessions, state files,
+# and atomic-write temporary files. Keep the whole directory out of Git,
+# including custom filenames supplied through *_TOKEN_FILE settings.
+data/
 backups/
 .DS_Store

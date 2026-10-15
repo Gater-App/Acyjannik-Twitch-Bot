@@ -5,6 +5,8 @@ import BetterSqlite3 from 'better-sqlite3';
 import type { Player } from './types.js';
 import { DEFAULT_8BALL_ANSWERS, LEGACY_DEFAULT_8BALL_ANSWERS } from './eight-ball-answers.js';
 
+export const CURRENT_FEATURE_SCHEMA_VERSION = 32;
+
 export interface SeasonalEvent {
   id: string;
   name: string;
@@ -1988,6 +1990,26 @@ export class FeatureStore {
   }
 
   close(): void { this.db.close(); }
+
+  runtimeHealth(): { sqlite: 'available' | 'unavailable'; schema: 'ready' | 'outdated' | 'missing' | 'unavailable'; schemaVersion: number | null; expectedSchemaVersion: number } {
+    try {
+      this.db.prepare('SELECT 1 AS available').get();
+    } catch {
+      return { sqlite: 'unavailable', schema: 'unavailable', schemaVersion: null, expectedSchemaVersion: CURRENT_FEATURE_SCHEMA_VERSION };
+    }
+    try {
+      const row = this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null };
+      const schemaVersion = row.version ?? 0;
+      return {
+        sqlite: 'available',
+        schema: schemaVersion === CURRENT_FEATURE_SCHEMA_VERSION ? 'ready' : 'outdated',
+        schemaVersion,
+        expectedSchemaVersion: CURRENT_FEATURE_SCHEMA_VERSION,
+      };
+    } catch {
+      return { sqlite: 'available', schema: 'missing', schemaVersion: null, expectedSchemaVersion: CURRENT_FEATURE_SCHEMA_VERSION };
+    }
+  }
 
   private toQuest(row: QuestRow): QuestRecord {
     return { id: row.id, submitterUserId: row.submitter_user_id, displayName: row.display_name, title: row.title,

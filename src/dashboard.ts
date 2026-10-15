@@ -41,7 +41,7 @@ import { VipExperience } from './vip-experience.js';
 import { VIP_ADMIN_CARD, VIP_ADMIN_SCRIPT, VIP_MODERATOR_CARD, VIP_MODERATOR_SCRIPT } from './vip-experience-ui.js';
 
 interface Session { userId: string; login: string; csrf: string; expiresAt: number; role: 'admin'|'moderator'; }
-interface RuntimeStatus { twitchConnected: boolean; channel: string; startedAt: number; lastError?: string; queued?: number; suppressed?: number; streamLive?: boolean|undefined; streamStatusCheckedAt?: number; streamSnapshot?:{title?:string;gameName?:string;viewerCount?:number;startedAt?:string}; lastChatReceiveAt?:number; lastBotChatSendAt?:number; lastBotChatSendErrorAt?:number; chatResponse?: { profile: string; suppressed: number; deferred: number }; }
+interface RuntimeStatus { twitchConnected: boolean; channel: string; startedAt: number; lastError?: string; queued?: number; suppressed?: number; streamLive?: boolean|undefined; streamStatusCheckedAt?: number; streamSnapshot?:{title?:string;gameName?:string;viewerCount?:number;startedAt?:string}; lastChatReceiveAt?:number; lastEventProcessedAt?:number; lastBotChatSendAt?:number; lastBotChatSendErrorAt?:number; chatResponse?: { profile: string; suppressed: number; deferred: number }; }
 interface TokenValidation { client_id: string; user_id: string; login: string; }
 interface HelixUser { id: string; login: string; display_name: string; }
 type DashboardQuestSettings = QuestPolicy & { enabled: boolean; chatEnabled: boolean; channelPointsEnabled: boolean;
@@ -570,7 +570,16 @@ export class DashboardServer {
       this.json(res,200,{enabled:settings.enabled,marker,cooldownUntil,canPrepare:Boolean(settings.enabled&&(!cooldownUntil||cooldownUntil<=Date.now())&&!markerActive)});return;
     }
     if (route === 'overview' && req.method === 'GET') { this.json(res, 200, { admin: { login: session.login }, status: { ...this.store.overview(), ...this.getStatus() } }); return; }
-    if (route === 'status' && req.method === 'GET') { const runtime=this.getStatus();this.json(res,200,{dashboardResponding:true,eventSubSocket:runtime.twitchConnected,chatReceive:runtime.lastChatReceiveAt?'confirmed':'unknown',lastChatReceiveAt:runtime.lastChatReceiveAt??null,botChatSend:runtime.lastBotChatSendAt?'confirmed':'unknown',lastBotChatSendAt:runtime.lastBotChatSendAt??null,lastBotChatSendErrorAt:runtime.lastBotChatSendErrorAt??null,broadcasterOAuth:this.channelPoints?(this.channelPoints.connected()?'connected':'disconnected'):'unknown',errorPresent:Boolean(runtime.lastError),channel:runtime.channel,chatQueue:runtime.queued??0,chatSuppressed:(runtime.suppressed??0)+(runtime.chatResponse?.suppressed??0),chatDeferred:runtime.chatResponse?.deferred??0});return; }
+    if (route === 'status' && req.method === 'GET') {
+      const runtime=this.getStatus(),database=this.store.runtimeHealth();
+      const readiness={state:database.sqlite==='available'&&database.schema==='ready'&&runtime.twitchConnected?'ready':'degraded',
+        checkedAt:Date.now(),sqlite:database.sqlite,schema:database.schema,schemaVersion:database.schemaVersion,
+        expectedSchemaVersion:database.expectedSchemaVersion,eventSub:runtime.twitchConnected?'connected':'disconnected',
+        lastEventProcessedAt:runtime.lastEventProcessedAt??null,
+        chatReceive:runtime.lastChatReceiveAt?'confirmed':'unknown',
+        broadcasterOAuth:this.channelPoints?(this.channelPoints.connected()?'connected':'disconnected'):'not_configured'};
+      this.json(res,200,{dashboardResponding:true,eventSubSocket:runtime.twitchConnected,chatReceive:runtime.lastChatReceiveAt?'confirmed':'unknown',lastChatReceiveAt:runtime.lastChatReceiveAt??null,lastEventProcessedAt:runtime.lastEventProcessedAt??null,readiness,botChatSend:runtime.lastBotChatSendAt?'confirmed':'unknown',lastBotChatSendAt:runtime.lastBotChatSendAt??null,lastBotChatSendErrorAt:runtime.lastBotChatSendErrorAt??null,broadcasterOAuth:this.channelPoints?(this.channelPoints.connected()?'connected':'disconnected'):'unknown',errorPresent:Boolean(runtime.lastError),channel:runtime.channel,chatQueue:runtime.queued??0,chatSuppressed:(runtime.suppressed??0)+(runtime.chatResponse?.suppressed??0),chatDeferred:runtime.chatResponse?.deferred??0});return;
+    }
     if (route === 'streamer-state' && req.method === 'GET') { const runtime=this.getStatus(),now=Date.now(),checked=runtime.streamStatusCheckedAt||0,fresh=Boolean(checked&&now-checked<=90_000),status=fresh?runtime.streamLive===true?'live':runtime.streamLive===false?'offline':'unknown':checked?'stale':'unknown',guess=this.store.state<{expiresAt:number}|null>('guess',null),stream=runtime.streamSnapshot;this.json(res,200,{guess:guess&&guess.expiresAt>now?guess:null,guessEnabled:this.store.config<Record<string,boolean>>('modules',{}).guess!==false,stream:{status,checkedAt:checked||null,details:status==='live'&&stream?{title:stream.title||'',gameName:stream.gameName||'',viewerCount:stream.viewerCount,startedAt:stream.startedAt||''}:null},chat:{receiveAt:runtime.lastChatReceiveAt||null,sendAt:runtime.lastBotChatSendAt||null,sendErrorAt:runtime.lastBotChatSendErrorAt||null}});return; }
     if (route === 'chat-messages' && req.method === 'GET') {
       const policy=this.chatPolicy??new ChatResponsePolicy(this.store.config('chat_response_settings',DEFAULT_CHAT_RESPONSE_SETTINGS));
