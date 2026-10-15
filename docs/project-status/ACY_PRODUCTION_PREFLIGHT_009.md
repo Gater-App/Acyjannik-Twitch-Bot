@@ -31,7 +31,7 @@ Der geschützte Hauptcheckout blieb unverändert auf `feature/halloween-haunted-
 
 Der Imposter-006-Worktree blieb unverändert: Branch `codex/imposter-secret-word-006`, HEAD `f075663790263e59256f49130f00274dd4067fea`, mit bereits vorhandenen uncommitteten Implementierungsdateien, Tests und Screenshots. Keine dieser Änderungen wurde in PR #14 übernommen. Die Migration v33 wurde nicht ausgeführt.
 
-Weitere Worktrees wurden nur inventarisiert. Der alte Integrationscheckout steht weiterhin auf `b311e21` und lag bei der Abschlusskontrolle sieben Commits hinter dem veröffentlichten Integrationsbranch; die Security-004- und Community-007-Checkouts sind sauber. Der temporäre Checkout auf `2270094` hat weiterhin seine vorherigen Screenshot-Änderungen und `node_modules`; die Worktrees `acy-health-proxy` und `acy-release-report` sind sauber. Diese fremden Zustände wurden nicht geändert.
+Weitere Worktrees wurden nur inventarisiert. Der alte Integrationscheckout steht weiterhin auf `b311e21`, liegt hinter dem veröffentlichten Integrationsbranch und wurde nicht angepasst; die Security-004- und Community-007-Checkouts sind sauber. Der temporäre Checkout auf `2270094` hat weiterhin seine vorherigen Screenshot-Änderungen und `node_modules`; die Worktrees `acy-health-proxy` und `acy-release-report` sind sauber. Diese fremden Zustände wurden nicht geändert.
 
 ## 2. Review von PR #14
 
