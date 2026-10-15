@@ -1,6 +1,6 @@
 # ACY Twitch Bot — Feature-Matrix
 
-Stand: 15.10.2026 · Codebasis `9b7e7e7` · Production-Deploy zuletzt `e409596`.
+Stand: 15.10.2026 · Production-Code `2270094` · Caddy-Konfiguration `10e2be7`.
 
 `lokal` und `Production` sind getrennte Aussagen. Ein lokal bestandener Test beweist keine Live-Verfügbarkeit. Details zum Produktionsrelease stehen in [docs/release-report-2026-10-15.md](../release-report-2026-10-15.md).
 
@@ -28,11 +28,11 @@ Stand: 15.10.2026 · Codebasis `9b7e7e7` · Production-Deploy zuletzt `e409596`.
 | OBS-Widgets | PARTIALLY VERIFIED | BLOCKED | Token- und Overlaypfade sowie Wheel-Rendering lokal geprüft. | `src/dashboard.test.ts`, Browser-Wheel-Test; Live-OBS-Endpunkte ohne freigegebenes Widget-Token nicht verifiziert. |
 | EventSub / Reconnect | PARTIALLY VERIFIED | PARTIALLY VERIFIED | Keepalive, Twitch-Reconnect und Backoff im Code; Chatduplikate werden in den nachgelagerten Pfaden geprüft. | `src/eventsub.ts`, `src/eventsub.test.ts`, `src/chat.test.ts`; keine Netzwerklast-/Langzeitmessung. |
 | Neustart / Persistenz / Migrationen | VERIFIED lokal | PARTIALLY VERIFIED | Neustartmarker, sichere einmalige Rückkehr und SQLite-Migrationen 1–32 getestet. | `src/bot-lifecycle.test.ts`, `src/feature-store-migration.test.ts`; Production v32 und SQLite-Integrität wurden beim Release am 15.10. bestätigt. Night-Shift hat keine Live-Migration ausgeführt. |
-| Liveness-Health | VERIFIED lokal nach Night Shift | NOT VERIFIED in Production | Neu ergänzter `GET /health` liefert nur `{status:"alive"}`; kein DB-/Twitch-Abhängigkeitsversprechen. | `src/dashboard.ts`, `src/dashboard.test.ts`; der aktuell laufende Production-Stand antwortete vor Änderung mit 404. |
+| Liveness-Health | VERIFIED | VERIFIED | Öffentlicher `GET /health` liefert nur `{status:"alive"}`; kein DB-/Twitch-Abhängigkeitsversprechen. | `src/dashboard.ts`, `src/dashboard.test.ts`, `ops/Caddyfile.oracle`; Production nach Release 2270094 öffentlich 200. |
 
 ## Abdeckung in diesem Lauf
 
 - Lokaler Build und gesamte Unit-/Integrationssuite: 194/194 bestanden.
 - Playwright-Browserregression: 5/5 bestanden. Echte Klickpfade decken Dashboardnavigation/Logout, Community-Welt Desktop/Mobil, Elio, Chaos-Wheel-OBS und VIP-Lounge ab.
-- Öffentliche Production-GETs: `/` 404; `/dashboard` 302; `/dashboard/login` 302; Callback ohne State 400; `/streamer` 302; `/hilfe` 200; `/community` 200; `/health` 404 vor lokalem Fix.
-- Keine Production-Chat-, Spiel-, OBS-, OAuth-Callback- oder Schreibaktion.
+- Öffentliche Production-GETs nach Deployment: `/health` 200; `/dashboard` 302; `/dashboard/login` 302; Callback ohne Code/State 400; `/streamer` 302; `/hilfe` 200; `/community` 200; Root `/` 404.
+- Kein authentifizierter OAuth-Login und keine Production-Chat-, Spiel- oder OBS-Aktion ausgeführt.

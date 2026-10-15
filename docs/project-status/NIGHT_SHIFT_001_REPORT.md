@@ -114,3 +114,16 @@ Die Route `/health` wurde lokal als `{status:"alive"}` ergänzt, unterstützt nu
 - `docs/project-status/NIGHT_SHIFT_001_REPORT.md`
 
 Die Testsuite hat zusätzlich fest verdrahtete Screenshot-Ausgaben unter `docs/verification/` aktualisiert; die in `artifacts/` vorhandenen 18 Bilder blieben unangetastet. Keine Commits, Pushes, Merges oder Deployments.
+
+## Nachträglicher Release am 15.10.2026
+
+Nach Abschluss des Audits wurde der lokale Korrektursatz auf ausdrückliche Nutzeranweisung veröffentlicht:
+
+- Codecommit `886826ca7bd882eadceb629f86eaaa13f3f27746`, gemerged mit PR #9 als Runtime-Release `22700942de6223d5f83508dd070272605a432e96`.
+- Caddy-Healthroute in PR #10; Merge-Commit `10e2be7ca71130d851eb5e8c7d1ff1728162a953`.
+- Der öffentliche Healthcheck antwortet jetzt mit HTTP 200. Dashboard/Login, Hilfe und Portal verhalten sich mit 302/200 wie erwartet.
+- Der Twitch-Bot läuft online. Die SQLite-Datenbank ist intakt auf Schema 32; es war keine Migration nötig. Der Discord-Prozess behielt PID und Restart-Zähler.
+- Die vollständige Release-Regression auf dem gemergten Stand bestand erneut: Build, 194/194 Tests und 5/5 Browsertests.
+- Es wurde kein authentifizierter OAuth-Login durchgeführt und keine Chatnachricht, kein Spiel und keine OBS-Aktion ausgelöst.
+
+Details, Backup-/Rollback-Pfade und HTTP-Nachweise stehen in [Releasebericht Health-Hotfix](../release-report-2026-10-15-health-hotfix.md).
