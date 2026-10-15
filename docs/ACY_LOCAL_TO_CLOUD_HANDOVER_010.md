@@ -8,6 +8,8 @@ Stand: 15.10.2026. Inventory uses a fresh `git fetch origin`, worktree listing, 
 - PR #12 Security 004: open, branch `codex/security-operations-hardening-004`, HEAD `d9de3b140d99713fe505d502b3a16ca2bd2257b6`.
 - PR #13 Community 007: open, branch `codex/community-live-control-007`, HEAD `2d932530ea69d8f1a8812c86453bb8c9ee6fb641`.
 - PR #14 Integration 008: open, branch `codex/acy-release-integration-008`, HEAD `3c97f3849ffc357efff1aa9dac4f658d5c8f7041`. It remains the existing candidate and is not changed, merged, or deployed by this handover.
+- PR #15 Imposter 006: open draft, branch `codex/imposter-secret-word-006`, HEAD `fbd823e430a650d0536c3852bf70647e9e8ac291`.
+- PR #16 Handover 010: open, branch `codex/safe-local-to-cloud-handover-010`, HEAD `c764f1158c20f28e770d6fb419a60ef932f2d52c`.
 
 ## Worktree inventory
 
@@ -25,6 +27,8 @@ Stand: 15.10.2026. Inventory uses a fresh `git fetch origin`, worktree listing, 
 | `/private/tmp/acy-handover-010` | `codex/safe-local-to-cloud-handover-010` | this handover's documentation and repository instructions | This PR/branch | Yes, documentation only |
 
 `/Users/basti/Documents/ChatGPT/Twitch Bot 2` is a separate empty Git repository with no remote and no commits; it is not a second ACY project checkout. Local refs `ux/dashboard-5.0` and `fix/dashboard-elio-song-requests` contain no commits absent from `origin/main` (ancestry checked). The protected Halloween checkout and its artifacts were not staged, copied, or modified.
+
+The remote HEADs for both newly published branches were independently confirmed with GitHub. PR #15 and #16 currently report no CI checks; their state is open, and #15 is draft.
 
 ## Imposter Secret Word 006 status
 
@@ -46,12 +50,13 @@ See [Codex Cloud setup](operations/ACY_CODEX_CLOUD_HANDOVER.md) and [Oracle infr
 
 ## Tests and release state
 
-- PR #12, #13, and #14 remain open; none was merged in this work.
-- Imposter WIP tests are run in a disposable isolated worktree to preserve its ignored local `dist/` output. Final counts and any browser failure are recorded in the task result before the WIP push.
+- PR #12, #13, and #14 remain open; #15 is a separate open draft and #16 is the open documentation PR. None was merged in this work.
+- Imposter WIP tests ran in a disposable isolated worktree to preserve its ignored local `dist/` output: build and 204/204 tests passed; browser tests 6/6 passed; `git diff --check` passed.
+- New branch commits: WIP `fbd823e430a650d0536c3852bf70647e9e8ac291`; documentation `c764f1158c20f28e770d6fb419a60ef932f2d52c`. Both remote HEADs were independently verified.
 - The separate documentation branch is built from current `origin/main`; it does not alter PR #14.
 - Production runtime evidence remains the 15.10.2026 preflight: Twitch process reported Node 24.21.0 and release directory `2270094-20261015`, SQLite schema 32, PM2 process online; Discord remained a separate Node 22.23.2 PM2 process. Do not describe these as freshly rechecked by this handover.
 - The known Caddy active file differs from repository config; backup age was about ten hours at preflight and restore was not tested. Production readiness is not established by local tests.
 
 ## PC shutdown answer
 
-**JA, für relevante Entwicklungsarbeit** nach erfolgreicher unabhängiger Verifikation der beiden neuen Pushes: Security 004, Community 007, Integration 008 und Preflight 009 sind bereits auf GitHub; Imposter 006 wird separat als WIP gesichert; Screenshot-Modifikationen und `artifacts/` bleiben bewusst lokal und enthalten keine notwendige Quellimplementierung. Vor Abschluss muss der Remote-HEAD jedes neu veröffentlichten Branches unabhängig bestätigt und der Git-Status aller Worktrees erneut geprüft werden. Das sagt nichts über Production-Release-Freigabe aus.
+**JA.** Die relevanten Quelländerungen, Tests und Reports sind auf verifizierten GitHub-Branches. Imposter 006 ist separat im Draft-PR #15 gesichert; die Handover-Dokumentation steht in PR #16. Screenshot-Modifikationen und `artifacts/` bleiben bewusst lokal als nicht benötigte Benutzer-/Debug-Artefakte. Das bestätigt keine Production-Release-Freigabe.

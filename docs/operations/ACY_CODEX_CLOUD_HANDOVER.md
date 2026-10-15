@@ -11,6 +11,8 @@ Open review candidates:
 | [#12](https://github.com/Gater-App/Acyjannik-Twitch-Bot/pull/12) | `codex/security-operations-hardening-004` | Open | Security and operations hardening |
 | [#13](https://github.com/Gater-App/Acyjannik-Twitch-Bot/pull/13) | `codex/community-live-control-007` | Open | Community and live-control polish |
 | [#14](https://github.com/Gater-App/Acyjannik-Twitch-Bot/pull/14) | `codex/acy-release-integration-008` | Open | Existing integration candidate; do not merge or deploy from Cloud |
+| [#15](https://github.com/Gater-App/Acyjannik-Twitch-Bot/pull/15) | `codex/imposter-secret-word-006` | Open, draft | Separate WIP; not release-ready |
+| [#16](https://github.com/Gater-App/Acyjannik-Twitch-Bot/pull/16) | `codex/safe-local-to-cloud-handover-010` | Open | Handover documentation |
 
 Imposter Secret Word 006 is a distinct, unfinished work stream and must not be added to PR #14. Consult this handover's status report for its branch and current verification status.
 
