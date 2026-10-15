@@ -6,10 +6,9 @@ Produktionshost: `https://twitch.gater-app.de`
 
 ## Aktueller Arbeitsstand
 
-- GitHub `main` und lokaler `HEAD`: `9b7e7e7261b116d5530da8c7cf85beb5adff4311`.
-- Produktionsruntime zuletzt nachweislich deployed: `e409596eddf0e579833c295e23f3dce259b541b4` (15.10.2026; siehe [Releasebericht](../release-report-2026-10-15.md)). `main` enthält danach einen Dokumentationsmerge; dieser Night-Shift-Arbeitsstand ist nicht deployed.
+- Produktionsruntime: `22700942de6223d5f83508dd070272605a432e96` (15.10.2026). Der dazugehörige Caddy-Healthpfad wurde mit PR #10, Mergecommit `10e2be7ca71130d851eb5e8c7d1ff1728162a953`, auf `main` veröffentlicht und in Production geladen. Details: [Health-Hotfix-Releasebericht](../release-report-2026-10-15-health-hotfix.md).
 - Arbeitsbaum enthält vorhandene Screenshot-Arbeiten sowie 18 unversionierte Screenshots unter `artifacts/`. Die Browserregression schreibt selbst Dateien nach `docs/verification/`; beim nötigen Browserlauf wurden dadurch mehrere Screenshots erneuert. Sie bleiben ungestaged und uncommitted.
-- Night Shift 001 hat lokale Code- und Statusdokument-Änderungen; nichts wurde committed, gepusht, gemerged oder deployed.
+- Night Shift 001: Codeänderungen wurden mit PR #9 committed, gepusht, gemerged und deployed; der Caddy-Pfad folgte mit PR #10.
 - Build und Unit-/Integrationstests: 194/194 bestanden. Browserregression: 5/5 bestanden.
 
 ## Statusregeln
@@ -23,6 +22,6 @@ Die ausführliche [Feature-Matrix](FEATURE_MATRIX.md), [offene Punkte](OPEN_ISSU
 
 ## Production-Schutz
 
-Der Night-Shift-Lauf hat keine produktiven Daten oder Einstellungen verändert, keine Twitch-Nachrichten oder Spiele ausgelöst und keine Dienste neu gestartet. Es wurden ausschließlich öffentliche GET-Routen gelesen. Der neue `/health`-Liveness-Endpunkt sowie die Imposter-Hinweiskorrektur existieren derzeit nur lokal.
+Der Release hat keine Produktionsmigration ausgeführt und keine SQLite-Datei ersetzt. Das vorhandene Datenbankbackup wurde erstellt und geprüft. Der Twitch-Bot wurde einmal kontrolliert neu gestartet; Caddy wurde nach Konfigurationsprüfung neu geladen. Der separate Discord-Prozess blieb unverändert. Der öffentliche `/health`-Endpunkt meldet ausschließlich HTTP-Prozess-Liveness, nicht Datenbank-, Twitch- oder OBS-Gesundheit. Es wurde kein separates Live-Spiel, keine OBS-Aktion und keine Chatnachricht ausgelöst.
 
-Vor einem späteren Oracle-Release müssen ein neuer geprüfter Commit, Backup-/Rollback-Plan, isolierter Migrationstest bis zur aktuellen Schemaversion 32 sowie ein freigegebener Deployment- und Neustartablauf vorliegen. Twitch-/Spotify-/OBS-Integrationen brauchen separat autorisierte Staging-Zugänge.
+Twitch-/Spotify-/OBS-Integrationen brauchen weiterhin separat autorisierte Staging-Zugänge. Ein authentifizierter Production-Login wurde in diesem Release nicht durchgeführt.
