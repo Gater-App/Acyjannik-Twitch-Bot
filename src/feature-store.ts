@@ -877,6 +877,64 @@ export class FeatureStore {
         INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (32, unixepoch()*1000);
       `))();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 33) {
+      if (currentVersion > 0) this.backupBeforeMigration(33);
+      this.db.transaction(() => this.db.exec(`
+        CREATE TABLE IF NOT EXISTS word_imposter_rounds (
+          id TEXT PRIMARY KEY,
+          phase TEXT NOT NULL CHECK(phase IN ('registration','hints','discussion','voting','guess','results','finished','canceled')),
+          secret_word TEXT NOT NULL,
+          imposter_id TEXT,
+          started_at INTEGER NOT NULL,
+          phase_ends_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          min_players INTEGER NOT NULL CHECK(min_players >= 3),
+          max_players INTEGER NOT NULL CHECK(max_players >= min_players),
+          turn_index INTEGER NOT NULL DEFAULT 0 CHECK(turn_index >= 0),
+          result_json TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS one_live_word_imposter_round
+          ON word_imposter_rounds((1)) WHERE phase IN ('registration','hints','discussion','voting','guess','results');
+        CREATE INDEX IF NOT EXISTS word_imposter_rounds_recent ON word_imposter_rounds(updated_at DESC);
+        CREATE TABLE IF NOT EXISTS word_imposter_players (
+          round_id TEXT NOT NULL REFERENCES word_imposter_rounds(id) ON DELETE CASCADE,
+          user_id TEXT NOT NULL,
+          login TEXT NOT NULL,
+          display_name TEXT NOT NULL,
+          role TEXT NOT NULL CHECK(role IN ('pending','player','imposter')),
+          turn_order INTEGER,
+          joined_at INTEGER NOT NULL,
+          PRIMARY KEY(round_id,user_id),
+          UNIQUE(round_id,turn_order)
+        );
+        CREATE INDEX IF NOT EXISTS word_imposter_players_user ON word_imposter_players(user_id,joined_at DESC);
+        CREATE TABLE IF NOT EXISTS word_imposter_hints (
+          round_id TEXT NOT NULL REFERENCES word_imposter_rounds(id) ON DELETE CASCADE,
+          user_id TEXT NOT NULL,
+          turn_order INTEGER NOT NULL,
+          hint TEXT,
+          status TEXT NOT NULL CHECK(status IN ('pending','published','skipped')),
+          submitted_at INTEGER,
+          published_at INTEGER,
+          PRIMARY KEY(round_id,user_id),
+          UNIQUE(round_id,turn_order),
+          FOREIGN KEY(round_id,user_id) REFERENCES word_imposter_players(round_id,user_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS word_imposter_hints_public ON word_imposter_hints(round_id,status,turn_order);
+        CREATE TABLE IF NOT EXISTS word_imposter_votes (
+          round_id TEXT NOT NULL REFERENCES word_imposter_rounds(id) ON DELETE CASCADE,
+          voter_id TEXT NOT NULL,
+          target_id TEXT NOT NULL,
+          voted_at INTEGER NOT NULL,
+          PRIMARY KEY(round_id,voter_id),
+          FOREIGN KEY(round_id,voter_id) REFERENCES word_imposter_players(round_id,user_id) ON DELETE CASCADE,
+          FOREIGN KEY(round_id,target_id) REFERENCES word_imposter_players(round_id,user_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS word_imposter_votes_tally ON word_imposter_votes(round_id,target_id);
+        INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (33, unixepoch()*1000);
+      `))();
+    }
   }
 
   private backupBeforeMigration(version: number): void {
