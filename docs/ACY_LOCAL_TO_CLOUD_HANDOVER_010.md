@@ -15,20 +15,20 @@ Stand: 15.10.2026. Inventory uses a fresh `git fetch origin`, worktree listing, 
 
 | Local path | Branch / HEAD | Status and purpose | GitHub secured | Cloud recommended |
 |---|---|---|---|---|
-| `/Users/basti/Documents/Codex/2026-10-14/und-gleich-das-erste-problem-das/work/Acyjannik-Twitch-Bot` | `feature/halloween-haunted-house` / `886826ca` | 3 modified verification screenshots and untracked `artifacts/`; protected user checkout | Code on GitHub; local images/artifacts not uploaded | No; preserve locally |
-| `/private/tmp/acy-bot-release-2270094` | detached / `22700942` | 3 modified screenshots and ignored/untracked `node_modules/`; historical release checkout | Base release on GitHub | No; local artifacts only |
-| `/private/tmp/acy-health-proxy` | `fix/health-proxy-route` / `37d9fc4` | clean; merged PR #10 | Yes | No additional work |
-| `/private/tmp/acy-release-report` | `docs/health-hotfix-production-report` / `743795e` | clean; merged PR #11 | Yes | No additional work |
-| `.../work/acy-community-live-control-007` | `codex/community-live-control-007` / `2d932530` | clean; Community 007 | Yes, PR #13 | Yes, as a separate PR |
-| `.../work/acy-imposter-secret-word-006` | `codex/imposter-secret-word-006` / `f075663` | WIP source, tests, status report and two synthetic screenshots; detailed below | Source was local-only at inventory; this handover pushes verified source/test/report files on its own WIP branch | Yes, separate WIP only |
-| `.../work/acy-production-preflight-009` | `codex/acy-production-preflight-009` / `3c97f384` | clean; tracks PR #14 | Yes | Yes, PR #14 only |
-| `.../work/acy-release-integration-008` | `codex/acy-release-integration-008` / `b311e21` | clean; old checkout is 10 commits behind pushed PR branch | Newer branch on GitHub | No; use current PR branch |
-| `.../work/acy-security-operations-hardening-004` | `codex/security-operations-hardening-004` / `d9de3b1` | clean; Security 004 | Yes, PR #12 | Yes, as a separate PR |
+| `/Users/basti/Documents/Codex/2026-10-14/und-gleich-das-erste-problem-das/work/Acyjannik-Twitch-Bot` | `feature/halloween-haunted-house` / `886826ca` | 20 status paths: 3 modified screenshots and untracked `artifacts/`; protected user checkout | Code on GitHub; local images/artifacts not uploaded | No; preserve locally |
+| `/private/tmp/acy-bot-release-2270094` | detached / `22700942` | 4 status entries: 3 modified screenshots and untracked `node_modules`; historical release checkout | Base release on GitHub | No; local artifacts only |
+| `/private/tmp/acy-health-proxy` | `fix/health-proxy-route` / `37d9fc4` | 0; clean, merged PR #10 | Yes | No additional work |
+| `/private/tmp/acy-release-report` | `docs/health-hotfix-production-report` / `743795e` | 0; clean, merged PR #11 | Yes | No additional work |
+| `/Users/basti/Documents/Codex/2026-10-14/und-gleich-das-erste-problem-das/work/acy-community-live-control-007` | `codex/community-live-control-007` / `2d932530` | 0; clean, Community 007 | Yes, PR #13 | Yes, as a separate PR |
+| `/Users/basti/Documents/Codex/2026-10-14/und-gleich-das-erste-problem-das/work/acy-imposter-secret-word-006` | `codex/imposter-secret-word-006` / `fbd823e4` | 2 untracked local screenshot artifacts; source, tests and report committed | Yes, source/test/report on draft PR #15 | Yes, separate WIP only |
+| `/Users/basti/Documents/Codex/2026-10-14/und-gleich-das-erste-problem-das/work/acy-production-preflight-009` | `codex/acy-production-preflight-009` / `3c97f384` | 0; clean, tracks PR #14 branch | Yes | Yes, PR #14 only |
+| `/Users/basti/Documents/Codex/2026-10-14/und-gleich-das-erste-problem-das/work/acy-release-integration-008` | `codex/acy-release-integration-008` / `b311e21` | 0; clean, old checkout is 10 commits behind pushed PR branch | Newer branch on GitHub | No; use current PR branch |
+| `/Users/basti/Documents/Codex/2026-10-14/und-gleich-das-erste-problem-das/work/acy-security-operations-hardening-004` | `codex/security-operations-hardening-004` / `d9de3b1` | 0; clean, Security 004 | Yes, PR #12 | Yes, as a separate PR |
 | `/private/tmp/acy-handover-010` | `codex/safe-local-to-cloud-handover-010` | this handover's documentation and repository instructions | This PR/branch | Yes, documentation only |
 
 `/Users/basti/Documents/ChatGPT/Twitch Bot 2` is a separate empty Git repository with no remote and no commits; it is not a second ACY project checkout. Local refs `ux/dashboard-5.0` and `fix/dashboard-elio-song-requests` contain no commits absent from `origin/main` (ancestry checked). The protected Halloween checkout and its artifacts were not staged, copied, or modified.
 
-The remote HEADs for both newly published branches were independently confirmed with GitHub. PR #15 and #16 currently report no CI checks; their state is open, and #15 is draft.
+The remote HEADs for both newly published branches were independently confirmed with GitHub. Handover branch commit `c764f1158c20f28e770d6fb419a60ef932f2d52c` was followed by `9bce0569294f8d87b5d4dae4909ca3efc1c9f1aa`; that latest remote HEAD was independently confirmed. PR #15 and #16 currently report no CI checks; their state is open, and #15 is draft.
 
 ## Imposter Secret Word 006 status
 
@@ -52,7 +52,7 @@ See [Codex Cloud setup](operations/ACY_CODEX_CLOUD_HANDOVER.md) and [Oracle infr
 
 - PR #12, #13, and #14 remain open; #15 is a separate open draft and #16 is the open documentation PR. None was merged in this work.
 - Imposter WIP tests ran in a disposable isolated worktree to preserve its ignored local `dist/` output: build and 204/204 tests passed; browser tests 6/6 passed; `git diff --check` passed.
-- New branch commits: WIP `fbd823e430a650d0536c3852bf70647e9e8ac291`; documentation `c764f1158c20f28e770d6fb419a60ef932f2d52c`. Both remote HEADs were independently verified.
+- New branch commits: WIP `fbd823e430a650d0536c3852bf70647e9e8ac291`; documentation `c764f1158c20f28e770d6fb419a60ef932f2d52c` followed by `9bce0569294f8d87b5d4dae4909ca3efc1c9f1aa`. Both latest remote HEADs were independently verified.
 - The separate documentation branch is built from current `origin/main`; it does not alter PR #14.
 - Production runtime evidence remains the 15.10.2026 preflight: Twitch process reported Node 24.21.0 and release directory `2270094-20261015`, SQLite schema 32, PM2 process online; Discord remained a separate Node 22.23.2 PM2 process. Do not describe these as freshly rechecked by this handover.
 - The known Caddy active file differs from repository config; backup age was about ten hours at preflight and restore was not tested. Production readiness is not established by local tests.
