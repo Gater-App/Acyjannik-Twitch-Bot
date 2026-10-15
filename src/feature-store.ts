@@ -45,6 +45,18 @@ export interface SparkProposal {
   expiresAt: number; decidedBy: string | null; rejectionReason: string | null;
 }
 
+export type ModerationInboxArea = 'memories' | 'ideas' | 'quests' | 'chat-ideas' | 'quotes' | 'vip';
+export interface ModerationInboxEntry {
+  id: string;
+  area: ModerationInboxArea;
+  status: string;
+  createdAt: number;
+}
+export interface ModerationInboxSnapshot {
+  counts: Record<ModerationInboxArea, number>;
+  items: ModerationInboxEntry[];
+}
+
 export interface QuestRecord {
   id: string;
   submitterUserId: string;
@@ -1266,6 +1278,30 @@ export class FeatureStore {
   questSummary(): Record<string, number> {
     const rows = this.db.prepare('SELECT status,COUNT(*) AS count FROM quests GROUP BY status').all() as Array<{ status: QuestStatus; count: number }>;
     return Object.fromEntries(rows.map((row) => [row.status, row.count]));
+  }
+
+  moderationInbox(limitPerArea = 100): ModerationInboxSnapshot {
+    const limit = Math.max(1, Math.min(250, Math.trunc(limitPerArea)));
+    const counts: ModerationInboxSnapshot['counts'] = {
+      memories: Number((this.db.prepare("SELECT COUNT(*) AS n FROM community_memories WHERE status='pending'").get() as { n: number }).n),
+      ideas: Number((this.db.prepare("SELECT COUNT(*) AS n FROM community_ideas WHERE status IN ('pending','reviewing')").get() as { n: number }).n),
+      quests: Number((this.db.prepare("SELECT COUNT(*) AS n FROM quests WHERE status='pending'").get() as { n: number }).n),
+      'chat-ideas': Number((this.db.prepare("SELECT COUNT(*) AS n FROM spark_proposals WHERE status='pending_approval'").get() as { n: number }).n),
+      quotes: Number((this.db.prepare("SELECT COUNT(*) AS n FROM detective_quotes WHERE status='pending'").get() as { n: number }).n),
+      vip: Number((this.db.prepare("SELECT COUNT(*) AS n FROM vip_chaos_requests WHERE status='pending'").get() as { n: number }).n),
+    };
+    const rows: ModerationInboxEntry[] = [];
+    const append = (area: ModerationInboxArea, values: Array<{ id: string; status: string; createdAt: number }>) => {
+      for (const value of values) rows.push({ ...value, area });
+    };
+    append('memories', this.db.prepare("SELECT id,status,submitted_at AS createdAt FROM community_memories WHERE status='pending' ORDER BY submitted_at DESC LIMIT ?").all(limit) as Array<{ id: string; status: string; createdAt: number }>);
+    append('ideas', this.db.prepare("SELECT id,status,submitted_at AS createdAt FROM community_ideas WHERE status IN ('pending','reviewing') ORDER BY submitted_at DESC LIMIT ?").all(limit) as Array<{ id: string; status: string; createdAt: number }>);
+    append('quests', this.db.prepare("SELECT id,status,submitted_at AS createdAt FROM quests WHERE status='pending' ORDER BY submitted_at DESC LIMIT ?").all(limit) as Array<{ id: string; status: string; createdAt: number }>);
+    append('chat-ideas', this.db.prepare("SELECT id,status,created_at AS createdAt FROM spark_proposals WHERE status='pending_approval' ORDER BY created_at DESC LIMIT ?").all(limit) as Array<{ id: string; status: string; createdAt: number }>);
+    append('quotes', this.db.prepare("SELECT id,status,submitted_at AS createdAt FROM detective_quotes WHERE status='pending' ORDER BY submitted_at DESC LIMIT ?").all(limit) as Array<{ id: string; status: string; createdAt: number }>);
+    append('vip', this.db.prepare("SELECT id,status,created_at AS createdAt FROM vip_chaos_requests WHERE status='pending' ORDER BY created_at DESC LIMIT ?").all(limit) as Array<{ id: string; status: string; createdAt: number }>);
+    rows.sort((a, b) => b.createdAt - a.createdAt);
+    return { counts, items: rows };
   }
 
   editQuest(id: string, title: string, game: string | null, actorId: string, now: number): boolean {
