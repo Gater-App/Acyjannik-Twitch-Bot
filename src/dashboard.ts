@@ -8,6 +8,7 @@ import { SPARK_CARD, SPARK_SCRIPT } from './conversation-spark-ui.js';
 import { MINI_GAME_CARD, MINI_GAME_SCRIPT } from './mini-games-ui.js';
 import { CHANNEL_POINTS_CARD, CHANNEL_POINTS_SCRIPT } from './channel-points-ui.js';
 import type { MiniGames } from './mini-games.js';
+import type { SecretWordImposter, WordImposterSettings } from './secret-word-imposter.js';
 import type { CommunityArcade } from './community-arcade.js';
 import type { ChannelPointsService } from './channel-points.js';
 import { DEFAULT_CHANNEL_POINTS_SETTINGS } from './channel-points.js';
@@ -189,6 +190,7 @@ export class DashboardServer {
     private readonly vipService?:TwitchVipService,
     private readonly vipExperience?:VipExperience,
     private readonly vipAuthorizationUrl?:()=>string,
+    private readonly secretWordImposter?:SecretWordImposter,
   ) { this.adminIds = new Set((process.env.DASHBOARD_ADMIN_IDS || '').split(/[ ,]+/u).filter(Boolean)); }
 
   async start(): Promise<boolean> {
@@ -413,6 +415,7 @@ export class DashboardServer {
         fields:fields.map(({id,title,weight,wheelKey})=>({id,title,weight,wheelKey})),
         selectedKey:spin.challengeId}:null};
     }
+    if(type==='imposter'&&this.secretWordImposter){const wordImposter=this.secretWordImposter.snapshot(Date.now());return {...snapshot,visible:Boolean(snapshot.visible||wordImposter),wordImposter};}
     if(type==='pet'&&this.moderatorPranks){const prank=this.moderatorPranks.snapshot().active as {kind?:string;remainingMs?:number}|null;
       return {...snapshot,prank:prank&&['chief','vault-alarm'].includes(prank.kind||'')?{kind:prank.kind,remainingMs:prank.remainingMs}:null};}
     return snapshot;
@@ -615,7 +618,7 @@ export class DashboardServer {
       const settings = normalizeSparkConfig(this.store.config<unknown>('spark_settings',DEFAULT_SPARK_CONFIG));
       this.json(res, 200, { settings, topics: this.getSparkSnapshot?.() ?? [], pending: this.store.sparkProposals('pending_approval',100).length, proposals: this.store.sparkProposals('all',50), customTopics: this.store.config('spark_topics',[]), cooldowns: [] }); return;
     }
-    if (route === 'minigames' && req.method === 'GET') { this.json(res, 200, this.miniGames?{ settings:this.miniGames.settings(), state:this.miniGames.snapshot(), quotes:this.miniGames.managedQuotes() }:{settings:{enabled:false},state:{imposter:null,detective:null},quotes:[]}); return; }
+    if (route === 'minigames' && req.method === 'GET') { this.json(res, 200, this.miniGames?{ settings:this.miniGames.settings(), state:{...this.miniGames.snapshot(),wordImposter:this.secretWordImposter?.snapshot()||null}, quotes:this.miniGames.managedQuotes(),wordSettings:this.secretWordImposter?.settings()||null,wordState:this.secretWordImposter?.moderationSnapshot()||null }:{settings:{enabled:false},state:{imposter:null,detective:null,wordImposter:null},quotes:[],wordSettings:this.secretWordImposter?.settings()||null,wordState:this.secretWordImposter?.moderationSnapshot()||null}); return; }
     if (route === 'channel-points' && req.method === 'GET') { this.json(res, 200, this.channelPoints
       ? { available:true, settings:this.channelPoints.settings(), connected:this.channelPoints.connected(), message:this.channelPoints.oauthStatusMessage, redemptions:this.store.channelRedemptions(100) }
       : { available:false, settings:DEFAULT_CHANNEL_POINTS_SETTINGS, connected:false, message:'Diese optionale Twitch-Kanalpunkte-Verbindung ist hier nicht eingerichtet.', redemptions:[] }); return; }
@@ -629,7 +632,7 @@ export class DashboardServer {
       const streamLive=streamFresh?runtime.streamLive:undefined;
       const mini=this.miniGames?.snapshot()||{},drop=this.arcade?.snapshot('drop') as {drop?:{status?:string}}|undefined,wheel=this.arcade?.wheelStatus() as {active?:boolean}|undefined;
       const dropStatus=drop?.drop?.status;
-      const busy=Boolean(mini.imposter||mini.detective||this.store.activeQuest()||this.store.activePoll(now)||this.store.activeBoss(now)
+      const busy=Boolean(mini.imposter||mini.detective||this.secretWordImposter?.snapshot(now)||this.store.activeQuest()||this.store.activePoll(now)||this.store.activeBoss(now)
         ||['announced','claiming','resolving'].includes(dropStatus||'')||wheel?.active);
       let reason='Livestatus wird beim Start geprüft.';
       let canStart=true;
@@ -856,7 +859,24 @@ export class DashboardServer {
     }
     if (route === 'minigames/action' && this.miniGames) {
       const action=String(body.action||'');let message='';
-      if(action==='settings'){this.miniGames.updateSettings({...this.miniGames.settings(),enabled:body.enabled===true});}
+      if(action.startsWith('word-')){
+        const game=this.secretWordImposter;if(!game){this.json(res,503,{error:'Das Geheimwort-Spiel ist nicht eingerichtet.'});return;}
+        if(action==='word-save-settings'&&isRecord(body.settings)){try{game.updateSettings(body.settings as unknown as WordImposterSettings);}catch(error){this.json(res,400,{error:error instanceof Error?error.message:'Wortspiel-Einstellungen sind ungültig.'});return;}}
+        else{
+          const result=action==='word-start'?game.start(session.userId,now)
+            :action==='word-start-roles'?game.startRoles(session.userId,now)
+            :action==='word-publish-hint'?game.publishHint(session.userId,now)
+            :action==='word-skip-hint'?game.skipHint(session.userId,now)
+            :action==='word-extend-discussion'?game.extendDiscussion(session.userId,Number(body.seconds||60)*1000,now)
+            :action==='word-start-vote'?game.beginVote(session.userId,now)
+            :action==='word-end-vote'?game.resolveVote(session.userId,now,true)
+            :action==='word-cancel'?game.cancel(session.userId,now):undefined;
+          if(!result){this.json(res,400,{error:'Spielaktion ungültig.'});return;}
+          if(!result.ok){this.json(res,result.status||409,{error:result.message});return;}
+          message=result.message;
+        }
+      }
+      else if(action==='settings'){this.miniGames.updateSettings({...this.miniGames.settings(),enabled:body.enabled===true});}
       else if(action==='save-settings'&&isRecord(body.settings)){this.miniGames.updateSettings(body.settings as never);}
       else if(action==='start-imposter')message=this.miniGames.startImposter(session.userId,now);
       else if(action==='close-imposter')message=this.miniGames.startRoles(session.userId,now);
@@ -905,7 +925,7 @@ export class DashboardServer {
       let gate:boolean|string;try{gate=await this.vaultStartAllowed();}catch{this.json(res,503,{error:'⚠️ Der Livestatus konnte nicht sicher geprüft werden. Bitte später erneut versuchen.'});return;}
       if(gate!==true){this.json(res,409,{error:typeof gate==='string'?gate:'Der Tresor startet nur bei bestätigtem Livestream, genügend aktiven Zuschauern und freiem Spielstatus.'});return;}
       const mini=this.miniGames?.snapshot()||{},drop=this.arcade?.snapshot('drop') as {drop?:{status?:string}}|undefined,wheel=this.arcade?.wheelStatus() as {active?:boolean}|undefined;const dropStatus=drop?.drop?.status;
-      if(mini.imposter||mini.detective||this.store.activeQuest()||this.store.activePoll(now)||this.store.activeBoss(now)||['announced','claiming','resolving'].includes(dropStatus||'')||wheel?.active){this.json(res,409,{error:'⏳ Ein anderes Community-Spiel läuft gerade.'});return;}
+      if(mini.imposter||mini.detective||this.secretWordImposter?.snapshot(now)||this.store.activeQuest()||this.store.activePoll(now)||this.store.activeBoss(now)||['announced','claiming','resolving'].includes(dropStatus||'')||wheel?.active){this.json(res,409,{error:'⏳ Ein anderes Community-Spiel läuft gerade.'});return;}
       const result=this.vault.startManual(now);if(!result.ok){this.json(res,409,{error:result.message});return;}
       try{await this.sendToChat(result.message,'vault');}catch{this.json(res,502,{error:'Tresor-Runde wurde gespeichert, aber die Chatmeldung konnte nicht bestätigt werden. Sie wird nicht automatisch wiederholt.'});return;}
       this.audit(session,'vault-start','community-vault',{},now);this.json(res,200,{ok:true,message:'🔐 Der Community-Tresor wurde gestartet.'});return;

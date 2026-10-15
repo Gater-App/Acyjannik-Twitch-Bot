@@ -5,6 +5,7 @@ import { FeatureStore, type CustomCommand } from './feature-store.js';
 import { QuestPollFeatures } from './quest-poll.js';
 import { ConversationSpark } from './conversation-spark.js';
 import { MiniGames } from './mini-games.js';
+import { SecretWordImposter } from './secret-word-imposter.js';
 import { CommunityArcade } from './community-arcade.js';
 import { CommunityVault } from './community-vault.js';
 import { CommunityHauntedHouse } from './community-haunted-house.js';
@@ -22,6 +23,7 @@ export class CommunityFeatures {
   private readonly questPoll: QuestPollFeatures;
   readonly conversationSpark: ConversationSpark;
   readonly miniGames: MiniGames;
+  readonly secretWordImposter: SecretWordImposter;
   readonly arcade: CommunityArcade;
   readonly vault: CommunityVault;
   readonly moderatorPranks: ModeratorPranks;
@@ -32,12 +34,12 @@ export class CommunityFeatures {
     private readonly config: AppConfig,
     private readonly lookupUser: UserLookup = async () => undefined,
     private readonly random: RandomInclusive = secureRandomInclusive,
-  ) { this.questPoll = new QuestPollFeatures(store, config); this.conversationSpark = new ConversationSpark(store, config.broadcasterUserId); this.miniGames = new MiniGames(store, config); this.arcade = new CommunityArcade(store,config.broadcasterUserId); this.vault = new CommunityVault(store,config.botUserId); this.hauntedHouse=new CommunityHauntedHouse(store); this.moderatorPranks = new ModeratorPranks(store,()=>((this.vault.publicSnapshot().vault as {status?:string}|undefined)?.status==='active'),()=>this.isMajorGameBusy()); }
+  ) { this.questPoll = new QuestPollFeatures(store, config); this.conversationSpark = new ConversationSpark(store, config.broadcasterUserId); this.miniGames = new MiniGames(store, config); this.secretWordImposter=new SecretWordImposter(store,config,(max)=>randomInt(max)); this.arcade = new CommunityArcade(store,config.broadcasterUserId); this.vault = new CommunityVault(store,config.botUserId); this.hauntedHouse=new CommunityHauntedHouse(store); this.moderatorPranks = new ModeratorPranks(store,()=>((this.vault.publicSnapshot().vault as {status?:string}|undefined)?.status==='active'),()=>this.isMajorGameBusy()); }
 
   private isMajorGameBusy():boolean {
     const now=Date.now(),mini=this.miniGames.snapshot(),drop=this.arcade.snapshot('drop'),wheel=this.arcade.wheelStatus();
     const status=(drop.drop as {status?:string}|undefined)?.status;
-    return Boolean(mini.imposter||mini.detective||this.store.activeQuest()||this.store.activePoll(now)||this.store.activeBoss(now)
+    return Boolean(mini.imposter||mini.detective||this.secretWordImposter.snapshot(now)||this.store.activeQuest()||this.store.activePoll(now)||this.store.activeBoss(now)
       ||['announced','claiming','resolving'].includes(status||'')||wheel.active);
   }
 
@@ -77,7 +79,7 @@ export class CommunityFeatures {
     const activeEnabled=Boolean(active&&(active.id==='halloween'||modules.events!==false));
     return {xp:modules.xp!==false,events:activeEnabled,...(activeEnabled&&active?{activeEventId:active.id,activeEventName:active.name,activeEventCommand:active.command}:{}),seasonalEvents:events,
       pet:arcade.petEnabled,petCare:arcade.petEnabled&&!Boolean((this.arcade.snapshot('pet').pet as {paused?:boolean}|undefined)?.paused),
-      drops:arcade.dropsEnabled,wheel:arcade.wheelEnabled,imposter:mini.enabled,detective:mini.enabled,vault:this.vault.settings().enabled,
+      drops:arcade.dropsEnabled,wheel:arcade.wheelEnabled,imposter:mini.enabled,wordImposter:this.secretWordImposter.settings().enabled,detective:mini.enabled,vault:this.vault.settings().enabled,
       quests:modules.quests!==false&&eventSettings.enabled!==false,ideas:modules.ideas!==false&&ideaSettings.enabled!==false&&ideaSettings.chatEnabled!==false,spark:spark.enabled,
       eightBall:modules.eightBall!==false,rps:modules.rps!==false,guess:modules.guess!==false,duels:modules.duels!==false};
   }
@@ -85,7 +87,7 @@ export class CommunityFeatures {
   tick(now = Date.now(), advanceMiniGames = true): string[] { return this.tickMessages(now, advanceMiniGames).map(item => item.message); }
   tickMessages(now = Date.now(), advanceMiniGames = true): OutboundChatMessage[] {
     this.refreshScheduledEvents(now); this.questPoll.tick(now); this.conversationSpark.tick(now); this.moderatorPranks.tick(now);
-    return [...(advanceMiniGames ? this.miniGames.tickMessages(now) : []), ...this.arcade.tickMessages(now), ...this.vault.tickMessages(now)];
+    return [...(advanceMiniGames ? this.miniGames.tickMessages(now) : []), ...(advanceMiniGames?this.secretWordImposter.tickMessages(now):[]), ...this.arcade.tickMessages(now), ...this.vault.tickMessages(now)];
   }
 
   async handle(message: ChatMessage, command: string, args: string[], now = Date.now()): Promise<CommandReply[]> {
@@ -103,6 +105,8 @@ export class CommunityFeatures {
 
     const sparkResponse = await this.conversationSpark.handleCommand(message, command, args, now);
     if (sparkResponse !== undefined) return say(sparkResponse);
+    const wordImposterResponse=this.secretWordImposter.handle(message,command,now);
+    if(wordImposterResponse!==undefined)return say(wordImposterResponse,'imposter');
     const miniGameResponse = this.miniGames.handle(message, command, args, now);
     if (miniGameResponse !== undefined) return say(miniGameResponse);
     const arcadeResponse = this.arcade.handle(message,command,args,now);

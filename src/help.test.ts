@@ -4,7 +4,7 @@ import { DEFAULT_HELP_AVAILABILITY, helpReply, type HelpAvailability } from './h
 import type { ChatMessage } from './types.js';
 
 const viewer:ChatMessage={eventId:'e',broadcasterUserId:'owner',senderUserId:'viewer',senderLogin:'viewer',senderDisplayName:'Viewer',message:'!help',sentAt:1};
-const active:HelpAvailability={...DEFAULT_HELP_AVAILABILITY,xp:true,events:true,activeEventName:'Weihnachten',activeEventCommand:'gift',pet:true,drops:true,wheel:true,imposter:true,detective:true,quests:true,spark:true,eightBall:true,rps:true,guess:true,duels:true};
+const active:HelpAvailability={...DEFAULT_HELP_AVAILABILITY,xp:true,events:true,activeEventName:'Weihnachten',activeEventCommand:'gift',pet:true,drops:true,wheel:true,imposter:true,wordImposter:true,detective:true,quests:true,spark:true,eightBall:true,rps:true,guess:true,duels:true};
 
 test('Chat-Hilfe ist knapp, Aliase funktionieren und nennen nur aktivierte Funktionen',()=>{
   assert.match(helpReply([],viewer,active),/!help spiele.*!help events.*!help xp.*twitch\.gater-app\.de\/hilfe/u);
@@ -13,6 +13,7 @@ test('Chat-Hilfe ist knapp, Aliase funktionieren und nennen nur aktivierte Funkt
   assert.match(helpReply(['wheel'],viewer,active),/!wheel/u);
   assert.match(helpReply(['imposter'],viewer,active),/!joinimposter/u);
   assert.match(helpReply(['imposter'],viewer,active),/!sus @Name im Twitch-Chat ist öffentlich/u);
+  assert.match(helpReply(['imposter'],viewer,active),/!joinword.*!startwordimposter.*community\/imposter-word/u);
   assert.match(helpReply(['events'],viewer,active),/Weihnachten.*!gift/u);
   assert.match(helpReply(['ostern'],viewer,{...active,seasonalEvents:[{id:'easter',name:'Ostern',command:'egghunt',active:true}]}),/Ostern läuft.*!egghunt/u);
   assert.ok(helpReply(['spiele'],viewer,active).length<250);
