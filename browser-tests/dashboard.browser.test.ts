@@ -170,7 +170,8 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     await hintPanel.getByRole('button',{name:'Einstellungen speichern'}).click();
     await page.waitForFunction(async()=>{const d=await(await fetch('/dashboard/api/chat-messages')).json();return d.communityTips?.halloweenEnabled===false&&d.communityTips?.halloweenFrequency==='normal'&&d.communityTips?.enabledCategories?.halloween===false});
     await page.setViewportSize({width:390,height:844});
-    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth+1),'Chat-Hinweise passen mobil ohne seitliches Scrollen');
+    const chatHintsWidth=await page.evaluate(()=>({viewport:document.documentElement.clientWidth,content:document.documentElement.scrollWidth,overflowing:[...document.querySelectorAll('body *')].map(node=>({tag:node.tagName,id:(node as HTMLElement).id,className:typeof(node as HTMLElement).className==='string'?(node as HTMLElement).className:'',right:Math.round(node.getBoundingClientRect().right),width:Math.round(node.getBoundingClientRect().width),scrollWidth:(node as HTMLElement).scrollWidth})).filter(node=>node.right>document.documentElement.clientWidth+1&&node.width>0).sort((a,b)=>b.right-a.right).slice(0,8)}));
+    assert.ok(chatHintsWidth.content<=chatHintsWidth.viewport+1,`Chat-Hinweise passen mobil ohne seitliches Scrollen: ${JSON.stringify(chatHintsWidth)}`);
     if(screenshotDir){await page.screenshot({path:path.join(screenshotDir,'automatic-chat-hints-mobile.png'),fullPage:true});}
     await page.setViewportSize({width:1440,height:1000});
 
