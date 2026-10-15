@@ -90,6 +90,14 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     };
 
     await page.goto(`${base}/dashboard`, { waitUntil: 'domcontentloaded', timeout: 10000 });
+    const portalNavPage=await context.newPage();await portalNavPage.setViewportSize({width:360,height:800});await portalNavPage.goto(`${base}/community`,{waitUntil:'domcontentloaded'});
+    const menuToggle=portalNavPage.locator('#community-menu-toggle');await portalNavPage.getByRole('button',{name:'Menü öffnen'}).click();const communityNav=portalNavPage.getByRole('navigation',{name:'Community'});
+    assert.equal(await communityNav.getByRole('link').count(),8,'Mobile-Menü enthält jeden Community-Bereich');assert.equal(await menuToggle.getAttribute('aria-expanded'),'true');
+    assert.ok(await portalNavPage.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth+1),'Mobile Navigation schneidet nichts horizontal ab');
+    await communityNav.getByRole('link').first().focus();await portalNavPage.keyboard.press('Escape');assert.equal(await menuToggle.getAttribute('aria-expanded'),'false');assert.equal(await menuToggle.evaluate(node=>node===document.activeElement),true,'Escape schließt das Menü und gibt den Fokus an den Schalter zurück');await portalNavPage.close();
+    const inboxPage=await context.newPage();await inboxPage.goto(`${base}/dashboard/moderation`,{waitUntil:'domcontentloaded'});await inboxPage.getByText('1 offene Aufgabe',{exact:true}).waitFor();
+    await inboxPage.locator('#area-filter').selectOption('ideas');await inboxPage.getByRole('link',{name:/Community-Ideen öffnen/u}).click();await inboxPage.waitForURL(/\/dashboard\/ideas\?focus=dashboard-idea-pending/u);
+    await inboxPage.locator('#idea-dashboard-idea-pending').waitFor();await inboxPage.waitForFunction(()=>document.activeElement?.id==='idea-dashboard-idea-pending');assert.equal(await inboxPage.evaluate(()=>document.activeElement?.id),'idea-dashboard-idea-pending','Inbox fokussiert die verknüpfte Moderationsaufgabe');await inboxPage.close();
     const ideasPage=await page.context().newPage();await ideasPage.goto(`${base}/dashboard/ideas`);await ideasPage.getByRole('heading',{name:'💡 Community-Ideen'}).waitFor();
     const ideaCard=ideasPage.locator('.idea').filter({hasText:'Ein Community-Spieleabend im Herbst'});await ideaCard.getByRole('button',{name:'Freigeben'}).click();await ideasPage.getByText('Idee freigegeben.',{exact:true}).waitFor();
     await ideasPage.locator('#filter').selectOption('approved');const ideaCheckboxes=ideasPage.locator('#ideas input[type=checkbox]:not([disabled])');await ideaCheckboxes.nth(0).check();await ideaCheckboxes.nth(1).check();await ideasPage.getByRole('button',{name:'Ausgewählte Ideen zur Abstimmung stellen'}).click();await ideasPage.getByText('Abstimmung gestartet. Der Sieg führt nicht automatisch zu einer Zusage.',{exact:true}).waitFor();assert.equal(store.activePoll()?.options.filter(option=>option.ideaId).length,2);store.endPoll(store.activePoll()!.id,Date.now(),true);await ideasPage.close();
@@ -162,7 +170,8 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     await hintPanel.getByRole('button',{name:'Einstellungen speichern'}).click();
     await page.waitForFunction(async()=>{const d=await(await fetch('/dashboard/api/chat-messages')).json();return d.communityTips?.halloweenEnabled===false&&d.communityTips?.halloweenFrequency==='normal'&&d.communityTips?.enabledCategories?.halloween===false});
     await page.setViewportSize({width:390,height:844});
-    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth+1),'Chat-Hinweise passen mobil ohne seitliches Scrollen');
+    const chatHintsWidth=await page.evaluate(()=>{const panel=document.querySelector('.chat-hint-panel');const ancestors=[];for(let node=panel as HTMLElement|null;node&&ancestors.length<8;node=node.parentElement){const style=getComputedStyle(node);ancestors.push({tag:node.tagName,id:node.id,className:typeof node.className==='string'?node.className:'',left:Math.round(node.getBoundingClientRect().left),right:Math.round(node.getBoundingClientRect().right),width:Math.round(node.getBoundingClientRect().width),clientWidth:node.clientWidth,scrollWidth:node.scrollWidth,boxSizing:style.boxSizing,minWidth:style.minWidth,gridColumns:style.gridTemplateColumns,display:style.display,overflowX:style.overflowX})}return{viewport:document.documentElement.clientWidth,innerWidth,content:document.documentElement.scrollWidth,ancestors,overflowing:[...document.querySelectorAll('body *')].map(node=>({tag:node.tagName,id:(node as HTMLElement).id,className:typeof(node as HTMLElement).className==='string'?(node as HTMLElement).className:'',right:Math.round(node.getBoundingClientRect().right),width:Math.round(node.getBoundingClientRect().width),scrollWidth:(node as HTMLElement).scrollWidth})).filter(node=>node.right>document.documentElement.clientWidth+1&&node.width>0).sort((a,b)=>b.right-a.right).slice(0,8)}});
+    assert.ok(chatHintsWidth.content<=chatHintsWidth.viewport+1,`Chat-Hinweise passen mobil ohne seitliches Scrollen: ${JSON.stringify(chatHintsWidth)}`);
     if(screenshotDir){await page.screenshot({path:path.join(screenshotDir,'automatic-chat-hints-mobile.png'),fullPage:true});}
     await page.setViewportSize({width:1440,height:1000});
 
@@ -430,6 +439,7 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     await streamerPage.context().addCookies([{ name: 'community_admin', value: sessionCookie.split('=')[1], domain: '127.0.0.1', path: '/', httpOnly: true, secure: true, sameSite: 'Lax' }]);
     streamerPage.on('pageerror', (error) => pageErrors.push(error.message));
     await streamerPage.route('**/dashboard/api/minigames', (route) => route.fulfill({ json: { settings: { enabled: true }, state: { imposter: { phase: 'registration', players: [{}, {}], endsAt: Date.now() + 60_000 }, detective: null } } }));
+    let uncertainActionCalls=0;await streamerPage.route('**/dashboard/api/minigames/action',async route=>{uncertainActionCalls++;await new Promise(resolve=>setTimeout(resolve,100));await route.fulfill({status:502,json:{error:'Spielaktion verarbeitet; Chatmeldung nicht bestätigt.',actionApplied:true,chatDelivery:'unknown'}})});
     await streamerPage.goto(`${base}/streamer`, { waitUntil: 'domcontentloaded', timeout: 10000 });
     assert.equal(await streamerPage.getByRole('heading', { name: /Streamer-Steuerung/u }).isVisible(), true);
     await streamerPage.getByRole('heading',{name:'ACY Live Test'}).waitFor({state:'visible'});
@@ -441,6 +451,10 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     assert.equal(await streamerPage.locator('#active button').count(), 0, 'Statusbereich zeigt laufende Spiele ohne doppelte Steuerknöpfe');
     assert.equal(await streamerPage.locator('#games').getByRole('button', { name: 'Rollen verteilen' }).isVisible(), true, 'nächste Imposter-Aktion ist an einer einzigen Stelle verfügbar');
     assert.match(await streamerPage.locator('#stream-status').innerText(), /Zuletzt geprüft/u, 'Twitch-Live-Status zeigt den Prüfzeitpunkt');
+    await streamerPage.locator('#last-updated').getByText(/Zuletzt aktualisiert/u).waitFor();
+    const distribute=streamerPage.getByRole('button',{name:'Rollen verteilen'});await distribute.click();await streamerPage.getByText(/Bitte nicht erneut auslösen/u).waitFor();
+    assert.equal(await distribute.isDisabled(),true,'unsichere externe Bestätigung sperrt eine doppelte Aktion');assert.equal(uncertainActionCalls,1);
+    assert.equal(await streamerPage.locator('#notice').getAttribute('data-state'),'failed');
     for (const [label, width, height] of [['desktop', 1440, 1000], ['tablet', 768, 1024], ['iphone', 390, 844]] as const) {
       await streamerPage.setViewportSize({ width, height });
       const size = await streamerPage.evaluate(() => ({ viewport: document.documentElement.clientWidth, content: document.documentElement.scrollWidth }));

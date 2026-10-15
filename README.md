@@ -245,6 +245,20 @@ angezeigt. Der kurzlebige State liegt separat neben der Token-Datei in einer
 Datei mit Endung `.oauth-state`, wird nach Callback einmalig verbraucht und
 überlebt dadurch einen Bot-Neustart während der Twitch-Anmeldung.
 
+### Lokale Runtime-Secrets
+
+Das Verzeichnis `data/` ist vollständig von Git ausgeschlossen. Dort liegen die
+Twitch-Datei `data/oauth-tokens.json`, ihre Broadcaster- und VIP-Varianten
+`.broadcaster` und `.vip`, die daraus abgeleiteten `.oauth-state`-Dateien samt
+atomaren `.tmp-*`-Schreibdateien sowie `data/spotify-tokens.json`. Dashboard- und
+Imposter-Sitzungen liegen im Arbeitsspeicher beziehungsweise in SQLite; sie
+werden nicht als separate Sitzungsdateien angelegt. Werte für
+`TOKEN_FILE`, `TWITCH_REDEMPTION_TOKEN_FILE`, `TWITCH_VIP_TOKEN_FILE` und
+`SPOTIFY_TOKEN_FILE` sollen innerhalb des Runtime-Verzeichnisses bleiben.
+Git-Ignore-Regeln schützen keine individuell außerhalb des Repositorys
+konfigurierten Dateipfade; solche Dateien müssen außerhalb des Repositories
+abgelegt und durch Dateirechte geschützt werden.
+
 Danach im Dashboard entweder einen **von dieser Twitch-App verwaltbaren**,
 aktivierten Reward mit verpflichtender Texteingabe und manueller
 Einlösungswarteschlange auswählen oder ausdrücklich „Quest für Jannik 🎯“
@@ -503,6 +517,30 @@ docker compose run --rm --no-deps --entrypoint node halloween-bot \
   scripts/restore.mjs /app/backups/DATEINAME.sqlite
 docker compose up -d --build halloween-bot
 ```
+
+### Release-Manifest
+
+Nach dem Build aus dem unveränderten Release-Checkout das Runtime-Artefakt
+prüfbar beschreiben. Die Prüfsumme `sha256-tree-v1` wird aus sortierten
+Artefaktpfaden und den SHA-256-Prüfsummen ihrer Dateien gebildet. Die beiden
+Caddy-Konfigurationen erhalten eigene Prüfsummen. Quelle, Runtime-Commit und
+Deploymentzeit werden als getrennte Felder aufgeführt; ohne explizite
+Deploymentzeit bleibt der Zustand `not_verified`.
+
+```bash
+npm run build
+npm run release:manifest -- --artifact dist \
+  --output ../release-metadata/release-manifest.json \
+  --runtime-commit RUNTIME_COMMIT \
+  --deployed-at 2026-10-15T12:00:00Z
+```
+
+`source.commit` stammt aus `git rev-parse HEAD`; `source.workingTreeClean`
+kennzeichnet, ob der Checkout bei der Manifest-Erstellung sauber war. Das Manifest belegt keine
+Deploymentaktion; `runtime.commit` und `deployedAt` müssen aus dem tatsächlich
+ausgerollten Runtime-Stand und dem Deploy-Protokoll übernommen werden. Die
+Datei enthält keine Credentials und sollte außerhalb des Quell-Repositories
+beim jeweiligen Release-Artefakt abgelegt werden.
 
 `docker compose down -v` löscht die persistenten Volumes und ist für normale
 Updates nicht erforderlich. Updates erfolgen mit `docker compose up -d --build`.

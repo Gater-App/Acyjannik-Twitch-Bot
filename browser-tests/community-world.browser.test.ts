@@ -37,7 +37,7 @@ test('Community-Welt: Elio, Missionen und Trophäen funktionieren am Desktop und
     const livePoll=store.createPoll({type:'chat',question:'Welche Route?',options:[{label:'Waldweg'},{label:'Bergpfad'}],durationMs:60_000,allowVoteChange:false,createdBy:'admin-only',now:Date.now()});assert.ok(livePoll);
     browser=await chromium.launch({headless:true});const page=await browser.newPage({viewport:{width:1365,height:900}});
     await page.context().addCookies([{name:'community_viewer',value:viewerCookie.split('=')[1],domain:'127.0.0.1',path:'/community',httpOnly:true,secure:false,sameSite:'Lax'}]);
-    const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));await page.goto(base+'/community');
+    const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));await page.goto(base+'/community');const openCommunityNav=async()=>{const toggle=page.locator('#community-menu-toggle');if(await toggle.isVisible()&&await toggle.getAttribute('aria-expanded')!=='true')await toggle.click()};
     await page.getByRole('heading',{name:'Live-Entscheidung'}).waitFor();await page.getByRole('button',{name:'Für Bergpfad stimmen'}).click();await page.getByText('Deine Stimme ist gezählt. Sie kann nicht geändert werden.',{exact:true}).waitFor();store.endPoll(livePoll!.id,Date.now());
     await page.getByText('Viewer World',{exact:true}).waitFor();await page.getByRole('heading',{name:'Schön, dass du da bist, Viewer World! 👋'}).waitFor();await page.getByRole('heading',{name:'Elios Zimmer 🐱'}).waitFor();
     await page.getByText(/Heute · Gib Elio Aufmerksamkeit/u).waitFor();
@@ -53,7 +53,7 @@ test('Community-Welt: Elio, Missionen und Trophäen funktionieren am Desktop und
     await page.setViewportSize({width:390,height:844});await page.waitForTimeout(200);
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth+1),'Mobilansicht hat kein horizontales Überlaufen');
     if(screenshots)await page.screenshot({path:path.join(screenshots,'community-world-mobile.png'),fullPage:true});
-    await page.getByRole('link',{name:'Start'}).click();if(screenshots)await page.screenshot({path:path.join(screenshots,'community-world-home-mobile.png'),fullPage:true});
+    await page.getByRole('button',{name:'Menü öffnen'}).click();await page.getByRole('link',{name:'Start'}).click();if(screenshots)await page.screenshot({path:path.join(screenshots,'community-world-home-mobile.png'),fullPage:true});
     await page.setViewportSize({width:1365,height:900});await page.getByRole('link',{name:'Spukhaus 🎃'}).click();await page.getByRole('heading',{name:'Das ACY Spukhaus 🎃'}).waitFor();
     await page.getByText('25 / 100 Runden',{exact:true}).waitFor();await page.getByText('Die Kürbiskammer',{exact:true}).waitFor();assert.equal(await page.getByText('Freigeschaltet',{exact:true}).count(),2);await page.getByText('Der verzauberte Dachboden',{exact:true}).waitFor();
     assert.ok(await page.locator('.house-room.locked').count()===1,'Dachboden bleibt bis zum gemeinsamen Ziel verschlossen');
@@ -64,7 +64,7 @@ test('Community-Welt: Elio, Missionen und Trophäen funktionieren am Desktop und
     if(screenshots)await page.screenshot({path:path.join(screenshots,'haunted-house-mobile.png'),fullPage:true});
     const publicPage=await browser.newPage();await publicPage.goto(base+'/community/haunted-house');await publicPage.getByText('25 / 100 Runden',{exact:true}).waitFor();
     await publicPage.getByText('Melde dich mit Twitch an, um deine Besuche und Abzeichen zu sehen.').waitFor();await publicPage.close();
-    await page.getByRole('link',{name:'Erinnerungen'}).click();await page.getByRole('heading',{name:'Community-Erinnerungen ✨'}).waitFor();
+    await openCommunityNav();await page.getByRole('link',{name:'Erinnerungen'}).click();await page.getByRole('heading',{name:'Community-Erinnerungen ✨'}).waitFor();
     await page.locator('#memory-form [name=text]').fill('Die Community hat den Endboss gemeinsam besiegt!');await page.locator('#memory-form [name=category]').selectOption('gaming');
     await page.locator('#memory-form [name=event]').fill('Browser-Test');await page.locator('#memory-form [name=clipUrl]').fill('https://clips.twitch.tv/FriendlyClipSlug123');
     const memoryResponses:string[]=[];page.on('response',response=>{if(response.url().includes('/community/api/memories'))memoryResponses.push(`${response.status()} ${response.url()}`)});
@@ -75,7 +75,7 @@ test('Community-Welt: Elio, Missionen und Trophäen funktionieren am Desktop und
     await page.locator('#memory-filters [name=category]').selectOption('gaming');await page.locator('#memory-filters [name=event]').selectOption('Browser-Test');
     await page.locator('#memory-list').getByText('Die Community hat den Endboss gemeinsam besiegt!',{exact:true}).waitFor();
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth+1),'Erinnerungswand läuft mobil nicht horizontal über');
-    await page.getByRole('link',{name:'💡 Ideen'}).click();await page.getByRole('heading',{name:'Community-Ideen 💡'}).waitFor();
+    await openCommunityNav();await page.getByRole('link',{name:'💡 Ideen'}).click();await page.getByRole('heading',{name:'Community-Ideen 💡'}).waitFor();
     const ideaText='Ein gemeinsamer gemütlicher Community-Spieleabend mit wechselnden Spielen';await page.locator('#idea-form textarea').fill(ideaText);
     const ideaResponses:string[]=[];page.on('response',response=>{if(response.url().includes('/community/api/ideas'))ideaResponses.push(`${response.status()} ${response.url()}`)});
     await page.locator('#idea-form button[type=submit]').click();await page.getByText('Danke! Deine Idee ist gespeichert und wartet auf die Moderation.',{exact:true}).waitFor();

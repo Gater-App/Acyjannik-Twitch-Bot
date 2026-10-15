@@ -5,6 +5,8 @@ import BetterSqlite3 from 'better-sqlite3';
 import type { Player } from './types.js';
 import { DEFAULT_8BALL_ANSWERS, LEGACY_DEFAULT_8BALL_ANSWERS } from './eight-ball-answers.js';
 
+export const CURRENT_FEATURE_SCHEMA_VERSION = 32;
+
 export interface SeasonalEvent {
   id: string;
   name: string;
@@ -43,6 +45,18 @@ export interface SparkProposal {
   id: string; channelId: string; topicId: string; topicLabel: string; score: number; participants: number;
   messages: number; actionType: 'question' | 'poll' | 'quest' | 'challenge'; suggestionText?: string | null; status: SparkStatus; createdAt: number;
   expiresAt: number; decidedBy: string | null; rejectionReason: string | null;
+}
+
+export type ModerationInboxArea = 'memories' | 'ideas' | 'quests' | 'chat-ideas' | 'quotes' | 'vip';
+export interface ModerationInboxEntry {
+  id: string;
+  area: ModerationInboxArea;
+  status: string;
+  createdAt: number;
+}
+export interface ModerationInboxSnapshot {
+  counts: Record<ModerationInboxArea, number>;
+  items: ModerationInboxEntry[];
 }
 
 export interface QuestRecord {
@@ -1268,6 +1282,30 @@ export class FeatureStore {
     return Object.fromEntries(rows.map((row) => [row.status, row.count]));
   }
 
+  moderationInbox(limitPerArea = 100): ModerationInboxSnapshot {
+    const limit = Math.max(1, Math.min(250, Math.trunc(limitPerArea)));
+    const counts: ModerationInboxSnapshot['counts'] = {
+      memories: Number((this.db.prepare("SELECT COUNT(*) AS n FROM community_memories WHERE status='pending'").get() as { n: number }).n),
+      ideas: Number((this.db.prepare("SELECT COUNT(*) AS n FROM community_ideas WHERE status IN ('pending','reviewing')").get() as { n: number }).n),
+      quests: Number((this.db.prepare("SELECT COUNT(*) AS n FROM quests WHERE status='pending'").get() as { n: number }).n),
+      'chat-ideas': Number((this.db.prepare("SELECT COUNT(*) AS n FROM spark_proposals WHERE status='pending_approval'").get() as { n: number }).n),
+      quotes: Number((this.db.prepare("SELECT COUNT(*) AS n FROM detective_quotes WHERE status='pending'").get() as { n: number }).n),
+      vip: Number((this.db.prepare("SELECT COUNT(*) AS n FROM vip_chaos_requests WHERE status='pending'").get() as { n: number }).n),
+    };
+    const rows: ModerationInboxEntry[] = [];
+    const append = (area: ModerationInboxArea, values: Array<{ id: string; status: string; createdAt: number }>) => {
+      for (const value of values) rows.push({ ...value, area });
+    };
+    append('memories', this.db.prepare("SELECT id,status,submitted_at AS createdAt FROM community_memories WHERE status='pending' ORDER BY submitted_at DESC LIMIT ?").all(limit) as Array<{ id: string; status: string; createdAt: number }>);
+    append('ideas', this.db.prepare("SELECT id,status,submitted_at AS createdAt FROM community_ideas WHERE status IN ('pending','reviewing') ORDER BY submitted_at DESC LIMIT ?").all(limit) as Array<{ id: string; status: string; createdAt: number }>);
+    append('quests', this.db.prepare("SELECT id,status,submitted_at AS createdAt FROM quests WHERE status='pending' ORDER BY submitted_at DESC LIMIT ?").all(limit) as Array<{ id: string; status: string; createdAt: number }>);
+    append('chat-ideas', this.db.prepare("SELECT id,status,created_at AS createdAt FROM spark_proposals WHERE status='pending_approval' ORDER BY created_at DESC LIMIT ?").all(limit) as Array<{ id: string; status: string; createdAt: number }>);
+    append('quotes', this.db.prepare("SELECT id,status,submitted_at AS createdAt FROM detective_quotes WHERE status='pending' ORDER BY submitted_at DESC LIMIT ?").all(limit) as Array<{ id: string; status: string; createdAt: number }>);
+    append('vip', this.db.prepare("SELECT id,status,created_at AS createdAt FROM vip_chaos_requests WHERE status='pending' ORDER BY created_at DESC LIMIT ?").all(limit) as Array<{ id: string; status: string; createdAt: number }>);
+    rows.sort((a, b) => b.createdAt - a.createdAt);
+    return { counts, items: rows };
+  }
+
   editQuest(id: string, title: string, game: string | null, actorId: string, now: number): boolean {
     if (!title.trim() || title.length > 240 || (game !== null && game.length > 80)) return false;
     return this.db.transaction(() => {
@@ -1988,6 +2026,26 @@ export class FeatureStore {
   }
 
   close(): void { this.db.close(); }
+
+  runtimeHealth(): { sqlite: 'available' | 'unavailable'; schema: 'ready' | 'outdated' | 'missing' | 'unavailable'; schemaVersion: number | null; expectedSchemaVersion: number } {
+    try {
+      this.db.prepare('SELECT 1 AS available').get();
+    } catch {
+      return { sqlite: 'unavailable', schema: 'unavailable', schemaVersion: null, expectedSchemaVersion: CURRENT_FEATURE_SCHEMA_VERSION };
+    }
+    try {
+      const row = this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null };
+      const schemaVersion = row.version ?? 0;
+      return {
+        sqlite: 'available',
+        schema: schemaVersion === CURRENT_FEATURE_SCHEMA_VERSION ? 'ready' : 'outdated',
+        schemaVersion,
+        expectedSchemaVersion: CURRENT_FEATURE_SCHEMA_VERSION,
+      };
+    } catch {
+      return { sqlite: 'available', schema: 'missing', schemaVersion: null, expectedSchemaVersion: CURRENT_FEATURE_SCHEMA_VERSION };
+    }
+  }
 
   private toQuest(row: QuestRow): QuestRecord {
     return { id: row.id, submitterUserId: row.submitter_user_id, displayName: row.display_name, title: row.title,

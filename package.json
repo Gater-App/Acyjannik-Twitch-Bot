@@ -14,12 +14,13 @@
     "test-mode": "tsx src/main.ts --test",
     "demo:games": "tsx src/mini-games-demo.ts",
     "demo:arcade": "tsx src/community-arcade-demo.ts",
-    "test": "node --import tsx --test src/*.test.ts",
+    "test": "node --import tsx --test src/*.test.ts scripts/*.test.mjs",
     "test:browser": "node --import tsx --test browser-tests/*.browser.test.ts",
+    "release:manifest": "node scripts/create-release-manifest.mjs",
     "check": "npm run build && npm test"
   },
   "dependencies": {
-    "better-sqlite3": "^12.4.1",
+    "better-sqlite3": "^13.0.3",
     "dotenv": "^17.2.2",
     "ws": "^8.18.3"
   },
@@ -30,5 +31,9 @@
     "playwright": "^1.64.0",
     "tsx": "^4.20.5",
     "typescript": "^5.9.3"
+  },
+  "allowScripts": {
+    "better-sqlite3@13.0.3": true,
+    "esbuild@0.28.2": true
   }
 }
