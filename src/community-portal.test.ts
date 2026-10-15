@@ -19,7 +19,7 @@ function cookies(response:Response):string[]{const h=response.headers as Headers
 
 test('Community portal serves an independent mobile-first shell and keeps private APIs read-only without login',async()=>{
   const html=renderCommunityPage('/community/imposter','test-nonce');
-  assert.match(html,/Chat-Imposter/);assert.match(html,/Jetzt mitspielen/);assert.match(html,/@media\(max-width:760px\)/);assert.match(html,/name="viewport"/);
+  assert.match(html,/Chat-Imposter/);assert.match(html,/Jetzt mitspielen/);assert.match(html,/Stimmen mit <strong>!sus @Name<\/strong> im Twitch-Chat sind öffentlich/u);assert.match(html,/@media\(max-width:760px\)/);assert.match(html,/name="viewport"/);
   assert.doesNotMatch(html,/dashboard\/api|community_admin|Twitch-ID/u);
   const scripts=[...html.matchAll(/<script nonce="[^"]+">([\s\S]*?)<\/script>/gu)];assert.equal(scripts.length,1);for(const [,script] of scripts)new vm.Script(script||'');
   const env={...process.env},directory=fs.mkdtempSync(path.join(os.tmpdir(),'community-public-')),database=path.join(directory,'state.sqlite'),db=new FeatureStore(database);

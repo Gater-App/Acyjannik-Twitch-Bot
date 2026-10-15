@@ -231,6 +231,10 @@ export class DashboardServer {
     this.headers(res);
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
     const clientIp = trustedClientAddress(req);
+    if (url.pathname === '/health') {
+      if (req.method !== 'GET') { res.statusCode=405;res.setHeader('Allow','GET');res.setHeader('Content-Type','text/plain; charset=utf-8');res.end('Nur lesender Aufruf erlaubt.');return; }
+      res.statusCode=200;res.setHeader('Cache-Control','no-store');res.setHeader('Content-Type','application/json; charset=utf-8');res.end(JSON.stringify({status:'alive'}));return;
+    }
     if (this.viewerPortal?.handles(url.pathname)) { await this.viewerPortal.handle(req,res,url); return; }
     if (url.pathname === '/hilfe') {
       if (this.rejectRateLimit(res, this.rates.consume('public-help', clientIp, 90, 60_000), 'Zu viele Hilfeaufrufe. Bitte kurz warten.')) return;
