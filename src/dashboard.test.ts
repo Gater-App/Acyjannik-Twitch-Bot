@@ -37,7 +37,7 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
   const port = await freePort();
   process.env.TWITCH_CLIENT_ID = 'test-client'; process.env.TWITCH_CLIENT_SECRET = 'test-secret';
   process.env.DASHBOARD_REDIRECT_URI = 'https://bot.example.test/dashboard/oauth/callback';
-  process.env.DASHBOARD_ADMIN_IDS = 'admin-id'; process.env.DASHBOARD_HOST = '127.0.0.1'; process.env.DASHBOARD_PORT = String(port);
+  process.env.DASHBOARD_ADMIN_IDS = 'admin-id'; process.env.AUTHORIZED_MODERATOR_IDS='moderator-id'; process.env.DASHBOARD_HOST = '127.0.0.1'; process.env.DASHBOARD_PORT = String(port);
   let verifiedUserId = 'admin-id';
   const fetchImpl: typeof fetch = async (input, init) => {
     const url = String(input);
@@ -354,6 +354,26 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.equal(store.config<Record<string, unknown>>('poll_settings', {}).durationMs, 60_000);
 
     const policy = { maxLength: 180, queueLimit: 20, maxOpenPerUser: 2, cooldownMs: 60_000, activeDurationMs: 0, completionXp: 25 };
+    const inboxNow=Date.now();
+    assert.equal(store.submitCommunityMemory({id:'moderation-inbox-memory',userId:'inbox-memory-user',displayName:'MemoryUser',body:'PRIVATE MEMORY BODY SHOULD NOT LEAVE ITS QUEUE',clipUrl:null,category:'community',eventName:null,now:inboxNow}),true);
+    assert.equal(store.submitCommunityIdea({id:'moderation-inbox-idea',userId:'inbox-idea-user',displayName:'IdeaUser',text:'PRIVATE IDEA BODY SHOULD NOT LEAVE ITS QUEUE',now:inboxNow}).ok,true);
+    const inboxQuest=store.submitQuest({submitterUserId:'inbox-quest-user',displayName:'QuestUser',title:'PRIVATE QUEST TITLE SHOULD NOT LEAVE ITS QUEUE',source:'chat'},policy,inboxNow);assert.equal(inboxQuest.ok,true);if(!inboxQuest.ok)throw new Error('Inbox-Testquest konnte nicht erstellt werden.');
+    const inboxPage=await fetch(`${base}/dashboard/moderation`,{headers:{Cookie:sessionCookie}});assert.equal(inboxPage.status,200);assert.match(await inboxPage.text(),/Moderationsübersicht/u);
+    const inboxResponse=await fetch(`${base}/dashboard/api/moderation/inbox`,{headers:{Cookie:sessionCookie}});assert.equal(inboxResponse.status,200);
+    const inboxBody=await inboxResponse.text(),inboxData=JSON.parse(inboxBody) as {total:number;counts:Record<string,number>;items:Array<{id:string;area:string;status:string;href:string}>};
+    assert.equal(inboxData.counts.memories,1);assert.equal(inboxData.counts.ideas,1);assert.equal(inboxData.counts.quests,1);assert.equal(inboxData.total,3);
+    assert.doesNotMatch(inboxBody,/PRIVATE (?:MEMORY BODY|IDEA BODY|QUEST TITLE)/u,'Inbox liefert nur Aufgabenmetadaten und keine geschützten Einreichungstexte');
+    assert.equal(inboxData.items.find(item=>item.area==='quests')?.href,`/dashboard?focus=${encodeURIComponent(inboxQuest.quest.id)}#community/quests`,'Quest-Link öffnet direkt die konkrete Aufgabe');
+    const duplicateIdea=()=>fetch(`${base}/dashboard/api/ideas`,{method:'POST',headers:{Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({id:'moderation-inbox-idea',action:'approve'})});
+    assert.equal((await duplicateIdea()).status,200);assert.equal((await duplicateIdea()).status,409,'ein zweiter Moderator kann dieselbe Idee nicht erneut übernehmen');
+    verifiedUserId='moderator-id';const moderatorLogin=await fetch(`${base}/dashboard/login`,{redirect:'manual'}),moderatorState=new URL(moderatorLogin.headers.get('location')||'').searchParams.get('state')||'',moderatorStateCookie=moderatorLogin.headers.get('set-cookie')?.split(';')[0]||'';
+    const moderatorCallback=await fetch(`${base}/dashboard/oauth/callback?code=x&state=${moderatorState}`,{headers:{Cookie:moderatorStateCookie},redirect:'manual'});assert.equal(moderatorCallback.status,303);
+    const moderatorCookie=moderatorCallback.headers.getSetCookie().find(value=>value.startsWith('community_admin='))?.split(';')[0]||'';
+    const moderatorInboxResponse=await fetch(`${base}/dashboard/api/moderation/inbox`,{headers:{Cookie:moderatorCookie}});assert.equal(moderatorInboxResponse.status,200);
+    const moderatorInbox=await moderatorInboxResponse.json() as {total:number;counts:Record<string,number>;items:Array<{area:string}>};
+    assert.ok(moderatorInbox.items.every(item=>['ideas','memories','vip'].includes(item.area)),'Moderatoren erhalten nur Bereiche, die ihre Rolle tatsächlich bearbeiten darf');
+    assert.equal(moderatorInbox.counts.quests,undefined);assert.equal((await fetch(`${base}/dashboard/api/quests`,{headers:{Cookie:moderatorCookie}})).status,403);
+    verifiedUserId='admin-id';
     const quest = store.submitQuest({ submitterUserId: 'viewer-id', displayName: 'Viewer', title: 'Nächste Runde nur Pistolen', source: 'chat' }, policy, Date.now());
     assert.equal(quest.ok, true);
     if (!quest.ok) throw new Error('Widget-Testquest konnte nicht erstellt werden.');
