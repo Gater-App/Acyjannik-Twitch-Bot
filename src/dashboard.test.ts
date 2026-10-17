@@ -130,6 +130,15 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.match(html,/dashboardPollVisible/u);assert.match(html,/Retry-After/u);assert.doesNotMatch(html,/setInterval\(refreshMini,3000\)|setInterval\(update,3000\)/u,'veraltete aggressive Minispiel-/Streamer-Polls sind nicht mehr aktiv');
     const csrf = html.match(/name="csrf" content="([a-f0-9]+)"/u)?.[1] || '';
     assert.ok(csrf);
+    const discordPage=await fetch(`${base}/dashboard/discord`,{headers:{Cookie:sessionCookie}});assert.equal(discordPage.status,200);
+    const discordHtml=await discordPage.text();assert.match(discordHtml,/name="mentionLevels"/u);assert.match(discordHtml,/Betroffene verknüpfte Person erwähnen/u);assert.match(discordHtml,/@everyone benachrichtigen/u);
+    const discordSettingsResponse=await fetch(`${base}/dashboard/api/discord`,{headers:{Cookie:sessionCookie}});assert.equal(discordSettingsResponse.status,200);
+    const discordSettings=(await discordSettingsResponse.json() as {settings:Record<string,unknown>}).settings;
+    assert.equal(discordSettings.mentionLevels,'none');assert.equal(discordSettings.mentionLive,'none','bestehende Konfiguration erhält keine Erwähnung als impliziten Standard');
+    const saveDiscordMentions=await fetch(`${base}/dashboard/api/discord/settings`,{method:'POST',headers:{Cookie:sessionCookie,Origin:base,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({...discordSettings,mentionLevels:'user',mentionLive:'everyone'})});
+    assert.equal(saveDiscordMentions.status,200,await saveDiscordMentions.clone().text());
+    const invalidDiscordMentions=await fetch(`${base}/dashboard/api/discord/settings`,{method:'POST',headers:{Cookie:sessionCookie,Origin:base,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({...discordSettings,mentionSeasonal:'user'})});
+    assert.equal(invalidDiscordMentions.status,400,'nur Levelmeldungen dürfen eine einzelne Person auswählen; @everyone muss ausdrücklich gesetzt werden');
     assert.match(html,/Magic 8-Ball/u);assert.match(html,/Sichere Antwort-Vorschau/u);
     const eightBallState=await fetch(`${base}/dashboard/api/eight-ball`,{headers:{Cookie:sessionCookie}});
     assert.equal(eightBallState.status,200);assert.deepEqual((await eightBallState.json() as any).distribution,{yes:40,no:40,maybe:20});

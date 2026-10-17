@@ -116,6 +116,30 @@ test('Discord outbox retries with bounded backoff and moves exhausted deliveries
   }finally{store.close();}
 });
 
+test('Discord mention policy is snapshotted, defaults quiet, and exposes only the linked Discord recipient',()=>{
+  const store=new FeatureStore(':memory:');
+  try{
+    const discordUserId='1206225751544832053',twitchUserId='linked-level-user';
+    const tokenHash='a'.repeat(64),stateHash='b'.repeat(64);
+    store.setConfig('discord_integration',{enabled:true,accountLinkEnabled:true,notifyLevels:true,notifySeasonal:true,mentionLevels:'user',mentionSeasonal:'everyone'});
+    store.createCommunityAccountLinkIntent({tokenHash,discordUserId,createdAt:1000,expiresAt:601000});
+    assert.equal(store.beginCommunityAccountLinkOAuthState({stateHash,tokenHash,expiresAt:601000,now:1000}),true);
+    assert.equal(store.completeCommunityAccountLink({stateHash,twitchUserId,now:2000}),'linked');
+    store.awardXp('mention-level-event',twitchUserId,'Community-Mitglied',100,'activity',3000);
+    const level=store.discordOutboxBatch(3000,5).find(event=>event.type==='level.up');assert.ok(level);
+    assert.deepEqual((level.payload as {discordMention:unknown}).discordMention,{mode:'user',discordUserId});
+    assert.equal(JSON.stringify(level.payload).includes(twitchUserId),false,'Twitch-ID bleibt im Twitch-System und wird nicht an Discord übertragen');
+    store.setConfig('discord_integration',{enabled:true,accountLinkEnabled:true,notifyLevels:true,notifySeasonal:true,mentionLevels:'none',mentionSeasonal:'everyone'});
+    store.recordCommunityEvent('seasonal.event.started',{id:'halloween',name:'Halloween'},4000);
+    const seasonal=store.discordOutboxBatch(4000,5).find(event=>event.type==='seasonal.event');assert.ok(seasonal);
+    assert.deepEqual((seasonal.payload as {discordMention:unknown}).discordMention,{mode:'everyone'},'Erwähnungsregel bleibt am Ereignis festgeschrieben');
+    store.setConfig('discord_integration',{enabled:true,notifyQuests:true});
+    store.recordCommunityEvent('quest.status.changed',{id:'quest-quiet',title:'Gemeinsam spielen',status:'completed'},5000);
+    const quest=store.discordOutboxBatch(5000,5).find(event=>event.type==='quest.completed');assert.ok(quest);
+    assert.deepEqual((quest.payload as {discordMention:unknown}).discordMention,{mode:'none'},'fehlende Altkonfiguration bleibt standardmäßig still');
+  }finally{store.close();}
+});
+
 test('live-state outbox creates one announcement, coalesces stable polls, and updates only changed stream metadata',()=>{
   const store=new FeatureStore(':memory:');
   try{
