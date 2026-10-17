@@ -1194,9 +1194,9 @@ export class FeatureStore {
 
   private enqueueDiscordEvent(type:string,aggregateId:string,payload:unknown,now:number):string {
     const settings=this.config<Record<string,unknown>>('discord_integration',{});
-    const toggle=type.startsWith('idea.')?'notifyIdeas':type==='level.up'?'notifyLevels':type==='mystery.drop'?'notifyDrops':type.startsWith('mystery.drop.')?'discordDropsEnabled':type==='quest.completed'?'notifyQuests':type==='seasonal.event'?'notifySeasonal':type.startsWith('twitch.live')?'notifyLive':null;
+    const toggle=type.startsWith('idea.')?'notifyIdeas':type==='level.up'?'notifyLevels':type==='mystery.drop'?'notifyDrops':type.startsWith('mystery.drop.')?'discordDropsEnabled':type.startsWith('quest.')?'notifyQuests':type==='elio.rare'?'notifyElioEvents':type==='chaos-wheel.action'?'notifyChaosWheel':type==='seasonal.event'?'notifySeasonal':type.startsWith('twitch.live')?'notifyLive':null;
     if(settings.enabled!==true||!toggle||settings[toggle]!==true)return '';
-    const category=type.startsWith('idea.')?'Ideas':type==='level.up'?'Levels':type.startsWith('mystery.drop')?'Drops':type==='quest.completed'?'Quests':type==='seasonal.event'?'Seasonal':'Live';
+    const category=type.startsWith('idea.')?'Ideas':type==='level.up'?'Levels':type.startsWith('mystery.drop')?'Drops':type.startsWith('quest.')?'Quests':type==='elio.rare'?'Elio':type==='chaos-wheel.action'?'ChaosWheel':type==='seasonal.event'?'Seasonal':'Live';
     const configured=settings[`mention${category}`],mode=category==='Levels'&&configured==='user'?'user':configured==='everyone'?'everyone':'none';
     const data=payload&&typeof payload==='object'&&!Array.isArray(payload)?payload as Record<string,unknown>:{};
     const mention:{mode:'none'|'everyone'|'user';discordUserId?:string}={mode};
@@ -1245,18 +1245,30 @@ export class FeatureStore {
       .run(now,id).changes===1;
   }
 
-  recordDiscordLiveTransition(live:boolean,stream:{id:string;title?:string;game_name?:string}|undefined,now:number):void {
+  recordDiscordLiveTransition(live:boolean,stream:{id:string;title?:string;game_name?:string;viewer_count?:number;started_at?:string;thumbnail_url?:string;profile_image_url?:string}|undefined,now:number):void {
     this.db.transaction(()=>{
-      const settings=this.config<{enabled?:boolean;notifyLive?:boolean;liveUpdateEnabled?:boolean}>('discord_integration',{});
-      const previous=this.state<{live:boolean;streamId?:string|null;title?:string;gameName?:string;discordEnabled?:boolean;notifyLive?:boolean}|null>('discord_live_state',null);
+      const settings=this.config<{enabled?:boolean;notifyLive?:boolean;liveUpdateEnabled?:boolean;liveUpdateIntervalSeconds?:number}>('discord_integration',{});
+      const previous=this.state<{live:boolean;streamId?:string|null;title?:string;gameName?:string;discordEnabled?:boolean;notifyLive?:boolean;lastDiscordUpdateAt?:number;viewerCount?:number;startedAt?:string;thumbnailUrl?:string;profileImageUrl?:string}|null>('discord_live_state',null);
       const streamId=live?stream?.id||null:null,title=live?stream?.title||'':previous?.title||'',gameName=live?stream?.game_name||'':previous?.gameName||'';
       const sameStream=Boolean(live&&previous?.live&&streamId&&previous.streamId===streamId);
-      if(previous?.live&&!live){this.enqueueDiscordEvent('twitch.live',`${previous.streamId||'stream'}:ended`,{active:false,streamId:previous.streamId||null,title:previous.title||'',gameName:previous.gameName||''},now);}
-      else if(live&&(!previous?.live||!sameStream||((!previous.discordEnabled||!previous.notifyLive)&&(settings.enabled===true&&settings.notifyLive===true)))){this.enqueueDiscordEvent('twitch.live',streamId||`stream:${now}`,{active:true,streamId,title,gameName},now);}
-      else if(sameStream&&(previous?.title!==title||previous?.gameName!==gameName)){
-        if(settings.liveUpdateEnabled!==false)this.enqueueDiscordEvent('twitch.live.update',`${streamId}:${now}`,{active:true,streamId,title,gameName},now);
+      const enabled=settings.enabled===true&&settings.notifyLive===true;
+      const viewerCount=live&&typeof stream?.viewer_count==='number'?stream.viewer_count:previous?.viewerCount;
+      const startedAt=live?stream?.started_at||previous?.startedAt:previous?.startedAt;
+      const thumbnailUrl=live?stream?.thumbnail_url||previous?.thumbnailUrl:previous?.thumbnailUrl;
+      const profileImageUrl=live?stream?.profile_image_url||previous?.profileImageUrl:previous?.profileImageUrl;
+      let lastDiscordUpdateAt=previous?.lastDiscordUpdateAt||0;
+      if(previous?.live&&!live&&enabled){this.enqueueDiscordEvent('twitch.live',`${previous.streamId||'stream'}:ended`,{active:false,streamId:previous.streamId||null,title:previous.title||'',gameName:previous.gameName||'',startedAt,endedAt:now,profileImageUrl},now);lastDiscordUpdateAt=now;}
+      else if(live&&enabled&&(!previous?.live||!sameStream||((!previous.discordEnabled||!previous.notifyLive)))){
+        this.enqueueDiscordEvent('twitch.live',streamId||`stream:${now}`,{active:true,streamId,title,gameName,viewerCount,startedAt,thumbnailUrl,profileImageUrl},now);lastDiscordUpdateAt=now;
       }
-      this.setState('discord_live_state',{live,streamId,title,gameName,discordEnabled:settings.enabled===true,notifyLive:settings.notifyLive===true},now);
+      else if(sameStream&&enabled&&settings.liveUpdateEnabled!==false){
+        const metadataChanged=previous?.title!==title||previous?.gameName!==gameName;
+        const interval=Math.max(60,Math.min(900,Number(settings.liveUpdateIntervalSeconds)||300))*1000;
+        if(metadataChanged||now-lastDiscordUpdateAt>=interval){
+          this.enqueueDiscordEvent('twitch.live.update',`${streamId}:${now}`,{active:true,streamId,title,gameName,viewerCount,startedAt,thumbnailUrl,profileImageUrl},now);lastDiscordUpdateAt=now;
+        }
+      }
+      this.setState('discord_live_state',{live,streamId,title,gameName,viewerCount,startedAt,thumbnailUrl,profileImageUrl,lastDiscordUpdateAt,discordEnabled:settings.enabled===true,notifyLive:settings.notifyLive===true},now);
     })();
   }
 
@@ -2227,7 +2239,10 @@ export class FeatureStore {
   recordCommunityEvent(type: string, payload: unknown, now: number): void {
     this.db.prepare('INSERT INTO community_events(type,payload_json,created_at) VALUES(?,?,?)').run(type, JSON.stringify(payload ?? {}), now);
     const data=(payload&&typeof payload==='object'?payload:{}) as Record<string,unknown>;
+    if(type==='quest.status.changed'&&data.status==='active')this.enqueueDiscordEvent('quest.started',String(data.id||`quest:${now}`),{title:String(data.title||'Eine Community-Quest'),status:'active'},now);
     if(type==='quest.status.changed'&&data.status==='completed')this.enqueueDiscordEvent('quest.completed',String(data.id||`quest:${now}`),{title:String(data.title||'Eine Community-Quest'),status:'completed'},now);
+    if(type==='elio.rare')this.enqueueDiscordEvent('elio.rare',String(data.id||`elio:${now}`),{message:String(data.message||'Elio hat ein seltenes Ereignis erlebt.')},now);
+    if(type==='chaos-wheel.action')this.enqueueDiscordEvent('chaos-wheel.action',String(data.id||`wheel:${now}`),{title:String(data.title||'Eine besondere Aktion'),actionType:String(data.actionType||'action')},now);
     if(type==='seasonal.event.started'||type==='seasonal.event.ended')this.enqueueDiscordEvent('seasonal.event',String(data.id||`season:${now}`),data,now);
     if(type==='mystery.drop.completed'&&Number(data.participants)>0)this.enqueueDiscordEvent('mystery.drop',String(data.id||`drop:${now}`),{participants:Number(data.participants)},now);
     this.db.prepare('DELETE FROM community_events WHERE id <= (SELECT MAX(id)-10000 FROM community_events)').run();

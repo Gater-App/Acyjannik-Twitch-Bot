@@ -19,6 +19,21 @@ test('stream status uses existing Twitch access token and distinguishes online f
   assert.equal(await offline.getStreamStatus('broadcaster'), undefined);
 });
 
+test('Live EventSub subscriptions are idempotently scoped to the broadcaster and WebSocket session', async () => {
+  const requests: Array<{ url:string; method:string; body?:Record<string,unknown> }> = [];
+  const oauth = { getAccessToken: async () => 'existing-token' } as unknown as TwitchOAuth;
+  const api = new TwitchApi('client', oauth, async (input, init) => {
+    const url=String(input),method=init?.method||'GET';
+    requests.push({url,method,...(init?.body?{body:JSON.parse(String(init.body)) as Record<string,unknown>}:{})});
+    if(url.includes('/eventsub/subscriptions')&&method==='GET')return Response.json({data:[{type:'stream.online',version:'1',status:'enabled',condition:{broadcaster_user_id:'broadcaster'},transport:{session_id:'session-1'}}]});
+    return Response.json({data:[]},{status:202});
+  });
+  await api.ensureLiveSubscriptions('session-1','broadcaster');
+  const creates=requests.filter(item=>item.method==='POST');
+  assert.deepEqual(creates.map(item=>item.body?.type),['stream.offline','channel.update']);
+  assert.deepEqual(creates[1]?.body,{type:'channel.update',version:'2',condition:{broadcaster_user_id:'broadcaster'},transport:{method:'websocket',session_id:'session-1'}});
+});
+
 test('Twitch GET liest begrenzt mit exponentiellem Backoff nach 5xx erneut', async () => {
   let calls = 0; const delays: number[] = [];
   const oauth = { getAccessToken: async () => 'synthetic-token' } as unknown as TwitchOAuth;

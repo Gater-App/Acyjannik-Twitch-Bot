@@ -131,12 +131,15 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     const csrf = html.match(/name="csrf" content="([a-f0-9]+)"/u)?.[1] || '';
     assert.ok(csrf);
     const discordPage=await fetch(`${base}/dashboard/discord`,{headers:{Cookie:sessionCookie}});assert.equal(discordPage.status,200);
-    const discordHtml=await discordPage.text();assert.match(discordHtml,/name="mentionLevels"/u);assert.match(discordHtml,/Betroffene verknüpfte Person erwähnen/u);assert.match(discordHtml,/@everyone benachrichtigen/u);assert.match(discordHtml,/name="dailyRewardXp"/u);
+    const discordHtml=await discordPage.text();assert.match(discordHtml,/name="mentionLevels"/u);assert.match(discordHtml,/Betroffene verknüpfte Person erwähnen/u);assert.match(discordHtml,/@everyone benachrichtigen/u);assert.match(discordHtml,/name="dailyRewardXp"/u);assert.match(discordHtml,/name="liveUpdateIntervalSeconds"/u);assert.match(discordHtml,/Twitch-Live-Hub/u);
     const discordSettingsResponse=await fetch(`${base}/dashboard/api/discord`,{headers:{Cookie:sessionCookie}});assert.equal(discordSettingsResponse.status,200);
     const discordPayload=await discordSettingsResponse.json() as {settings:Record<string,unknown>;dailyRewardXp:number},discordSettings=discordPayload.settings;assert.equal(discordPayload.dailyRewardXp,25);
     assert.equal(discordSettings.mentionLevels,'none');assert.equal(discordSettings.mentionLive,'none','bestehende Konfiguration erhält keine Erwähnung als impliziten Standard');
-    const saveDiscordMentions=await fetch(`${base}/dashboard/api/discord/settings`,{method:'POST',headers:{Cookie:sessionCookie,Origin:base,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({...discordSettings,mentionLevels:'user',mentionLive:'everyone',dailyRewardXp:40})});
+    const saveDiscordMentions=await fetch(`${base}/dashboard/api/discord/settings`,{method:'POST',headers:{Cookie:sessionCookie,Origin:base,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({...discordSettings,mentionLevels:'user',mentionLive:'everyone',liveUpdateIntervalSeconds:120,dailyRewardXp:40})});
     assert.equal(saveDiscordMentions.status,200,await saveDiscordMentions.clone().text());
+    assert.equal(store.config<Record<string,number>>('discord_integration',{}).liveUpdateIntervalSeconds,120,'Live-Hub-Intervall wird begrenzt zentral gespeichert');
+    const invalidLiveInterval=await fetch(`${base}/dashboard/api/discord/settings`,{method:'POST',headers:{Cookie:sessionCookie,Origin:base,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({...discordSettings,liveUpdateIntervalSeconds:30})});
+    assert.equal(invalidLiveInterval.status,400,'zu häufige Aktualisierungen werden serverseitig abgewiesen');
     assert.equal(store.config<{dailyRewardXp?:number}>('xp_settings',{}).dailyRewardXp,40,'Tages-XP werden über das geschützte Dashboard zentral gespeichert');
     const invalidDiscordMentions=await fetch(`${base}/dashboard/api/discord/settings`,{method:'POST',headers:{Cookie:sessionCookie,Origin:base,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({...discordSettings,mentionSeasonal:'user'})});
     assert.equal(invalidDiscordMentions.status,400,'nur Levelmeldungen dürfen eine einzelne Person auswählen; @everyone muss ausdrücklich gesetzt werden');

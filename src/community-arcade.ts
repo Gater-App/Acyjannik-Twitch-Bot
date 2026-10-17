@@ -448,11 +448,13 @@ export class CommunityArcade {
         }else{status='active';message='🎡 Janniks Aufgabe: Eine Runde ohne Springen! OBS zeigt die Aufgabe bis zum Beenden mit !cancelwheel. Der Bot kann die Einhaltung nicht prüfen.';}
         db.prepare("INSERT INTO chaos_wheel_spins(id,challenge_id,title,status,created_by,created_at,action_type,ends_at,resolved_at,wheel_key,task_ref,wheel_fields_json) VALUES(?,?,?, ?,?,?,?, ?,?, ?,?,?)")
           .run(id,selected.id,selected.title,status,actor,now,selected.actionType,endsAt,status==='completed'?now:null,selected.wheelKey,taskRef,wheelFieldsJson);
+        this.store.recordCommunityEvent('chaos-wheel.action',{id,title:selected.title,actionType:selected.wheelKey||selected.actionType,endsAt},now);
         return message;
       }
       db.prepare("INSERT INTO chaos_wheel_spins(id,challenge_id,title,status,created_by,created_at,action_type,ends_at,resolved_at,wheel_key,wheel_fields_json) VALUES(?,?,?,'completed',?,?,?,NULL,?,?,?)").run(id,selected.id,selected.title,actor,now,selected.actionType,now,selected.wheelKey,wheelFieldsJson);
       if(selected.actionType==='boost_pet'){
         db.prepare("UPDATE community_pet SET energy=MIN(100,energy+10),happiness=MIN(100,happiness+5),animation='happy',updated_at=? WHERE id=1").run(now);
+        this.store.recordCommunityEvent('chaos-wheel.action',{id,title:selected.title,actionType:selected.actionType},now);
         return `Ergebnis: ${selected.title}! Elio erhält automatisch +10 Energie und +5 Zufriedenheit.`;
       }
       if(selected.actionType==='start_mystery_drop'){
@@ -535,6 +537,7 @@ export class CommunityArcade {
       const rare=this.choose(20)===0;
       const event=rare?{kind:'rare',message:this.pick(PET_RARE_EVENTS)}:this.pick(PET_COMMON_EVENTS);
       this.recordPetEvent(db,event.kind,event.message,now,rare);
+      if(rare)this.store.recordCommunityEvent('elio.rare',{id:randomUUID(),message:event.message},now);
       db.prepare("UPDATE community_pet SET animation='surprise' WHERE id=1").run();
       this.store.setConfig('pet_personality_next_event_at',now+this.petEventInterval());
     });

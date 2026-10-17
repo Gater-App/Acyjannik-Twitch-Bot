@@ -177,3 +177,31 @@ test('enabling live notifications during an ongoing stream emits one current ann
     assert.equal(events[0]?.type,'twitch.live');
   }finally{store.close();}
 });
+
+test('live hub carries real stream metadata and coalesces viewer refreshes to the configured interval',()=>{
+  const store=new FeatureStore(':memory:');
+  try{
+    store.setConfig('discord_integration',{enabled:true,notifyLive:true,liveUpdateEnabled:true,liveUpdateIntervalSeconds:60});
+    store.recordDiscordLiveTransition(false,undefined,1000);
+    store.recordDiscordLiveTransition(true,{id:'stream-rich',title:'Titel',game_name:'Kategorie',viewer_count:40,started_at:'2026-10-17T12:00:00Z',thumbnail_url:'https://static-cdn.jtvnw.net/example-{width}x{height}.jpg',profile_image_url:'https://static-cdn.jtvnw.net/profile.jpg'},2000);
+    store.recordDiscordLiveTransition(true,{id:'stream-rich',title:'Titel',game_name:'Kategorie',viewer_count:45},30_000);
+    store.recordDiscordLiveTransition(true,{id:'stream-rich',title:'Titel',game_name:'Kategorie',viewer_count:51},62_000);
+    const events=store.discordOutboxBatch(62_000,10);
+    assert.equal(events.length,2,'eine Aktualisierung wird erst nach dem konfigurierten Intervall ausgegeben');
+    assert.deepEqual(events[0]?.payload,{active:true,streamId:'stream-rich',title:'Titel',gameName:'Kategorie',viewerCount:40,startedAt:'2026-10-17T12:00:00Z',thumbnailUrl:'https://static-cdn.jtvnw.net/example-{width}x{height}.jpg',profileImageUrl:'https://static-cdn.jtvnw.net/profile.jpg',discordMention:{mode:'none'}});
+    assert.equal((events[1]?.payload as {viewerCount:number}).viewerCount,51);
+  }finally{store.close();}
+});
+
+test('quest starts, rare Elio moments, and selected Chaos Wheel actions use opt-in Discord events only',()=>{
+  const store=new FeatureStore(':memory:');
+  try{
+    store.setConfig('discord_integration',{enabled:true,notifyQuests:true,notifyElioEvents:true,notifyChaosWheel:true});
+    store.recordCommunityEvent('quest.status.changed',{id:'quest-1',title:'Gemeinsam spielen',status:'active'},1000);
+    store.recordCommunityEvent('elio.rare',{id:'elio-1',message:'Elio entdeckt einen Stern.'},2000);
+    store.recordCommunityEvent('chaos-wheel.action',{id:'wheel-1',title:'Fünf Minuten Pistolen',actionType:'pistols_timer'},3000);
+    const events=store.discordOutboxBatch(3000,10);
+    assert.deepEqual(events.map(event=>event.type),['quest.started','elio.rare','chaos-wheel.action']);
+    assert.ok(events.every(event=>(event.payload as {discordMention:{mode:string}}).discordMention.mode==='none'));
+  }finally{store.close();}
+});

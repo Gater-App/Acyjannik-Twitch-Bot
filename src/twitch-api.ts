@@ -5,8 +5,9 @@ export interface TwitchUser {
   id: string;
   login: string;
   display_name: string;
+  profile_image_url?: string;
 }
-export interface TwitchStream { id: string; user_id: string; user_login?:string; user_name?:string; type: 'live' | ''; title?:string; game_id?:string; game_name?:string; viewer_count?:number; started_at?:string; language?:string; }
+export interface TwitchStream { id: string; user_id: string; user_login?:string; user_name?:string; type: 'live' | ''; title?:string; game_id?:string; game_name?:string; viewer_count?:number; started_at?:string; language?:string; thumbnail_url?:string; }
 
 export interface SendChatResult {
   messageId: string;
@@ -85,6 +86,27 @@ export class TwitchApi {
       }),
     });
     this.logger.info('EventSub-Chat-Abonnement eingerichtet.');
+  }
+
+  async ensureLiveSubscriptions(sessionId: string, broadcasterId: string): Promise<void> {
+    const subscriptions = [
+      { type: 'stream.online', version: '1' },
+      { type: 'stream.offline', version: '1' },
+      { type: 'channel.update', version: '2' },
+    ] as const;
+    const current = await this.request<HelixResponse<{ type: string; version: string; status: string; condition: Record<string, string>; transport: { session_id?: string } }>>('/eventsub/subscriptions');
+    for (const subscription of subscriptions) {
+      const exists = current.data.some(item => item.type === subscription.type && item.version === subscription.version
+        && item.status === 'enabled' && item.condition.broadcaster_user_id === broadcasterId
+        && item.transport.session_id === sessionId);
+      if (exists) continue;
+      await this.request('/eventsub/subscriptions', {
+        method: 'POST',
+        body: JSON.stringify({ type: subscription.type, version: subscription.version,
+          condition: { broadcaster_user_id: broadcasterId }, transport: { method: 'websocket', session_id: sessionId } }),
+      });
+      this.logger.info('Twitch-Live-EventSub eingerichtet.', { type: subscription.type });
+    }
   }
 
   async ensureChannelPointsSubscription(sessionId:string,broadcasterId:string,rewardId:string):Promise<void> {
