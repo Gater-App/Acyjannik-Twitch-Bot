@@ -82,14 +82,16 @@ export class GameService {
     return winner ? { ended: true, winner } : { ended: true };
   }
 
-  play(userId: string, displayName: string, now = Date.now()):
-    { ok: true; outcome: GameOutcome } | { ok: false; reason: 'inactive' | 'cooldown'; remainingMs?: number } {
+  play(userId: string, displayName: string, now = Date.now(),
+    delivery?: { eventId: string; replyParentMessageId?: string; category?: 'season' | 'halloween'; format: (outcome: GameOutcome) => string }):
+    { ok: true; outcome: GameOutcome; deliveryId?: string } | { ok: false; reason: 'inactive' | 'cooldown'; remainingMs?: number } {
     if (!this.active) return { ok: false, reason: 'inactive' };
     const event = this.random?chooseEvent(this.config.eventWeights,this.random):chooseEventSecure(this.config.eventWeights);
     const resolved = this.random?resolveOutcome(event,this.config,this.random):resolveOutcomeSecure(event,this.config);
-    const applied = this.database.applyPlay(userId, displayName, resolved.delta, now, this.config.cooldownMs);
+    const applied = this.database.applyPlay(userId, displayName, resolved.delta, now, this.config.cooldownMs,
+      delivery ? { eventId: delivery.eventId, ...(delivery.replyParentMessageId ? { replyParentMessageId: delivery.replyParentMessageId } : {}), ...(delivery.category ? { category: delivery.category } : {}), format: player => delivery.format({ ...resolved, pumpkins: player.pumpkins }) } : undefined);
     if (!applied.accepted) return { ok: false, reason: 'cooldown', remainingMs: applied.remainingMs };
-    return { ok: true, outcome: { ...resolved, pumpkins: applied.player.pumpkins } };
+    return { ok: true, outcome: { ...resolved, pumpkins: applied.player.pumpkins }, ...(delivery ? { deliveryId: delivery.eventId } : {}) };
   }
 
   pumpkins(userId: string): number { return this.database.getPlayer(userId).pumpkins; }

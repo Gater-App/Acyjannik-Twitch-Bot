@@ -208,6 +208,7 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.match(html,/data-game-target="pranks">Chaos &amp; Pranks/u,'Pranks sind bei Spiele und Aktionen eingeordnet');
     assert.match(html,/data-game-page="pranks"/u,'Pranks haben eine eigene Steuerungsansicht');
     assert.match(html,/Saisonpunkte für Halloween, Weihnachten und Ostern sind davon getrennt/u,'Saisonpunkte werden klar von XP getrennt');
+    assert.match(html,/Belohnungsantworten · wartend[\s\S]*Belohnungsantworten · fehlgeschlagen[\s\S]*Belohnungsantworten · abgelaufen/u,'dauerhafte Chatantworten haben eine Diagnose im Dashboard');
     assert.match(html,/Privater OBS-Widget-Link/u);
     assert.match(html,/Erweiterte Einstellungen/u);
     assert.match(html,/<h2>Gesprächs-Funken<\/h2>[\s\S]*Wie früh soll der Bot ein Thema erkennen\?/u,'Gesprächs-Funken bieten Status, Vorschau und verständliche Empfindlichkeitsauswahl');

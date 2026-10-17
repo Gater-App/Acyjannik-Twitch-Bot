@@ -65,7 +65,11 @@ export class CommandHandler {
         this.helpCooldowns.set(message.senderUserId,now+5_000);
         return reply('Dein Community-Portal: XP und Level ansehen, Elio 🐱 besuchen, Quest-Ideen und Community-Ideen einreichen und bei Imposter mitspielen: https://twitch.gater-app.de/community','communityPortal');
       }
-      case 'trickortreat': { const result = this.trickOrTreat(name, message.senderUserId, message.eventId, now); return reply(result.message, result.category); }
+      case 'trickortreat': {
+        const result = this.trickOrTreat(name, message.senderUserId, message.eventId, now, message.messageId);
+        return [{ message: clampChatMessage(result.message, this.config.appChatMessageLength), category: result.category,
+          ...(result.deliveryId ? { durableDeliveryId: result.deliveryId } : {}), ...(message.messageId ? { replyParentMessageId: message.messageId } : {}) }];
+      }
       case 'pumpkins': return reply(`🎃 ${name} hat ${this.game.pumpkins(message.senderUserId)} Kürbisse.`);
       case 'top': return reply(this.topMessage());
       case 'halloween': return reply(this.halloweenMessage());
@@ -88,8 +92,9 @@ export class CommandHandler {
     }
   }
 
-  private trickOrTreat(name: string, userId: string, eventId: string, now: number): {message:string;category:ChatCategory} {
-    const result = this.game.play(userId, name, now);
+  private trickOrTreat(name: string, userId: string, eventId: string, now: number, replyParentMessageId?: string): {message:string;category:ChatCategory;deliveryId?:string} {
+    const format=(outcome:import('./types.js').GameOutcome)=>`${eventMessage(this.templateFor(outcome.event), { name, points: Math.abs(outcome.delta), pumpkins: outcome.pumpkins })} Gesamt: ${outcome.pumpkins}.`;
+    const result = this.game.play(userId, name, now, this.community ? {eventId,...(replyParentMessageId?{replyParentMessageId}:{}),category:'halloween',format} : undefined);
     if (!result.ok) {
       if (result.reason === 'inactive') return {message:'🎃 Halloween ist noch nicht gestartet.',category:'hint'};
       return {message:`${name}: Du kannst in ${durationText(result.remainingMs ?? 0)} wieder losziehen.`,category:'cooldown'};
@@ -97,9 +102,7 @@ export class CommandHandler {
     const { outcome } = result;
     this.community?.syncLegacyHalloween(now);
     this.community?.recordHauntedHouseContribution(eventId, userId, now);
-    const template = this.templateFor(outcome.event);
-    const points = Math.abs(outcome.delta);
-    return {message:`${eventMessage(template, { name, points, pumpkins: outcome.pumpkins })} Gesamt: ${outcome.pumpkins}.`,category:'halloween'};
+    return {message:format(outcome),category:'halloween',...(result.deliveryId?{deliveryId:result.deliveryId}:{})};
   }
 
   private topMessage(): string {

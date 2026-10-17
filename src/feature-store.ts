@@ -1078,6 +1078,20 @@ export class FeatureStore {
         `);
       })();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 41) {
+      if (currentVersion > 0) this.backupBeforeMigration(41);
+      this.db.transaction(() => this.db.exec(`
+        CREATE TABLE IF NOT EXISTS chat_delivery_outbox (
+          event_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, message TEXT, reply_parent_message_id TEXT, category TEXT NOT NULL DEFAULT 'season',
+          status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','sending','sent','failed','expired')),
+          attempts INTEGER NOT NULL DEFAULT 0, available_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+          lease_until INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, sent_at INTEGER, last_error TEXT
+        );
+        CREATE INDEX IF NOT EXISTS chat_delivery_due ON chat_delivery_outbox(status,available_at,expires_at,lease_until);
+        INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (41, unixepoch()*1000);
+      `))();
+    }
   }
 
   private backupBeforeMigration(version: number): void {
@@ -2196,9 +2210,11 @@ export class FeatureStore {
     })();
   }
 
-  playEvent(id: string, userId: string, displayName: string, delta: number, now: number):
-    { ok: true; points: number } | { ok: false; reason: 'inactive' | 'cooldown'; remainingMs?: number } {
+  playEvent(id: string, userId: string, displayName: string, delta: number, now: number,
+    delivery?: { eventId: string; replyParentMessageId?: string; format: (points: number) => string }):
+    { ok: true; points: number; deliveryId?: string } | { ok: false; reason: 'inactive' | 'cooldown' | 'duplicate'; remainingMs?: number } {
     return this.db.transaction(() => {
+      if (delivery && this.db.prepare('SELECT 1 FROM chat_delivery_outbox WHERE event_id=?').get(delivery.eventId)) return { ok: false as const, reason: 'duplicate' as const };
       const event = this.event(id);
       if (!event?.active) return { ok: false as const, reason: 'inactive' as const };
       if ((event.startAt && now < event.startAt) || (event.endAt && now >= event.endAt)) return { ok: false as const, reason: 'inactive' as const };
@@ -2219,8 +2235,40 @@ export class FeatureStore {
           ON CONFLICT(user_id) DO UPDATE SET last_played_at=excluded.last_played_at`).run(userId, now);
       }
       this.recordCommunityEvent('seasonal.score.changed', { eventId: id, userId, displayName, points, delta }, now);
-      return { ok: true as const, points };
+      if (delivery) {
+        const message=delivery.format(points).slice(0,500);
+        this.db.prepare("INSERT INTO chat_delivery_outbox(event_id,user_id,message,reply_parent_message_id,category,status,attempts,available_at,expires_at,created_at) VALUES(?,?,?,?,?,'pending',0,?,?,?)")
+          .run(delivery.eventId,userId,message,delivery.replyParentMessageId??null,'season',now,now+5*60_000,now);
+      }
+      return { ok: true as const, points,...(delivery?{deliveryId:delivery.eventId}:{}) };
     })();
+  }
+
+  claimChatDeliveryMessages(now=Date.now(),limit=25):Array<{id:string;attempt:number;message:string;replyParentMessageId?:string;category:'season'|'halloween';expiresAt:number}> {
+    return this.db.transaction(()=>{
+      this.db.prepare("UPDATE chat_delivery_outbox SET status='expired',user_id='',message=NULL,reply_parent_message_id=NULL,lease_until=0 WHERE expires_at<=? AND status IN ('pending','sending')").run(now);
+      const rows=this.db.prepare("SELECT event_id,message,reply_parent_message_id,category,attempts,expires_at FROM chat_delivery_outbox WHERE attempts<8 AND ((status='pending' AND available_at<=?) OR (status='sending' AND lease_until<=?)) AND expires_at>? ORDER BY created_at LIMIT ?")
+        .all(now,now,now,Math.max(1,Math.min(50,limit))) as Array<{event_id:string;message:string|null;reply_parent_message_id:string|null;category:string;attempts:number;expires_at:number}>;
+      const claim=this.db.prepare("UPDATE chat_delivery_outbox SET status='sending',attempts=attempts+1,lease_until=? WHERE event_id=? AND ((status='pending' AND available_at<=?) OR (status='sending' AND lease_until<=?)) AND expires_at>?");
+      const result=[] as Array<{id:string;attempt:number;message:string;replyParentMessageId?:string;category:'season'|'halloween';expiresAt:number}>;
+      for(const row of rows){if(!row.message||!claim.run(Math.min(row.expires_at,now+4*60_000),row.event_id,now,now,now).changes)continue;result.push({id:row.event_id,attempt:row.attempts+1,message:row.message,...(row.reply_parent_message_id?{replyParentMessageId:row.reply_parent_message_id}:{}),category:row.category==='halloween'?'halloween':'season',expiresAt:row.expires_at});}
+      return result;
+    })();
+  }
+
+  finishChatDelivery(id:string,accepted:boolean,now=Date.now(),error=''):void {
+    this.db.transaction(()=>{
+      const row=this.db.prepare('SELECT attempts,expires_at FROM chat_delivery_outbox WHERE event_id=?').get(id) as {attempts:number;expires_at:number}|undefined;if(!row)return;
+      if(accepted)this.db.prepare("UPDATE chat_delivery_outbox SET status='sent',user_id='',sent_at=?,message=NULL,reply_parent_message_id=NULL,lease_until=0,last_error=NULL WHERE event_id=?").run(now,id);
+      else if(row.expires_at<=now)this.db.prepare("UPDATE chat_delivery_outbox SET status='expired',user_id='',message=NULL,reply_parent_message_id=NULL,lease_until=0,last_error=? WHERE event_id=?").run(error.slice(0,180)||'Nachricht abgelaufen',id);
+      else if(row.attempts>=8)this.db.prepare("UPDATE chat_delivery_outbox SET status='failed',user_id='',message=NULL,reply_parent_message_id=NULL,lease_until=0,last_error=? WHERE event_id=?").run(error.slice(0,180)||'Chatversand fehlgeschlagen',id);
+      else this.db.prepare("UPDATE chat_delivery_outbox SET status='pending',available_at=?,lease_until=0,last_error=? WHERE event_id=?").run(Math.min(row.expires_at,now+Math.min(60_000,2_000*2**Math.max(0,row.attempts-1))),error.slice(0,180)||'Chatversand fehlgeschlagen',id);
+    })();
+  }
+
+  chatDeliverySnapshot():{pending:number;failed:number;expired:number} {
+    const rows=this.db.prepare("SELECT status,COUNT(*) AS count FROM chat_delivery_outbox WHERE status IN ('pending','sending','failed','expired') GROUP BY status").all() as Array<{status:string;count:number}>;
+    const values=Object.fromEntries(rows.map(row=>[row.status,row.count]));return {pending:(values.pending||0)+(values.sending||0),failed:values.failed||0,expired:values.expired||0};
   }
 
   eventTop(id: string, limit = 10): Player[] {

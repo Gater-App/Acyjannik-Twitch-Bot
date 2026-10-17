@@ -133,6 +133,10 @@ export class CommunityFeatures {
 
   activeEventId(): string | undefined { return this.store.activeEvent()?.id; }
 
+  claimChatDeliveryMessages(now=Date.now()){return this.store.claimChatDeliveryMessages(now);}
+  finishChatDelivery(id:string,accepted:boolean,now=Date.now(),error=''){this.store.finishChatDelivery(id,accepted,now,error);}
+  chatDeliverySnapshot(){return this.store.chatDeliverySnapshot();}
+
   helpAvailability(): HelpAvailability {
     const modules=this.store.config<Record<string,boolean>>('modules',{}),active=this.store.activeEvent();
     const eventSettings=this.store.config<{enabled?:boolean}>('quest_settings',{});
@@ -189,7 +193,8 @@ export class CommunityFeatures {
 
     if (modules.events !== false && (['gift', 'egghunt'].includes(command) || ['eventscore', 'eventtop', 'startevent', 'endevent'].includes(command))) {
       const result = this.handleEvents(message, command, args, name, now);
-      if (result !== undefined) return say(result, 'season');
+      if (typeof result==='string') return say(result, 'season');
+      if (result) return [{message:result.message,category:'season',durableDeliveryId:result.deliveryId,...(message.messageId?{replyParentMessageId:message.messageId}:{})}];
     }
 
     if (modules.xp !== false) {
@@ -264,7 +269,7 @@ export class CommunityFeatures {
     return say(`💡💜 Deine Idee ist gespeichert, @${cleanName(message.senderDisplayName)}! Danke für deinen Vorschlag! Jannik und die Mods schauen sie sich an. 🐾 ID: #${result.idea.id.slice(0,8)}`,'ideas');
   }
 
-  private handleEvents(message: ChatMessage, command: string, args: string[], name: string, now: number): string | undefined {
+  private handleEvents(message: ChatMessage, command: string, args: string[], name: string, now: number): string | {message:string;deliveryId:string} | undefined {
     if (command === 'startevent' || command === 'endevent') {
       if (!this.isModerator(message)) return '⛔ Nur Jannik oder autorisierte Mods dürfen Events steuern.';
       const eventId = (args[0] || '').toLowerCase();
@@ -288,14 +293,17 @@ export class CommunityFeatures {
     if (cooldown > 0) return `⏳ ${name}: Warte noch ${Math.ceil(cooldown / 60_000)} Min.`;
     const outcomeKey = weightedChoice(event.weights, this.random) || (event.id === 'easter' ? 'GOLDEN_PUMPKIN' : 'TREAT');
     const delta = outcomePoints(outcomeKey, this.random);
-    const outcome = this.store.playEvent(event.id, message.senderUserId, name, delta, now);
-    if (!outcome.ok) return outcome.reason === 'inactive' ? '✨ Das Event ist gerade nicht aktiv.' : `⏳ Bitte noch ${Math.ceil((outcome.remainingMs || 0) / 60_000)} Min. warten.`;
     const defaultText = outcomeKey === 'EMPTY_HOUSE' ? `${event.emoji} {user} findet nichts.`
       : `${event.emoji} {user} sammelt {points} {currency}.`;
     const template = event.texts[outcomeKey] || event.texts.default || defaultText;
-    return template.replace(/\{(user|points|currency|total|event)\}/gu, (_all, key: string) => ({
-      user: name, points: String(delta), currency: event.currency, total: String(outcome.points), event: event.name,
+    const format=(points:number)=>template.replace(/\{(user|points|currency|total|event)\}/gu, (_all, key: string) => ({
+      user: name, points: String(delta), currency: event.currency, total: String(points), event: event.name,
     })[key] || '');
+    const outcome = this.store.playEvent(event.id, message.senderUserId, name, delta, now,
+      {eventId:message.eventId,...(message.messageId?{replyParentMessageId:message.messageId}:{}),format});
+    if (!outcome.ok&&outcome.reason==='duplicate')return undefined;
+    if (!outcome.ok) return outcome.reason === 'inactive' ? '✨ Das Event ist gerade nicht aktiv.' : `⏳ Bitte noch ${Math.ceil((outcome.remainingMs || 0) / 60_000)} Min. warten.`;
+    return {message:format(outcome.points),deliveryId:outcome.deliveryId||message.eventId};
   }
 
   private refreshScheduledEvents(now: number): void {
