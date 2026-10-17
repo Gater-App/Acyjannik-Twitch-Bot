@@ -7,6 +7,7 @@ export type ChaosWheelActionType = 'manual_challenge'|'start_mystery_drop'|'boos
 
 export interface ArcadeSettings {
   petEnabled: boolean; petPersonalityEnabled:boolean; dropsEnabled: boolean; wheelEnabled: boolean; wheelAutoPilotEnabled: boolean; autoDrops: boolean;
+  petMilestoneBonusEnabled:boolean; petMilestoneBonusXp:number;
   petCooldownMs: number; dropDurationMs: number; wheelCooldownMs: number; allowChatSpin: boolean;
   activityRetentionDays: number; wheelChallengeDurationMs: number;
   viewerRewardsEnabled:boolean;viewerActivityWindowMinutes:number;wheelWinnerXp:number;wheelCommunityBonusXp:number;
@@ -15,13 +16,16 @@ export interface ArcadeSettings {
 export interface PetState {
   name: string; level: number; xp: number; hunger: number; happiness: number; energy: number;
   stage: 'egg'|'baby'|'young'|'adult'|'legendary'; paused: boolean; animation: string; updatedAt: number;
+  sleeping:boolean;sleepUntil:number;
   mood:'happy'|'tired'|'hungry'|'playful'|'cheeky'|'calm';moodLabel:string;
+  outfit:{id:string;label:string;emoji:string};unlockedOutfits:Array<{id:string;label:string;emoji:string;unlockLevel:number;unlocked:boolean}>;
 }
 export interface PetPortalAction {
-  ok:boolean; message:string; remainingMs:number; reaction?:string; changes?:{hunger:number;happiness:number;energy:number;xp:number;level:number}; leveledUp?:boolean;
+  ok:boolean; message:string; remainingMs:number; reaction?:string; changes?:{hunger:number;happiness:number;energy:number;xp:number;level:number}; leveledUp?:boolean;bonusXp?:number;
 }
-interface PetRow {name:string;level:number;xp:number;hunger:number;happiness:number;energy:number;stage:PetState['stage'];paused:number;animation:string;updated_at:number}
-const DEFAULT_SETTINGS: ArcadeSettings = { petEnabled:false,petPersonalityEnabled:true,dropsEnabled:false,wheelEnabled:false,wheelAutoPilotEnabled:true,autoDrops:false,petCooldownMs:120_000,dropDurationMs:60_000,wheelCooldownMs:300_000,allowChatSpin:false,activityRetentionDays:90,wheelChallengeDurationMs:300_000,viewerRewardsEnabled:false,viewerActivityWindowMinutes:15,wheelWinnerXp:25,wheelCommunityBonusXp:10,wheelPersonalMysteryDrop:false,wheelWinnerChatAnnouncement:true,wheelWinnerOverlay:true,wheelMaxRewardsPerStream:5 };
+interface PetRow {name:string;level:number;xp:number;hunger:number;happiness:number;energy:number;stage:PetState['stage'];paused:number;animation:string;updated_at:number;state_updated_at:number;sleep_until:number}
+const DEFAULT_SETTINGS: ArcadeSettings = { petEnabled:false,petPersonalityEnabled:true,petMilestoneBonusEnabled:false,petMilestoneBonusXp:5,dropsEnabled:false,wheelEnabled:false,wheelAutoPilotEnabled:true,autoDrops:false,petCooldownMs:120_000,dropDurationMs:60_000,wheelCooldownMs:300_000,allowChatSpin:false,activityRetentionDays:90,wheelChallengeDurationMs:300_000,viewerRewardsEnabled:false,viewerActivityWindowMinutes:15,wheelWinnerXp:25,wheelCommunityBonusXp:10,wheelPersonalMysteryDrop:false,wheelWinnerChatAnnouncement:true,wheelWinnerOverlay:true,wheelMaxRewardsPerStream:5 };
+const PET_OUTFITS=[{id:'classic',label:'Klassischer Elio',emoji:'🐱',unlockLevel:1},{id:'gaming',label:'Gaming-Elio',emoji:'🎮🐱',unlockLevel:2},{id:'sleepy',label:'Schlafmützen-Elio',emoji:'😴🐱',unlockLevel:4},{id:'halloween',label:'Halloween-Elio',emoji:'🎃🐱',unlockLevel:6},{id:'king',label:'König Elio',emoji:'👑🐱',unlockLevel:10},{id:'winter',label:'Winter-Elio',emoji:'❄️🐱',unlockLevel:15}] as const;
 const VIEWER_WHEEL_KEYS=new Set(['viewer_xp','viewer_mystery_drop','viewer_honor','community_bonus','quest_luck','chaos_title','extra_spin']);
 const PET_EVENT_INTERVAL_MIN=3*60*60_000,PET_EVENT_INTERVAL_SPAN=3*60*60_000,PET_EVENT_RETENTION=30*86_400_000;
 const PET_REACTIONS:Record<'feed'|'play'|'care',readonly string[]>={
@@ -64,6 +68,8 @@ export class CommunityArcade {
   updateSettings(next:ArcadeSettings,now=Date.now()):void {
     for(const k of ['petEnabled','dropsEnabled','wheelEnabled','wheelAutoPilotEnabled','autoDrops','allowChatSpin','viewerRewardsEnabled','wheelPersonalMysteryDrop','wheelWinnerChatAnnouncement','wheelWinnerOverlay'] as const)if(typeof next[k]!=='boolean')throw new Error(`Ungültige Arcade-Einstellung: ${k}`);
     if(typeof next.petPersonalityEnabled!=='boolean')throw new Error('Ungültige Elio-Einstellung.');
+    if(typeof next.petMilestoneBonusEnabled!=='boolean')throw new Error('Der Elio-Meilensteinbonus muss Ein oder Aus sein.');
+    if(!Number.isInteger(next.petMilestoneBonusXp)||next.petMilestoneBonusXp<1||next.petMilestoneBonusXp>10)throw new Error('Der Elio-Meilensteinbonus muss zwischen 1 und 10 XP liegen.');
     for(const k of ['petCooldownMs','dropDurationMs','wheelCooldownMs','wheelChallengeDurationMs'] as const)if(!Number.isInteger(next[k])||next[k]<1000||next[k]>86_400_000)throw new Error(`Ungültige Arcade-Einstellung: ${k}`);
     if(!Number.isInteger(next.viewerActivityWindowMinutes)||next.viewerActivityWindowMinutes<5||next.viewerActivityWindowMinutes>60)throw new Error('Das Aktivitätsfenster muss zwischen 5 und 60 Minuten liegen.');
     if(!Number.isInteger(next.wheelWinnerXp)||next.wheelWinnerXp<1||next.wheelWinnerXp>100)throw new Error('Die Gewinner-XP müssen zwischen 1 und 100 liegen.');
@@ -74,7 +80,9 @@ export class CommunityArcade {
     this.store.setConfig('arcade_settings',next);
     if(next.petPersonalityEnabled!==previous)this.store.setConfig('pet_personality_next_event_at',next.petPersonalityEnabled?now+this.petEventInterval():0);
   }
-  pet(now=Date.now()):PetState { return this.store.miniGameQuery(db=>this.petState(db,now)); }
+  pet(now=Date.now()):PetState { return this.store.miniGameTransaction(db=>{this.applyPetNeeds(db,now);return this.petState(db,now);}); }
+  petInteractionStats(now=Date.now()):{periodDays:7;total:number;feed:number;play:number;care:number;activeUsers:number}{return this.store.miniGameQuery(db=>{const row=db.prepare("SELECT COUNT(*) total,SUM(kind='feed') feed,SUM(kind='play') play,SUM(kind='care') care,COUNT(DISTINCT user_id) activeUsers FROM community_pet_interactions WHERE created_at>=?").get(now-7*86_400_000) as {total:number;feed:number|null;play:number|null;care:number|null;activeUsers:number};return {periodDays:7 as const,total:row.total,feed:row.feed||0,play:row.play||0,care:row.care||0,activeUsers:row.activeUsers};});}
+  setPetOutfit(id:string):{id:string;label:string;emoji:string}{return this.store.miniGameTransaction(db=>{const row=db.prepare('SELECT level FROM community_pet WHERE id=1').get() as {level:number};const outfit=PET_OUTFITS.find(item=>item.id===id);if(!outfit)throw new Error('Dieses Elio-Outfit gibt es nicht.');if(row.level<outfit.unlockLevel)throw new Error(`Dieses Outfit wird ab Elio-Level ${outfit.unlockLevel} freigeschaltet.`);this.store.setConfig('community_pet_outfit',id);db.prepare("UPDATE community_pet SET animation='happy',updated_at=? WHERE id=1").run(Date.now());return {id:outfit.id,label:outfit.label,emoji:outfit.emoji};});}
   petActivity(now=Date.now()):Array<{id:string;kind:string;message:string;rare:boolean;createdAt:number}>{
     return this.store.miniGameQuery(db=>this.petActivities(db,now));
   }
@@ -86,7 +94,7 @@ export class CommunityArcade {
       return {enabled:this.settings().petEnabled,paused:p.paused===1,cooldownMs,remainingMs:previous.at===null?0:Math.max(0,cooldownMs-(now-previous.at))};
     });
   }
-  interactFromPortal(m:ChatMessage,kind:'feed'|'play'|'care',now=Date.now()):PetPortalAction {
+  interactFromPortal(m:ChatMessage,kind:'feed'|'play'|'care'|'sleep',now=Date.now()):PetPortalAction {
     const settings=this.settings();
     if(!settings.petEnabled)return {ok:false,message:'Elio macht gerade Pause; die Katzenpflege ist derzeit deaktiviert.',remainingMs:0};
     return this.interact(m,kind,settings,now,true);
@@ -102,8 +110,9 @@ export class CommunityArcade {
     });
   }
   snapshot(type:'pet'|'drop'|'wheel',now=Date.now()):Record<string,unknown> {
-    return this.store.miniGameQuery(db=>{
+    return this.store.miniGameTransaction(db=>{
       if(type==='pet'){
+        this.applyPetNeeds(db,now);
         const p=this.petState(db,now),events=this.petActivities(db,now),rare=events.find(event=>event.rare&&now-event.createdAt<=20_000);
         return {type,visible:this.settings().petEnabled,pet:{...p,stageLabel:stageLabel(p.stage)},events,
           obsHint:this.settings().petPersonalityEnabled&&rare?{message:rare.message,createdAt:rare.createdAt}:null,capturedAt:now};
@@ -121,9 +130,9 @@ export class CommunityArcade {
   }
   handle(m:ChatMessage,command:string,args:string[],now=Date.now()):string|undefined {
     const s=this.settings(), admin=m.senderUserId===this.broadcasterId, mod=admin||m.isModerator===true;
-    if(['pet','feed','play','petcare','petstats','petname','pethelp','petevolution','setpetname','petpause','petresume'].includes(command)){
+    if(['pet','feed','play','petcare','petstats','petname','pethelp','petevolution','setpetname','petpause','petresume','petsleep','petwake'].includes(command)){
       if(!s.petEnabled&&command!=='pethelp')return 'Elio macht gerade Pause; die Katzenpflege ist derzeit deaktiviert.';
-      if(command==='pethelp')return 'Elio 🐱: !pet Zustand · !feed Katzenfutter · !play Spielangel/Wollknäuel · !petcare Pflege · !petstats Werte. Auch !petname und !petevolution bleiben verfügbar. Cooldown: 2 Min.';
+      if(command==='pethelp')return 'Elio 🐱: !pet Zustand · !feed Katzenfutter · !play Spielangel/Wollknäuel · !petcare Pflege · !petsleep Ruhezeit · !petstats Werte. Jannik kann mit !petwake wecken. Cooldown: 2 Min.';
       if(command==='pet'||command==='petstats'||command==='petname'||command==='petevolution'){
         const p=this.pet(); if(command==='petname')return `Elio heißt aktuell ${p.name}.`;
         if(command==='petevolution')return `${p.name}: ${stageLabel(p.stage)} · Level ${p.level}. Nächste Lebensphase: ${nextStage(p.stage)}.`;
@@ -138,7 +147,11 @@ export class CommunityArcade {
         if(!admin)return '⛔ Nur Jannik darf Pflege pausieren oder fortsetzen.';
         this.store.miniGameTransaction(db=>db.prepare("UPDATE community_pet SET paused=?,animation='idle',updated_at=? WHERE id=1").run(command==='petpause'?1:0,now));return command==='petpause'?'Elio 🐱 macht eine Pflegepause.':'Elio 🐱 ist wieder für Pflege und Spiel bereit.';
       }
-      const kind=command==='feed'?'feed':command==='play'?'play':'care';
+      if(command==='petwake'){
+        if(!admin)return '⛔ Nur Jannik darf Elio vorzeitig wecken.';
+        this.store.miniGameTransaction(db=>db.prepare("UPDATE community_pet SET sleep_until=0,animation='idle',updated_at=? WHERE id=1").run(now));return '🐱 Elio ist wieder wach.';
+      }
+      const kind=command==='feed'?'feed':command==='play'?'play':command==='petsleep'?'sleep':'care';
       return this.interact(m,kind,s,now).message;
     }
     if(['claim','drop','dropstats','drops','startdrop','canceldrop','dropconfig'].includes(command)){
@@ -239,8 +252,8 @@ export class CommunityArcade {
     });
     if(batch){this.store.setConfig('pet_chat_batch_last_at',now);out.push({message:`Elio schnurrt: ${batch.participants} aus dem Chat haben ihn mit ${batch.actions} Aktionen gepflegt. Danke, dass ihr euch gemeinsam um die Katze kümmert!`,category:'pet'});}
     this.store.miniGameTransaction(db=>{
-      db.prepare("UPDATE community_pet SET hunger=MAX(20,hunger-MIN(5,MAX(0,CAST((?-updated_at)/86400000 AS INTEGER)))),energy=MIN(100,energy+MIN(5,MAX(0,CAST((?-updated_at)/86400000 AS INTEGER)))),updated_at=updated_at+MAX(0,CAST((?-updated_at)/86400000 AS INTEGER))*86400000 WHERE id=1 AND ?-updated_at>=86400000").run(now,now,now,now);
-      db.prepare("UPDATE community_pet SET animation=CASE WHEN paused=1 THEN 'sleep' WHEN animation IN ('feed','play','care','happy','drop','levelup','evolution') AND updated_at<? THEN 'idle' ELSE animation END WHERE id=1").run(now-12000);
+      this.applyPetNeeds(db,now);
+      db.prepare("UPDATE community_pet SET animation=CASE WHEN paused=1 OR sleep_until>? THEN 'sleep' WHEN animation IN ('feed','play','care','happy','drop','levelup','evolution') AND updated_at<? THEN 'idle' ELSE animation END WHERE id=1").run(now,now-12000);
       db.prepare("UPDATE community_pet SET animation='idle' WHERE id=1 AND animation='surprise' AND COALESCE((SELECT MAX(created_at) FROM community_pet_events WHERE kind IN ('ambient','rare','community')),0)<?").run(now-12_000);
       const cutoff=now-this.settings().activityRetentionDays*86_400_000;
       db.prepare('DELETE FROM mystery_claims WHERE claimed_at<?').run(cutoff);
@@ -353,24 +366,29 @@ export class CommunityArcade {
     const modules=this.store.config<Record<string,boolean>>('modules',{}),poll=this.store.config<{enabled?:boolean}>('poll_settings',{}),quest=this.store.config<{enabled?:boolean}>('quest_settings',{});
     return modules.quests!==false&&modules.polls!==false&&poll.enabled!==false&&quest.enabled!==false&&!this.store.activeQuest()&&!this.store.activePoll(Date.now())&&this.store.approvedQuests(2).length>=2;
   }
-  private interact(m:ChatMessage,kind:'feed'|'play'|'care',s:ArcadeSettings,now:number,portal=false):PetPortalAction {
+  private interact(m:ChatMessage,kind:'feed'|'play'|'care'|'sleep',s:ArcadeSettings,now:number,portal=false):PetPortalAction {
     return this.store.miniGameTransaction(db=>{
+      this.applyPetNeeds(db,now);
       const p=db.prepare('SELECT * FROM community_pet WHERE id=1').get() as PetRow;
       if(p.paused)return {ok:false,message:'Elio macht gerade Pflegepause.',remainingMs:0};
+      if(p.sleep_until>now&&kind!=='care')return {ok:false,message:'Elio schläft gerade. Er wacht nach seiner Ruhezeit von selbst wieder auf.',remainingMs:p.sleep_until-now};
       if(db.prepare('SELECT 1 FROM community_pet_interactions WHERE event_id=?').get(m.eventId))return {ok:false,message:'Diese Elio-Aktion wurde bereits verarbeitet.',remainingMs:0};
       const previous=db.prepare('SELECT MAX(created_at) at FROM community_pet_interactions WHERE user_id=?').get(m.senderUserId) as {at:number|null};
       if(previous.at!==null&&now-previous.at<s.petCooldownMs){const remainingMs=s.petCooldownMs-(now-previous.at);return {ok:false,message:`⏳ Bitte noch ${Math.ceil(remainingMs/1000)}s bis zur nächsten Pet-Aktion warten.`,remainingMs};}
       const hunger=kind==='feed'?Math.min(100,p.hunger+8):p.hunger;
-      const happiness=Math.min(100,p.happiness+(kind==='feed'?2:kind==='play'?8:5));
-      const energy=kind==='play'?Math.max(10,p.energy-5):Math.min(100,p.energy+(kind==='care'?1:0));
-      const xp=p.xp+(kind==='play'?5:2),level=1+Math.floor(xp/100),stage=stageFor(level);
-      const animation=level>p.level?(stage!==p.stage?'evolution':'levelup'):kind==='feed'?'feed':kind==='play'?'play':'care';
+      const happiness=Math.min(100,p.happiness+(kind==='feed'?2:kind==='play'?8:kind==='sleep'?1:5));
+      const energy=kind==='play'?Math.max(10,p.energy-8):Math.min(100,p.energy+(kind==='care'?2:0));
+      const xp=p.xp+(kind==='play'?5:kind==='sleep'?0:2),level=1+Math.floor(xp/100),stage=stageFor(level);
+      const animation=kind==='sleep'?'sleep':level>p.level?(stage!==p.stage?'evolution':'levelup'):kind==='feed'?'feed':kind==='play'?'play':'care';
+      const sleepUntil=kind==='sleep'?now+6*60*60_000:Math.max(0,p.sleep_until||0);
       db.prepare('INSERT INTO community_pet_interactions(event_id,user_id,kind,created_at,source) VALUES(?,?,?,?,?)').run(m.eventId,m.senderUserId,kind,now,portal?'portal':'chat');
       db.prepare('DELETE FROM community_pet_interactions WHERE created_at<?').run(now-7*86_400_000);
-      db.prepare('UPDATE community_pet SET hunger=?,happiness=?,energy=?,xp=?,level=?,stage=?,animation=?,updated_at=? WHERE id=1').run(hunger,happiness,energy,xp,level,stage,animation,now);
-      const reaction=this.personalityReaction(kind,db,now);
-      const message=kind==='feed'?`@${clean(m.senderDisplayName,32)} gibt ${p.name} Katzenfutter oder ein Leckerli. Sättigung ${hunger}%, Zufriedenheit ${happiness}%. ${reaction}`:kind==='play'?`@${clean(m.senderDisplayName,32)} spielt mit ${p.name} an der Spielangel oder mit dem Wollknäuel. +5 Elio-XP (Level ${level}). ${reaction}`:`@${clean(m.senderDisplayName,32)} kümmert sich um ${p.name}. Zufriedenheit ${happiness}%, Energie ${energy}%. ${reaction}`;
-      return {ok:true,message,reaction,remainingMs:s.petCooldownMs,changes:{hunger:hunger-p.hunger,happiness:happiness-p.happiness,energy:energy-p.energy,xp:xp-p.xp,level:level-p.level},leveledUp:level>p.level};
+      db.prepare('UPDATE community_pet SET hunger=?,happiness=?,energy=?,xp=?,level=?,stage=?,animation=?,sleep_until=?,state_updated_at=?,updated_at=? WHERE id=1').run(hunger,happiness,energy,xp,level,stage,animation,sleepUntil,now,now);
+      const bonusXp=s.petMilestoneBonusEnabled&&level>p.level&&level%5===0?this.store.awardXp(`elio-milestone:${m.eventId}`,m.senderUserId,clean(m.senderDisplayName,48),s.petMilestoneBonusXp,'bonus:elio-milestone',now,10):0;
+      const reaction=kind==='sleep'?'Elio rollt sich ein und macht ein wohlverdientes Nickerchen.':this.personalityReaction(kind,db,now);
+      const bonusMessage=bonusXp?` 🎉 Elio-Meilenstein: +${bonusXp} Community-XP.`:'';
+      const message=kind==='feed'?`@${clean(m.senderDisplayName,32)} gibt ${p.name} Katzenfutter oder ein Leckerli. Sättigung ${hunger}%, Zufriedenheit ${happiness}%. ${reaction}${bonusMessage}`:kind==='play'?`@${clean(m.senderDisplayName,32)} spielt mit ${p.name} an der Spielangel oder mit dem Wollknäuel. +5 Elio-XP (Level ${level}). ${reaction}${bonusMessage}`:kind==='sleep'?`${p.name} ruht sich sechs Stunden aus. Energie ${energy}%. ${reaction}`:`@${clean(m.senderDisplayName,32)} kümmert sich um ${p.name}. Zufriedenheit ${happiness}%, Energie ${energy}%. ${reaction}${bonusMessage}`;
+      return {ok:true,message,reaction,remainingMs:s.petCooldownMs,changes:{hunger:hunger-p.hunger,happiness:happiness-p.happiness,energy:energy-p.energy,xp:xp-p.xp,level:level-p.level},leveledUp:level>p.level,...(bonusXp?{bonusXp}:{})};
     });
   }
   private startDrop(actor:string,now:number,rarityArg?:string):string {
@@ -511,9 +529,26 @@ export class CommunityArcade {
     const latest=db.prepare('SELECT kind,rare,created_at AS createdAt FROM community_pet_events ORDER BY created_at DESC LIMIT 1').get() as {kind:string;rare:number;createdAt:number}|undefined;
     return this.toPet(row,now,this.settings().petPersonalityEnabled?latest:undefined);
   }
+  private applyPetNeeds(db:BetterSqlite3.Database,now:number):void{
+    const row=db.prepare('SELECT hunger,happiness,energy,paused,updated_at,state_updated_at,sleep_until FROM community_pet WHERE id=1').get() as {hunger:number;happiness:number;energy:number;paused:number;updated_at:number;state_updated_at:number;sleep_until:number};
+    const baseline=row.state_updated_at||row.updated_at,period=6*60*60_000;
+    if(row.paused===1||now<=baseline)return;
+    const periods=Math.floor((now-baseline)/period);if(periods<1){if(row.sleep_until>0&&row.sleep_until<=now)db.prepare('UPDATE community_pet SET sleep_until=0,animation=CASE WHEN animation=\'sleep\' THEN \'idle\' ELSE animation END WHERE id=1').run();return;}
+    const slept=Math.max(0,Math.min(periods,Math.floor((Math.min(now,row.sleep_until||0)-baseline)/period)));
+    const awake=periods-slept;
+    const hunger=Math.max(0,row.hunger-periods);
+    const energy=Math.max(0,Math.min(100,row.energy-awake+slept*10));
+    const happiness=Math.max(0,Math.min(100,row.happiness-Math.floor(periods/2)+slept));
+    const stateAt=baseline+periods*period;
+    db.prepare("UPDATE community_pet SET hunger=?,happiness=?,energy=?,state_updated_at=?,sleep_until=CASE WHEN sleep_until<=? THEN 0 ELSE sleep_until END,animation=CASE WHEN sleep_until>? THEN 'sleep' WHEN animation='sleep' THEN 'idle' ELSE animation END,updated_at=? WHERE id=1")
+      .run(hunger,happiness,energy,stateAt,now,now,now);
+  }
   private toPet(r:PetRow,now=Date.now(),latest?:{kind:string;rare:number;createdAt:number}):PetState {
     const mood:PetState['mood']=latest?.rare===1&&now-latest.createdAt<15*60_000?'cheeky':r.hunger<30?'hungry':r.energy<25?'tired':r.happiness>=75&&r.energy>=40?'playful':r.happiness>=55?'happy':'calm';
-    return {name:r.name,level:r.level,xp:r.xp,hunger:r.hunger,happiness:r.happiness,energy:r.energy,stage:r.stage,paused:r.paused===1,animation:r.animation,updatedAt:r.updated_at,mood,moodLabel:PET_MOODS[mood]};
+    const unlockedOutfits=PET_OUTFITS.map(item=>({...item,unlocked:r.level>=item.unlockLevel}));
+    const selected=this.store.config<string>('community_pet_outfit','classic');
+    const outfit=unlockedOutfits.find(item=>item.id===selected&&item.unlocked)||unlockedOutfits.find(item=>item.id==='classic')!;
+    return {name:r.name,level:r.level,xp:r.xp,hunger:r.hunger,happiness:r.happiness,energy:r.energy,stage:r.stage,paused:r.paused===1,animation:r.animation,updatedAt:r.updated_at,sleeping:r.sleep_until>now,sleepUntil:r.sleep_until,mood,moodLabel:PET_MOODS[mood],outfit:{id:outfit.id,label:outfit.label,emoji:outfit.emoji},unlockedOutfits};
   }
   private petActivities(db:BetterSqlite3.Database,now:number):Array<{id:string;kind:string;message:string;rare:boolean;createdAt:number}>{
     return db.prepare('SELECT id,kind,message,rare,created_at AS createdAt FROM community_pet_events WHERE created_at>=? ORDER BY created_at DESC LIMIT 12').all(now-PET_EVENT_RETENTION).map(row=>{const event=row as {id:string;kind:string;message:string;rare:number;createdAt:number};return {...event,rare:event.rare===1};});

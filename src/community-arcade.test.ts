@@ -18,7 +18,7 @@ test('Community-Pet bleibt gemeinschaftlich, begrenzt Werte und dedupliziert Eve
   assert.match(arcade.handle(message('viewer','status','!pet'),'pet',[],999)||'',/Elio 🐱 · Kätzchen/u);
   assert.match(arcade.handle(message('u1','e1','!feed'),'feed',[],1000)||'',/Katzenfutter/u);
   assert.match(arcade.handle(message('u1','e1','!feed'),'feed',[],1001)||'',/bereits verarbeitet/u);
-  assert.equal(arcade.pet().hunger,78);
+  assert.equal(arcade.pet(1000).hunger,78);
   assert.match(arcade.handle(message('u1','e2','!play'),'play',[],2000)||'',/noch/u);
   assert.equal(arcade.pet().level,1);
   store.close();
@@ -38,6 +38,36 @@ test('Elios Stimmungen folgen nachvollziehbar seinen Werten und einem zeitnahen 
   }finally{store.close();}
 });
 
+test('Elio-Bedürfnisse verändern sich zeitbasiert ohne Chataktivität; Ruhe regeneriert und Leveldaten bleiben erhalten',()=>{
+  const {store,arcade}=setup();
+  try{
+    arcade.updateSettings({...arcade.settings(),petEnabled:true});
+    const start=10_000,period=6*60*60_000;
+    store.miniGameTransaction(db=>db.prepare("UPDATE community_pet SET level=4,xp=399,hunger=70,happiness=70,energy=70,state_updated_at=?,updated_at=? WHERE id=1").run(start,start));
+    arcade.tickMessages(start+period);
+    const decayed=arcade.pet(start+period);assert.deepEqual([decayed.hunger,decayed.happiness,decayed.energy],[69,70,69]);
+    arcade.tickMessages(start+period+period-1);
+    assert.equal(arcade.pet(start+period+period-1).hunger,69,'erneutes Tick zählt denselben Zeitraum nicht doppelt');
+    store.miniGameTransaction(db=>db.prepare('UPDATE community_pet SET state_updated_at=?,updated_at=?,hunger=70,happiness=70,energy=50 WHERE id=1').run(start,start));
+    const sleep=arcade.handle(message('viewer','sleep-event','!petsleep'),'petsleep',[],start);
+    assert.match(sleep||'',/sechs Stunden/u);assert.equal(arcade.pet(start).sleeping,true);
+    arcade.tickMessages(start+period);
+    const rested=arcade.pet(start+period);assert.deepEqual([rested.hunger,rested.happiness,rested.energy],[69,72,60]);
+    assert.equal(rested.sleeping,false);assert.deepEqual([rested.level,rested.xp,rested.outfit.id],[4,399,'classic']);
+  }finally{store.close();}
+});
+
+test('Migration 36 ergänzt Zeitstempel und Schlafstatus ohne Elio-Spielstand oder Outfit zurückzusetzen',()=>{
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'elio-needs-migration-')),file=path.join(directory,'db','state.sqlite');let store=new FeatureStore(file);
+  try{
+    store.miniGameTransaction(db=>{db.prepare("UPDATE community_pet SET level=9,xp=850,hunger=37,happiness=62,energy=48 WHERE id=1").run();db.exec("DELETE FROM schema_migrations WHERE version>=36;ALTER TABLE community_pet DROP COLUMN sleep_until;ALTER TABLE community_pet DROP COLUMN state_updated_at;");});
+  }finally{store.close();}
+  try{
+    store=new FeatureStore(file);const pet=new CommunityArcade(store,'broadcaster').pet();assert.deepEqual([pet.level,pet.xp,pet.hunger,pet.happiness,pet.energy,pet.sleeping],[9,850,37,62,48,false]);
+    assert.ok(fs.readdirSync(path.join(directory,'backups')).some(name=>name.includes('migration-v36-')),'v36-Migration erstellt ein Vorab-Backup');
+  }finally{store.close();fs.rmSync(directory,{recursive:true,force:true});}
+});
+
 test('Persönlichkeitsmigration erhält Elis Zustand und bestehende Katzenaktionen',()=>{
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'elio-migration-')),file=path.join(directory,'db','state.sqlite');let store=new FeatureStore(file);
   store.miniGameTransaction(db=>{db.prepare("UPDATE community_pet SET name='Elio',level=17,xp=1650,hunger=42,happiness=88,energy=61 WHERE id=1").run();db.prepare("INSERT INTO community_pet_interactions(event_id,user_id,kind,created_at,source) VALUES('old-pet-action','viewer','feed',1234,'portal')").run();db.exec('DROP TABLE community_pet_events;DELETE FROM schema_migrations WHERE version>=28')});store.close();
@@ -47,6 +77,36 @@ test('Persönlichkeitsmigration erhält Elis Zustand und bestehende Katzenaktion
     assert.equal(store.miniGameQuery(db=>(db.prepare('SELECT COUNT(*) n FROM community_pet_events').get() as {n:number}).n),0);
     assert.ok(fs.readdirSync(path.join(directory,'backups')).some(name=>name.includes('migration-v28-')),'v28-Migration erstellt ein Vorab-Backup');
   }finally{store.close();fs.rmSync(directory,{recursive:true,force:true});}
+});
+
+test('Elio-Outfits werden aus dem bestehenden Community-Level freigeschaltet und Auswahl bleibt zentral gespeichert',()=>{
+  const {store,arcade}=setup();
+  try{
+    const before=arcade.pet();assert.equal(before.level,1);assert.equal(before.outfit.id,'classic');
+    assert.equal(before.unlockedOutfits.find(x=>x.id==='gaming')?.unlocked,false);
+    assert.throws(()=>arcade.setPetOutfit('gaming'),/ab Elio-Level 2/u);
+    store.miniGameTransaction(db=>db.prepare("UPDATE community_pet SET level=2,xp=100 WHERE id=1").run());
+    assert.deepEqual(arcade.setPetOutfit('gaming'),{id:'gaming',label:'Gaming-Elio',emoji:'🎮🐱'});
+    assert.equal(arcade.pet().outfit.id,'gaming');
+    assert.throws(()=>arcade.setPetOutfit('made-up'),/gibt es nicht/u);
+  }finally{store.close();}
+});
+
+test('Elio-Meilensteinbonus bleibt standardmäßig aus und vergibt bei Aktivierung begrenzte idempotente XP',()=>{
+  const {store,arcade}=setup();
+  try{
+    arcade.updateSettings({...arcade.settings(),petEnabled:true});
+    store.miniGameTransaction(db=>db.prepare('UPDATE community_pet SET level=4,xp=399 WHERE id=1').run());
+    const first=arcade.interactFromPortal(message('viewer','milestone-off','!play'), 'play', 1000);
+    assert.equal(first.bonusXp,undefined);assert.equal(store.xp('viewer').xp,0);
+    store.miniGameTransaction(db=>db.prepare('UPDATE community_pet SET level=4,xp=399 WHERE id=1').run());
+    arcade.updateSettings({...arcade.settings(),petMilestoneBonusEnabled:true,petMilestoneBonusXp:7});
+    const second=arcade.interactFromPortal(message('viewer-2','milestone-on','!play'),'play',200_000);
+    assert.equal(second.bonusXp,7);assert.equal(store.xp('viewer-2').xp,7);assert.match(second.message,/\+7 Community-XP/u);
+    const duplicate=arcade.interactFromPortal(message('viewer-2','milestone-on','!play'),'play',400_000);
+    assert.equal(duplicate.ok,false);assert.equal(store.xp('viewer-2').xp,7);
+    assert.throws(()=>arcade.updateSettings({...arcade.settings(),petMilestoneBonusXp:11}),/zwischen 1 und 10/u);
+  }finally{store.close();}
 });
 
 test('Elio-Ereignisse laufen über den vorhandenen Tick, sind selten, privat und über Neustarts sichtbar',()=>{

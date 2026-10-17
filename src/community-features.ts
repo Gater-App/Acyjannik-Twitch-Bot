@@ -6,6 +6,7 @@ import { QuestPollFeatures } from './quest-poll.js';
 import { ConversationSpark } from './conversation-spark.js';
 import { MiniGames } from './mini-games.js';
 import { CommunityArcade } from './community-arcade.js';
+import { CommunityInteractive } from './community-interactive.js';
 import { CommunityVault } from './community-vault.js';
 import { CommunityHauntedHouse } from './community-haunted-house.js';
 import { ModeratorPranks } from './moderator-pranks.js';
@@ -23,6 +24,7 @@ export class CommunityFeatures {
   readonly conversationSpark: ConversationSpark;
   readonly miniGames: MiniGames;
   readonly arcade: CommunityArcade;
+  readonly interactive:CommunityInteractive;
   readonly vault: CommunityVault;
   readonly moderatorPranks: ModeratorPranks;
   readonly hauntedHouse: CommunityHauntedHouse;
@@ -32,7 +34,7 @@ export class CommunityFeatures {
     private readonly config: AppConfig,
     private readonly lookupUser: UserLookup = async () => undefined,
     private readonly random: RandomInclusive = secureRandomInclusive,
-  ) { this.questPoll = new QuestPollFeatures(store, config); this.conversationSpark = new ConversationSpark(store, config.broadcasterUserId); this.miniGames = new MiniGames(store, config); this.arcade = new CommunityArcade(store,config.broadcasterUserId); this.vault = new CommunityVault(store,config.botUserId); this.hauntedHouse=new CommunityHauntedHouse(store); this.moderatorPranks = new ModeratorPranks(store,()=>((this.vault.publicSnapshot().vault as {status?:string}|undefined)?.status==='active'),()=>this.isMajorGameBusy()); }
+  ) { this.questPoll = new QuestPollFeatures(store, config); this.conversationSpark = new ConversationSpark(store, config.broadcasterUserId); this.miniGames = new MiniGames(store, config); this.arcade = new CommunityArcade(store,config.broadcasterUserId); this.interactive=new CommunityInteractive(store); this.vault = new CommunityVault(store,config.botUserId); this.hauntedHouse=new CommunityHauntedHouse(store); this.moderatorPranks = new ModeratorPranks(store,()=>((this.vault.publicSnapshot().vault as {status?:string}|undefined)?.status==='active'),()=>this.isMajorGameBusy()); }
 
   private isMajorGameBusy():boolean {
     const now=Date.now(),mini=this.miniGames.snapshot(),drop=this.arcade.snapshot('drop'),wheel=this.arcade.wheelStatus();
@@ -85,6 +87,7 @@ export class CommunityFeatures {
   tick(now = Date.now(), advanceMiniGames = true): string[] { return this.tickMessages(now, advanceMiniGames).map(item => item.message); }
   tickMessages(now = Date.now(), advanceMiniGames = true): OutboundChatMessage[] {
     this.refreshScheduledEvents(now); this.questPoll.tick(now); this.conversationSpark.tick(now); this.moderatorPranks.tick(now);
+    this.interactive.tick(now);
     return [...(advanceMiniGames ? this.miniGames.tickMessages(now) : []), ...this.arcade.tickMessages(now), ...this.vault.tickMessages(now)];
   }
 
@@ -95,6 +98,9 @@ export class CommunityFeatures {
       ...(message.messageId ? { replyParentMessageId: message.messageId } : {}) }];
 
     if(command==='idee'||command==='ideen')return this.handleIdeaCommand(message,command,args,now,say);
+
+    const interactiveReply=this.interactiveCommand(message,command,args,now);
+    if(interactiveReply!==undefined)return say(interactiveReply,'community');
 
     if(command==='code') { this.vault.guess(message,args,now); return []; }
 
@@ -414,6 +420,32 @@ export class CommunityFeatures {
     if (!name || !this.store.deleteCustomCommand(name)) return '💬 Befehl nicht gefunden. Format: !delcommand name';
     this.store.adminAudit(message.senderUserId, 'custom-command-delete', name, {}, now);
     return `✅ !${name} wurde entfernt.`;
+  }
+
+  private interactiveCommand(message:ChatMessage,command:string,args:string[],now:number):string|undefined{
+    const action=(args[0]||'').toLowerCase();
+    if(command==='battle'){
+      const event=this.interactive.active('battle',now)[0];
+      if(action==='start')return message.senderUserId===this.config.broadcasterUserId?this.interactive.startBattle(message.senderUserId,now).message:'⛔ Nur Jannik kann einen Battle starten.';
+      if(!event)return '⚔️ Gerade läuft kein Twitch-vs-Discord-Battle.';
+      if(action==='join')return this.interactive.join(event.id,'twitch',message.senderUserId,message.senderDisplayName,undefined,now).message;
+      if(action==='punkt')return this.interactive.contribute(event.id,`twitch:${message.eventId}`,'twitch',message.senderUserId,now).message;
+      const score=event.points||{twitch:0,discord:0};return `⚔️ ACY BATTLE · Twitch ${score.twitch} : ${score.discord} Discord · !battle join zum Mitmachen · !battle punkt für einen begrenzten Punkt.`;
+    }
+    if(command==='gamenight'){
+      const event=this.interactive.active('game_night',now).find(item=>item.status==='scheduled'||item.status==='open');
+      if(!event)return '🎮 Es ist gerade kein Community-Spieleabend geplant.';
+      if(action==='join')return this.interactive.join(event.id,'twitch',message.senderUserId,message.senderDisplayName,undefined,now).message;
+      const when=new Intl.DateTimeFormat('de-DE',{timeZone:this.interactive.settings().gameNightTimezone,dateStyle:'medium',timeStyle:'short'}).format(event.startsAt);
+      const game=String(event.settings.game||'Spiel offen');return `🎮 ${event.title} · ${game} · ${when} Uhr · ${event.participants} angemeldet${event.waitlist?` · ${event.waitlist} Warteliste`:''} · !gamenight join`;
+    }
+    if(command==='geheim'){
+      const event=(['mystery_case','elio_rescue','secret_portal'] as const).flatMap(kind=>this.interactive.active(kind,now)).find(item=>item.status==='open');
+      if(!event)return '🎁 Gerade läuft kein geheimes Community-Event.';
+      if(action==='join')return this.interactive.join(event.id,'twitch',message.senderUserId,message.senderDisplayName,undefined,now).message;
+      return `🎁 ${event.title} · ${event.participants} dabei · !geheim join zum Mitmachen.`;
+    }
+    return undefined;
   }
 
   private isModerator(message: ChatMessage): boolean {
