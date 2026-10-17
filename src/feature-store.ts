@@ -1015,6 +1015,25 @@ export class FeatureStore {
     return row?{linked:true,linkedAt:row.linked_at}:{linked:false};
   }
 
+  communityXpProfileForDiscord(discordUserId:string):{displayName:string;xp:number;rank:number;badges:Array<{id:string;unlockedAt:number}>}|undefined {
+    const row=this.db.prepare(`SELECT u.user_id,u.display_name,u.xp FROM community_account_links l
+      LEFT JOIN xp_users u ON u.user_id=l.twitch_user_id WHERE l.discord_user_id=?`).get(discordUserId) as
+      {user_id:string|null;display_name:string|null;xp:number|null}|undefined;
+    if(!row)return undefined;
+    const xp=Number(row.xp)||0;
+    const rank=row.user_id?Number((this.db.prepare('SELECT 1+COUNT(*) rank FROM xp_users WHERE xp>?').get(xp) as {rank:number}).rank):0;
+    const badges=row.user_id?this.db.prepare('SELECT badge_id id,unlocked_at unlockedAt FROM community_world_badges WHERE user_id=? ORDER BY unlocked_at DESC').all(row.user_id) as Array<{id:string;unlockedAt:number}>:[];
+    return {displayName:row.display_name||'Community-Mitglied',xp,rank,badges};
+  }
+
+  communityXpLeaderboardPage(limit:number,offset:number):{total:number;rows:Array<{displayName:string;xp:number}>} {
+    const safeLimit=Math.max(1,Math.min(10,Math.floor(limit)||10)),safeOffset=Math.max(0,Math.floor(offset)||0);
+    const total=Number((this.db.prepare('SELECT COUNT(*) count FROM xp_users').get() as {count:number}).count);
+    const rows=this.db.prepare('SELECT display_name displayName,xp FROM xp_users ORDER BY xp DESC,updated_at ASC LIMIT ? OFFSET ?')
+      .all(safeLimit,safeOffset) as Array<{displayName:string;xp:number}>;
+    return {total,rows};
+  }
+
   disconnectCommunityAccountLink(input:{discordUserId:string;now:number}):boolean {
     return this.db.transaction(()=>{
       const row=this.db.prepare('SELECT twitch_user_id FROM community_account_links WHERE discord_user_id=?').get(input.discordUserId) as {twitch_user_id:string}|undefined;
