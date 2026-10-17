@@ -64,7 +64,7 @@ Seasonal participation needs a single event ID source, time window/timezone, par
 - Production DB remains v32; v33 and v34 are unapplied.
 - Discord API GET verification confirmed `AcyCommunityBot` in guild `1206225751544832040`, no Administrator/Manage Guild/Manage Roles/Manage Channels/Ban/Kick/timeout rights. Its `BOT` role still has Manage Messages and Mention Everyone; remove these for least privilege unless a reviewed feature needs them.
 - Effective View Channel, Send Messages, Embed Links and Read Message History are all true in `✧₊⁺ideen-💡`, `✧₊⁺main-chat`, and `✧₊⁺updates-lives`. No permissions or channels were changed and no messages were sent.
-- Production cutover remains separate and disabled; no config state was changed.
+- The production `feature_config` table has no persisted `discord_integration` entry. Consolidated code defaults the integration off; because installed code is older and has no Git metadata, this DB observation alone cannot prove whether the running process implements that flag. No config state was changed.
 
 ## Tests
 
