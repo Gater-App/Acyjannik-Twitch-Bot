@@ -30,7 +30,7 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
   const env = { ...process.env };
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'acy-dashboard-browser-'));
   const store = new FeatureStore(path.join(directory, 'bot.sqlite'));
-  const now=Date.now();store.setState('discord_channel_catalog',{at:now,guildId:'1206225751544832040',channels:[{id:'1206225751544832041',name:'ideen',type:'GuildText',view:true,send:true,embed:true,history:true,usable:true},{id:'1206225751544832042',name:'drops',type:'GuildText',view:true,send:true,embed:true,history:true,usable:true}]},now);
+  const now=Date.now();store.setState('discord_channel_catalog',{at:now,guildId:'1206225751544832040',channels:[{id:'1206225751544832041',name:'ideen',type:'GuildText',view:true,send:true,embed:true,history:true,usable:true},{id:'1206225751544832042',name:'drops',type:'GuildText',view:true,send:true,embed:true,history:true,usable:true},{id:'1206225751544832043',name:'live',type:'GuildText',view:true,send:true,embed:true,history:true,usable:true}]},now);
   const botLifecycle=new BotLifecycle(store);
   store.awardXp('browser-ux-seed', 'viewer-42', 'Testviewer', 250, 'Browser-Testkonto', Date.now());
   const port = await freePort();
@@ -86,6 +86,7 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     page.on('response', (response) => { if (new URL(response.url()).pathname.startsWith('/dashboard/api/')) apiResponses.push(`${response.status()} ${new URL(response.url()).pathname}`); });
     const discordPage=await context.newPage();
     discordPage.on('pageerror',(error)=>pageErrors.push(`${error.message} at ${error.stack}`));
+    discordPage.on('response',(response)=>{if(new URL(response.url()).pathname.startsWith('/dashboard/api/'))apiResponses.push(`${response.status()} ${new URL(response.url()).pathname}`)});
     await discordPage.goto(`${base}/dashboard/discord`,{waitUntil:'domcontentloaded'});
     await discordPage.getByRole('heading',{name:'Discord-Verwaltung'}).waitFor();
     assert.equal(await discordPage.locator('[name="elioEnabled"]').isChecked(),false,'Elio-Integration bleibt standardmäßig deaktiviert');
@@ -96,6 +97,7 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     assert.equal(await discordPage.locator('[name="discordDuelsEnabled"]').isChecked(),false,'Duelle bleiben standardmäßig deaktiviert');
     await discordPage.locator('[name="ideasChannelId"]').selectOption('1206225751544832041');
     await discordPage.locator('[name="dropChannelId"]').selectOption('1206225751544832042');
+    await discordPage.locator('[name="liveChannelId"]').selectOption('1206225751544832043');
     await discordPage.locator('[name="enabled"]').check();
     await discordPage.locator('[name="accountLinkEnabled"]').check();
     await discordPage.locator('[name="elioEnabled"]').check();
@@ -109,7 +111,8 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     await discordPage.locator('[name="liveCompletionEnabled"]').check();
     await discordPage.locator('[name="discordProfilesEnabled"]').check();
     await discordPage.getByRole('button',{name:'Einstellungen speichern'}).click();
-    await discordPage.getByText('Discord-Einstellungen gespeichert.',{exact:true}).waitFor();
+    await discordPage.waitForTimeout(250);
+    assert.equal(await discordPage.locator('#notice').textContent(),'Discord-Einstellungen gespeichert.',`Discord speichern fehlgeschlagen: ${apiResponses.join(', ')}`);
     const discordSaved=await (await discordPage.request.get(`${base}/dashboard/api/discord`)).json() as {settings:{enabled:boolean;accountLinkEnabled:boolean;profilesEnabled:boolean;discordProfilesEnabled:boolean;elioEnabled:boolean;discordDropsEnabled:boolean;discordEightBallEnabled:boolean;discordRpsEnabled:boolean;discordGuessEnabled:boolean;discordDuelsEnabled:boolean;ideasChannelId:string;dropChannelId:string;notifyIdeas:boolean;notifyLive:boolean;liveUpdateEnabled:boolean;liveCompletionEnabled:boolean}};
     assert.equal(discordSaved.settings.enabled,true);assert.equal(discordSaved.settings.ideasChannelId,'1206225751544832041');assert.equal(discordSaved.settings.dropChannelId,'1206225751544832042');assert.equal(discordSaved.settings.notifyIdeas,true);
     assert.equal(discordSaved.settings.accountLinkEnabled,true);assert.equal(discordSaved.settings.elioEnabled,true);assert.equal(discordSaved.settings.discordDropsEnabled,true);

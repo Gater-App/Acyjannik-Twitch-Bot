@@ -552,7 +552,7 @@ export class DashboardServer {
       if(session.role!=='admin'){this.json(res,403,{error:'Nur Jannik kann die Discord-Verbindung konfigurieren.'});return;}
       const body=await this.readJson(req);if(!body){this.json(res,400,{error:'Ungültige Einstellungen.'});return;}
       const next={...DISCORD_DEFAULTS};
-      const booleanKeys=['enabled','accountLinkEnabled','profilesEnabled','discordProfilesEnabled','elioEnabled','discordDropsEnabled','discordEightBallEnabled','discordRpsEnabled','discordGuessEnabled','discordDuelsEnabled','discordVipChaosEnabled','notifyIdeas','notifyLevels','notifyDrops','notifyQuests','notifySeasonal','notifyLive','liveUpdateEnabled','liveCompletionEnabled'] as const;
+      const booleanKeys=['enabled','accountLinkEnabled','discordProfilesEnabled','elioEnabled','discordDropsEnabled','discordEightBallEnabled','discordRpsEnabled','discordGuessEnabled','discordDuelsEnabled','discordVipChaosEnabled','notifyIdeas','notifyLevels','notifyDrops','notifyQuests','notifySeasonal','notifyLive','liveUpdateEnabled','liveCompletionEnabled'] as const;
       for(const key of booleanKeys){if(typeof body[key]!=='boolean'){this.json(res,400,{error:'Bitte alle Schalter gültig setzen.'});return;}next[key]=body[key];}
       next.discordProfilesEnabled=body.discordProfilesEnabled===true||body.profilesEnabled===true;
       next.profilesEnabled=next.discordProfilesEnabled;
