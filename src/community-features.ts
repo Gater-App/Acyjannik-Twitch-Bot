@@ -87,6 +87,7 @@ export class CommunityFeatures {
   tick(now = Date.now(), advanceMiniGames = true): string[] { return this.tickMessages(now, advanceMiniGames).map(item => item.message); }
   tickMessages(now = Date.now(), advanceMiniGames = true): OutboundChatMessage[] {
     this.refreshScheduledEvents(now); this.questPoll.tick(now); this.conversationSpark.tick(now); this.moderatorPranks.tick(now);
+    this.interactive.tick(now);
     return [...(advanceMiniGames ? this.miniGames.tickMessages(now) : []), ...this.arcade.tickMessages(now), ...this.vault.tickMessages(now)];
   }
 

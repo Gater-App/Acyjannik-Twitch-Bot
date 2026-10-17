@@ -31,6 +31,26 @@ test('Twitch-vs-Discord defaults off, assigns platform teams, deduplicates linke
   }finally{store.close();}
 });
 
+test('Battleabschluss nach Frist verteilt konfigurierte Teilnahme- und Sieger-XP genau einmal',()=>{
+  const {store,interactive}=setup();
+  try{
+    interactive.updateSettings({battleEnabled:true,battleDurationMs:60_000,battleActionCooldownMs:5_000,battleParticipationXp:2,battleWinnerXp:5});
+    store.miniGameTransaction(db=>{db.prepare('INSERT INTO community_account_links(twitch_user_id,discord_user_id,linked_at) VALUES(?,?,?)').run('twitch-winner','12345678901234567',1);db.prepare('INSERT INTO community_account_links(twitch_user_id,discord_user_id,linked_at) VALUES(?,?,?)').run('twitch-other','12345678901234568',1);});
+    const event=interactive.startBattle('admin',1_000).event!;
+    interactive.join(event.id,'twitch','twitch-winner','Twitch Fan',undefined,1_001);
+    interactive.join(event.id,'discord','12345678901234568','Discord Fan',undefined,1_002);
+    interactive.contribute(event.id,'twitch-score-1','twitch','twitch-winner',1_003);
+    assert.equal(interactive.tick(61_001),1,'periodischer Backend-Tick schließt abgelaufene Battles ohne Dashboard-Zugriff');
+    assert.equal(interactive.get(event.id,61_002)?.status,'completed');
+    assert.match(interactive.get(event.id,61_002)?.result||'',/Twitch gewinnt/u);
+    assert.equal(store.xp('twitch-winner').xp,7,'Twitch-side winner receives participation and winner bonus');
+    assert.equal(store.xp('twitch-other').xp,2,'linked Discord participant receives participation XP through shared Twitch identity');
+    assert.equal(interactive.tick(62_000),0,'abgeschlossene Events werden vom nächsten Tick nicht erneut verarbeitet');
+    assert.equal(store.xp('twitch-winner').xp,7,'restart-safe expiry cannot pay rewards twice');
+    assert.throws(()=>interactive.updateSettings({battleWinnerXp:21}),/zwischen 0 und 20/u);
+  }finally{store.close();}
+});
+
 test('Game Night uses Berlin wall time, enforces capacity atomically, and promotes the waitlist on cancellation',()=>{
   const {store,interactive}=setup();
   try{
