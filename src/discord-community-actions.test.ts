@@ -79,3 +79,24 @@ test('Discord community actions fail closed when disabled, unlinked, or unauthen
     for(const [key,value] of Object.entries(env))process.env[key]=value;
   }
 });
+
+test('Discord can start Elio sleep through the authenticated shared backend and the pet enforces the sleep state',async()=>{
+  const env={...process.env},store=new FeatureStore(':memory:'),port=await freePort(),secret='synthetic-discord-integration-key-123456789';
+  process.env.TWITCH_CLIENT_ID='test-client';process.env.TWITCH_CLIENT_SECRET='test-secret';process.env.DASHBOARD_REDIRECT_URI='https://bot.example.test/dashboard/oauth/callback';process.env.DASHBOARD_ADMIN_IDS='test-admin';process.env.DASHBOARD_HOST='127.0.0.1';process.env.DASHBOARD_PORT=String(port);process.env.DISCORD_INTEGRATION_SECRET=secret;
+  const arcade=new CommunityArcade(store,'broadcaster-1');arcade.updateSettings({...arcade.settings(),petEnabled:true});
+  store.setConfig('discord_integration',{enabled:true,accountLinkEnabled:true,elioEnabled:true});linkDiscordAccount(store,'1206225751544832053','twitch-viewer-1');
+  const server=new DashboardServer(store,()=>({twitchConnected:false,channel:'acyjannik',startedAt:1}),logger,fetch,undefined,undefined,undefined,undefined,arcade);
+  const base=`http://127.0.0.1:${port}/api/discord/v1`,headers={authorization:`Bearer ${secret}`,'content-type':'application/json'};
+  try{
+    assert.equal(await server.start(),true);
+    const sleep=await fetch(`${base}/community/elio/action`,{method:'POST',headers,body:JSON.stringify({eventId:'1206225751544832054',discordUserId:'1206225751544832053',displayName:'Viewer',action:'sleep'})});
+    assert.equal(sleep.status,200,await sleep.clone().text());
+    assert.equal((await sleep.json() as {pet:{sleeping:boolean}}).pet.sleeping,true);
+    const whileSleeping=await fetch(`${base}/community/elio/action`,{method:'POST',headers,body:JSON.stringify({eventId:'1206225751544832055',discordUserId:'1206225751544832053',displayName:'Viewer',action:'play'})});
+    assert.equal(whileSleeping.status,409);assert.match((await whileSleeping.json() as {error:string}).error,/schläft/u);
+  }finally{
+    await server.stop();store.close();
+    for(const key of Object.keys(process.env))if(!(key in env))delete process.env[key];
+    for(const [key,value] of Object.entries(env))process.env[key]=value;
+  }
+});
