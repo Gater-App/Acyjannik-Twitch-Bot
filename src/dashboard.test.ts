@@ -8,6 +8,7 @@ import vm from 'node:vm';
 import { DashboardServer } from './dashboard.js';
 import { FeatureStore } from './feature-store.js';
 import { CommunityArcade } from './community-arcade.js';
+import { CommunityInteractive } from './community-interactive.js';
 import { logger } from './logger.js';
 import { CommunityTips } from './community-tips.js';
 import { AutomaticChatMessages } from './automatic-chat-messages.js';
@@ -487,6 +488,23 @@ test('Discord-Tagesbelohnung nutzt zentrale XP, ist parallel cooldown-geschützt
     assert.deepEqual(results.map(x=>x.status).sort(),['claimed','cooldown']);assert.equal(store.xp('twitch-user-1').xp,25);
     const retry=await post('1206225751544832054'),replayed=await retry.json() as {status:string;awarded:number;duplicateEvent:boolean};assert.equal(replayed.status,'claimed');assert.equal(replayed.awarded,25);assert.equal(replayed.duplicateEvent,true);assert.equal(store.xp('twitch-user-1').xp,25);
     const unlinked=await fetch(url,{method:'POST',headers,body:JSON.stringify({eventId:'1206225751544832056',discordUserId:'1206225751544832060',displayName:'unlinked'})});assert.equal(unlinked.status,403);
+  }finally{await dashboard.stop();store.close();fs.rmSync(directory,{recursive:true,force:true});for(const key of Object.keys(process.env))if(!(key in env))delete process.env[key];for(const [key,value] of Object.entries(env))process.env[key]=value;}
+});
+
+test('Discord-Community-Events sind nur authentifiziert erreichbar und teilen Battle-Identität sowie Limits',async()=>{
+  const env={...process.env},directory=fs.mkdtempSync(path.join(os.tmpdir(),'acy-discord-community-events-')),store=new FeatureStore(path.join(directory,'features.sqlite')),port=await freePort();
+  process.env.TWITCH_CLIENT_ID='test-client';process.env.TWITCH_CLIENT_SECRET='test-secret';process.env.DASHBOARD_REDIRECT_URI='https://bot.example.test/dashboard/oauth/callback';process.env.DASHBOARD_ADMIN_IDS='admin-id';process.env.DASHBOARD_HOST='127.0.0.1';process.env.DASHBOARD_PORT=String(port);process.env.DISCORD_INTEGRATION_SECRET='test-discord-integration-secret-that-is-long-enough';
+  store.setConfig('discord_integration',{enabled:true});const interactive=new CommunityInteractive(store);interactive.updateSettings({battleEnabled:true,battleActionCooldownMs:5_000,battleMaxPointsPerUser:1});const battle=interactive.startBattle('admin',Date.now());assert.equal(battle.ok,true);
+  store.miniGameTransaction(db=>db.prepare('INSERT INTO community_account_links(twitch_user_id,discord_user_id,linked_at) VALUES(?,?,?)').run('linked-twitch-id','1206225751544832053',Date.now()));
+  assert.equal(interactive.join(battle.event!.id,'twitch','linked-twitch-id','Linked Viewer').status,'joined');
+  const dashboard=new DashboardServer(store,()=>({twitchConnected:true,channel:'acyjannik',startedAt:1}),logger,async()=>Response.json({}));
+  try{assert.equal(await dashboard.start(),true);const base=`http://127.0.0.1:${port}/api/discord/v1/community/events`,headers={authorization:'Bearer test-discord-integration-secret-that-is-long-enough','content-type':'application/json'};
+    assert.equal((await fetch(base)).status,401);
+    const list=await fetch(base,{headers}),snapshot=await list.json() as {events:Array<{id:string;points:{twitch:number;discord:number}}>,enabled:boolean};assert.equal(list.status,200);assert.equal(snapshot.enabled,true);assert.equal(snapshot.events[0]?.id,battle.event?.id);
+    const join=await fetch(`${base}/join`,{method:'POST',headers,body:JSON.stringify({eventId:battle.event?.id,discordUserId:'1206225751544832053',displayName:'Viewer'})});assert.equal(join.status,409,'linked Twitch account cannot double-join across platform teams');
+    const teammate=await fetch(`${base}/join`,{method:'POST',headers,body:JSON.stringify({eventId:battle.event?.id,discordUserId:'1206225751544832054',displayName:'Discord Viewer'})});assert.equal(teammate.status,200);
+    const score=await fetch(`${base}/contribute`,{method:'POST',headers,body:JSON.stringify({eventId:battle.event?.id,discordUserId:'1206225751544832054',eventIdempotencyKey:'1206225751544832055'})});assert.equal(score.status,200);assert.deepEqual((await score.json() as {event:{points:{twitch:number;discord:number}}}).event.points,{twitch:0,discord:1});
+    const duplicate=await fetch(`${base}/contribute`,{method:'POST',headers,body:JSON.stringify({eventId:battle.event?.id,discordUserId:'1206225751544832054',eventIdempotencyKey:'1206225751544832055'})});assert.equal((await duplicate.json() as {duplicate:boolean}).duplicate,true);
   }finally{await dashboard.stop();store.close();fs.rmSync(directory,{recursive:true,force:true});for(const key of Object.keys(process.env))if(!(key in env))delete process.env[key];for(const [key,value] of Object.entries(env))process.env[key]=value;}
 });
 

@@ -927,6 +927,53 @@ export class FeatureStore {
         INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (34, unixepoch()*1000);
       `))();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 35) {
+      if (currentVersion > 0) this.backupBeforeMigration(35);
+      this.db.transaction(() => this.db.exec(`
+        CREATE TABLE IF NOT EXISTS community_interactive_events (
+          id TEXT PRIMARY KEY,
+          kind TEXT NOT NULL CHECK(kind IN ('battle','mystery_case','elio_rescue','secret_portal','game_night')),
+          status TEXT NOT NULL CHECK(status IN ('scheduled','open','completed','canceled')),
+          title TEXT NOT NULL CHECK(length(title) BETWEEN 1 AND 120),
+          description TEXT NOT NULL DEFAULT '' CHECK(length(description)<=1000),
+          starts_at INTEGER NOT NULL,
+          ends_at INTEGER,
+          settings_json TEXT NOT NULL DEFAULT '{}',
+          created_by TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS community_interactive_events_status_time ON community_interactive_events(status,starts_at,ends_at);
+        CREATE INDEX IF NOT EXISTS community_interactive_events_kind_time ON community_interactive_events(kind,created_at DESC);
+        CREATE TABLE IF NOT EXISTS community_interactive_participants (
+          event_id TEXT NOT NULL REFERENCES community_interactive_events(id) ON DELETE CASCADE,
+          identity_key TEXT NOT NULL,
+          platform TEXT NOT NULL CHECK(platform IN ('twitch','discord')),
+          platform_user_id TEXT NOT NULL,
+          display_name TEXT NOT NULL CHECK(length(display_name)<=80),
+          team TEXT CHECK(team IN ('twitch','discord')),
+          status TEXT NOT NULL CHECK(status IN ('joined','waitlist','withdrawn')),
+          points INTEGER NOT NULL DEFAULT 0 CHECK(points>=0),
+          joined_at INTEGER NOT NULL,
+          last_action_at INTEGER,
+          PRIMARY KEY(event_id,identity_key),
+          UNIQUE(event_id,platform,platform_user_id)
+        );
+        CREATE INDEX IF NOT EXISTS community_interactive_participants_queue ON community_interactive_participants(event_id,status,joined_at);
+        CREATE TABLE IF NOT EXISTS community_interactive_actions (
+          action_event_id TEXT PRIMARY KEY,
+          event_id TEXT NOT NULL REFERENCES community_interactive_events(id) ON DELETE CASCADE,
+          identity_key TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          points INTEGER NOT NULL DEFAULT 0 CHECK(points>=0),
+          created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS community_interactive_actions_event_user_time ON community_interactive_actions(event_id,identity_key,created_at);
+        INSERT OR IGNORE INTO feature_config(key,value) VALUES ('community_interactive_settings','{"battleEnabled":false,"secretEventsEnabled":false,"autoSecretEventsEnabled":false,"gameNightEnabled":false,"elio2Enabled":false,"chaosWheel2Enabled":false,"personalityEnabled":false,"battleDurationMs":600000,"battleCooldownMs":3600000,"battleActionCooldownMs":30000,"battleMaxPointsPerUser":10,"secretEventDurationMs":90000,"gameNightTimezone":"Europe/Berlin"}');
+        INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (35, unixepoch()*1000);
+      `))();
+    }
   }
 
   private backupBeforeMigration(version: number): void {

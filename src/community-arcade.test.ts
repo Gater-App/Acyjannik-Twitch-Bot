@@ -49,6 +49,36 @@ test('Persönlichkeitsmigration erhält Elis Zustand und bestehende Katzenaktion
   }finally{store.close();fs.rmSync(directory,{recursive:true,force:true});}
 });
 
+test('Elio-Outfits werden aus dem bestehenden Community-Level freigeschaltet und Auswahl bleibt zentral gespeichert',()=>{
+  const {store,arcade}=setup();
+  try{
+    const before=arcade.pet();assert.equal(before.level,1);assert.equal(before.outfit.id,'classic');
+    assert.equal(before.unlockedOutfits.find(x=>x.id==='gaming')?.unlocked,false);
+    assert.throws(()=>arcade.setPetOutfit('gaming'),/ab Elio-Level 2/u);
+    store.miniGameTransaction(db=>db.prepare("UPDATE community_pet SET level=2,xp=100 WHERE id=1").run());
+    assert.deepEqual(arcade.setPetOutfit('gaming'),{id:'gaming',label:'Gaming-Elio',emoji:'🎮🐱'});
+    assert.equal(arcade.pet().outfit.id,'gaming');
+    assert.throws(()=>arcade.setPetOutfit('made-up'),/gibt es nicht/u);
+  }finally{store.close();}
+});
+
+test('Elio-Meilensteinbonus bleibt standardmäßig aus und vergibt bei Aktivierung begrenzte idempotente XP',()=>{
+  const {store,arcade}=setup();
+  try{
+    arcade.updateSettings({...arcade.settings(),petEnabled:true});
+    store.miniGameTransaction(db=>db.prepare('UPDATE community_pet SET level=4,xp=399 WHERE id=1').run());
+    const first=arcade.interactFromPortal(message('viewer','milestone-off','!play'), 'play', 1000);
+    assert.equal(first.bonusXp,undefined);assert.equal(store.xp('viewer').xp,0);
+    store.miniGameTransaction(db=>db.prepare('UPDATE community_pet SET level=4,xp=399 WHERE id=1').run());
+    arcade.updateSettings({...arcade.settings(),petMilestoneBonusEnabled:true,petMilestoneBonusXp:7});
+    const second=arcade.interactFromPortal(message('viewer-2','milestone-on','!play'),'play',200_000);
+    assert.equal(second.bonusXp,7);assert.equal(store.xp('viewer-2').xp,7);assert.match(second.message,/\+7 Community-XP/u);
+    const duplicate=arcade.interactFromPortal(message('viewer-2','milestone-on','!play'),'play',400_000);
+    assert.equal(duplicate.ok,false);assert.equal(store.xp('viewer-2').xp,7);
+    assert.throws(()=>arcade.updateSettings({...arcade.settings(),petMilestoneBonusXp:11}),/zwischen 1 und 10/u);
+  }finally{store.close();}
+});
+
 test('Elio-Ereignisse laufen über den vorhandenen Tick, sind selten, privat und über Neustarts sichtbar',()=>{
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'elio-personality-')),file=path.join(directory,'state.sqlite');let store=new FeatureStore(file),arcade=new CommunityArcade(store,'broadcaster',()=>0);
   try{
