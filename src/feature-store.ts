@@ -1154,7 +1154,7 @@ export class FeatureStore {
 
   private enqueueDiscordEvent(type:string,aggregateId:string,payload:unknown,now:number):string {
     const settings=this.config<Record<string,unknown>>('discord_integration',{});
-    const toggle=type.startsWith('idea.')?'notifyIdeas':type==='level.up'?'notifyLevels':type==='mystery.drop'?'notifyDrops':type==='quest.completed'?'notifyQuests':type==='seasonal.event'?'notifySeasonal':type==='twitch.live'?'notifyLive':null;
+    const toggle=type.startsWith('idea.')?'notifyIdeas':type==='level.up'?'notifyLevels':type==='mystery.drop'?'notifyDrops':type==='quest.completed'?'notifyQuests':type==='seasonal.event'?'notifySeasonal':type.startsWith('twitch.live')?'notifyLive':null;
     if(settings.enabled!==true||!toggle||settings[toggle]!==true)return '';
     const id=randomUUID();this.db.prepare("INSERT INTO discord_event_outbox(id,event_type,aggregate_id,payload_json,created_at,available_at) VALUES(?,?,?,?,?,?)")
       .run(id,type,aggregateId,JSON.stringify(payload??{}),now,now);return id;
@@ -1197,9 +1197,16 @@ export class FeatureStore {
 
   recordDiscordLiveTransition(live:boolean,stream:{id:string;title?:string;game_name?:string}|undefined,now:number):void {
     this.db.transaction(()=>{
-      const previous=this.state<{live:boolean}|null>('discord_live_state',null);
-      if(previous&&previous.live!==live)this.enqueueDiscordEvent('twitch.live',stream?.id||`offline:${now}`,{active:live,title:live?stream?.title||'':undefined,gameName:live?stream?.game_name||'':undefined},now);
-      this.setState('discord_live_state',{live,streamId:live?stream?.id||null:null},now);
+      const settings=this.config<{enabled?:boolean;notifyLive?:boolean;liveUpdateEnabled?:boolean}>('discord_integration',{});
+      const previous=this.state<{live:boolean;streamId?:string|null;title?:string;gameName?:string;discordEnabled?:boolean;notifyLive?:boolean}|null>('discord_live_state',null);
+      const streamId=live?stream?.id||null:null,title=live?stream?.title||'':previous?.title||'',gameName=live?stream?.game_name||'':previous?.gameName||'';
+      const sameStream=Boolean(live&&previous?.live&&streamId&&previous.streamId===streamId);
+      if(previous?.live&&!live){this.enqueueDiscordEvent('twitch.live',`${previous.streamId||'stream'}:ended`,{active:false,streamId:previous.streamId||null,title:previous.title||'',gameName:previous.gameName||''},now);}
+      else if(live&&(!previous?.live||!sameStream||((!previous.discordEnabled||!previous.notifyLive)&&(settings.enabled===true&&settings.notifyLive===true)))){this.enqueueDiscordEvent('twitch.live',streamId||`stream:${now}`,{active:true,streamId,title,gameName},now);}
+      else if(sameStream&&(previous?.title!==title||previous?.gameName!==gameName)){
+        if(settings.liveUpdateEnabled!==false)this.enqueueDiscordEvent('twitch.live.update',`${streamId}:${now}`,{active:true,streamId,title,gameName},now);
+      }
+      this.setState('discord_live_state',{live,streamId,title,gameName,discordEnabled:settings.enabled===true,notifyLive:settings.notifyLive===true},now);
     })();
   }
 
