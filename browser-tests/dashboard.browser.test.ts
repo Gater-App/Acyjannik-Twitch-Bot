@@ -517,7 +517,7 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     await failedStatusPage.goto(`${base}/streamer`,{waitUntil:'domcontentloaded'});
     await failedStatusPage.getByText('Aktualisierung fehlgeschlagen',{exact:true}).waitFor({state:'visible'});
     assert.match(await failedStatusPage.locator('#stream-status').innerText(),/Statusquelle nicht erreichbar/u,'ein API-Fehler bleibt sichtbar statt als gültiger Status zu erscheinen');
-    assert.match(await failedStatusPage.locator('#active').innerText(),/Daten derzeit nicht verfügbar/u,'alte aktive Aktionen werden bei einem Ladefehler nicht als aktuell dargestellt');
+    assert.match(await failedStatusPage.locator('#active').innerText(),/Daten derzeit nicht verfügbar/u,'alte aktive Aktionen werden bei einem Ladefehler nicht als aktuell dargestellt');assert.equal(await failedStatusPage.locator('#live-viewers').innerText(),'—','Live-Messwerte bleiben bei einem Ladefehler nicht als scheinbar aktuell stehen');
     await failedStatusPage.close();
 
     const portalPage = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
