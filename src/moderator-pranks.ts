@@ -12,7 +12,7 @@ const ORACLE_ANSWERS = ['Die Sterne empfehlen einen Snack und eine entspannte Ru
 const PREFIX='【🔮 ORAKEL】';
 
 export class ModeratorPranks {
-  constructor(private readonly store: FeatureStore, private readonly vaultActive:()=>boolean, private readonly gamesBusy:()=>boolean) {}
+  constructor(private readonly store: FeatureStore, private readonly vaultActive:()=>boolean, private readonly gamesBusy:(ignoreRequiredVault?:boolean)=>boolean) {}
 
   private data(now=Date.now()): PersistedPranks {
     const raw=this.store.config<Partial<PersistedPranks>>('moderator_pranks',{});
@@ -46,7 +46,9 @@ export class ModeratorPranks {
     if(d.active)return {ok:false,message:'Es läuft bereits ein Prank. Beende ihn zuerst.'};
     if((d.cooldowns[kind]||0)>now)return {ok:false,message:`Bitte noch ${Math.ceil(((d.cooldowns[kind]||0)-now)/60_000)} Min. warten.`};
     if(kind==='vault-alarm'&&!this.vaultActive())return {ok:false,message:'Der Fehlalarm geht nur während einer laufenden Tresorrunde.'};
-    if(this.gamesBusy())return {ok:false,message:'Gerade läuft ein Community-Spiel. Warte bitte bis zum Ende.'};
+    // The vault alarm is specifically an overlay event for a live vault round;
+    // ignore that one required activity while still blocking every other game.
+    if(this.gamesBusy(kind==='vault-alarm'))return {ok:false,message:'Gerade läuft ein Community-Spiel. Warte bitte bis zum Ende.'};
     if(kind==='accusation'&&(!target||!/^\d{1,30}$/u.test(target.id)||!target.name.trim()))return {ok:false,message:'Wähle zuerst ein gültiges Twitch-Konto aus.'};
     if(kind==='accusation'&&target&&this.isOptedOut(target.id))return {ok:false,message:'Diese Person möchte bei Elio-Verdächtigungen nicht mitmachen.'};
     if(kind==='accusation'&&target){const hash=createHash('sha256').update(target.id).digest('hex');if((d.targetCooldowns?.[hash]||0)>now)return {ok:false,message:'Diese Person wurde in den letzten 24 Stunden schon einmal scherzhaft verdächtigt.'};}

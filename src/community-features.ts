@@ -40,13 +40,13 @@ export class CommunityFeatures {
     private readonly config: AppConfig,
     private readonly lookupUser: UserLookup = async () => undefined,
     private readonly random: RandomInclusive = secureRandomInclusive,
-  ) { this.questPoll = new QuestPollFeatures(store, config); this.conversationSpark = new ConversationSpark(store, config.broadcasterUserId); this.miniGames = new MiniGames(store, config); this.arcade = new CommunityArcade(store,config.broadcasterUserId); this.interactive=new CommunityInteractive(store); this.chaos=new CommunityChaos(store); this.chronicles=new ElioChronicles(store,this.chaos); this.chaos.setAutoStorySelector(games=>this.chronicles.chooseAutomatic(games)); this.vault = new CommunityVault(store,config.botUserId); this.hauntedHouse=new CommunityHauntedHouse(store); this.eventDirector=new EventDirector(store); this.moderatorPranks = new ModeratorPranks(store,()=>((this.vault.publicSnapshot().vault as {status?:string}|undefined)?.status==='active'),()=>this.isMajorGameBusy()); }
+  ) { this.questPoll = new QuestPollFeatures(store, config); this.conversationSpark = new ConversationSpark(store, config.broadcasterUserId); this.miniGames = new MiniGames(store, config); this.arcade = new CommunityArcade(store,config.broadcasterUserId); this.interactive=new CommunityInteractive(store); this.chaos=new CommunityChaos(store); this.chronicles=new ElioChronicles(store,this.chaos); this.chaos.setAutoStorySelector(games=>this.chronicles.chooseAutomatic(games)); this.vault = new CommunityVault(store,config.botUserId); this.hauntedHouse=new CommunityHauntedHouse(store); this.eventDirector=new EventDirector(store); this.moderatorPranks = new ModeratorPranks(store,()=>((this.vault.publicSnapshot().vault as {status?:string}|undefined)?.status==='active'),ignoreVault=>this.isMajorGameBusy(ignoreVault)); }
 
-  private isMajorGameBusy():boolean {
+  private isMajorGameBusy(ignoreVault = false):boolean {
     const now=Date.now(),mini=this.miniGames.snapshot(),drop=this.arcade.snapshot('drop'),wheel=this.arcade.wheelStatus();
     const status=(drop.drop as {status?:string}|undefined)?.status;
     return Boolean(mini.imposter||mini.detective||this.store.activeQuest()||this.store.activePoll(now)||this.store.activeBoss(now)
-      ||['announced','claiming','resolving'].includes(status||'')||wheel.active||this.vault.isActive(now)
+      ||['announced','claiming','resolving'].includes(status||'')||wheel.active||(!ignoreVault&&this.vault.isActive(now))
       ||this.chaos.status(now).active||this.interactive.active().some(event=>event.status==='open'&&event.kind!=='game_night'));
   }
 
@@ -209,7 +209,7 @@ export class CommunityFeatures {
     if (modules.boss !== false && command === 'startboss') return say(this.startBoss(message, args, now));
     if (modules.boss !== false && command === 'boss') return say(this.bossStatus(now));
     if (modules.boss !== false && command === 'bosstop') return say(this.bossTop());
-    if (modules.boss !== false && command === 'attack') return say(this.attackBoss(message, now));
+    if (modules.boss !== false && command === 'attack') {const result=this.attackBoss(message,now);return result?say(result):[];}
     if (modules.boss !== false && command === 'endboss') return say(this.endBoss(message, now));
 
     if (modules.customCommands !== false) {
@@ -437,18 +437,20 @@ export class CommunityFeatures {
     return top.length ? `👾 Größter Schaden: ${top.map((p, i) => `${i + 1}. ${cleanName(p.displayName)} ${p.damage}`).join(' · ')}` : '👾 Noch keine Angriffe im aktuellen Kampf.';
   }
 
-  private attackBoss(message: ChatMessage, now: number): string {
+  private attackBoss(message: ChatMessage, now: number): string|undefined {
     const settings = this.store.config('game_settings', { attackMin: 20, attackMax: 60, attackCooldownMs: 10_000, bossWinXp: 30, bossTopBonusXp: 10 });
-    if (!this.store.activeBoss(now)) return '👾 Kein aktiver Boss. Frag Jannik nach !startboss.';
-    const left = this.store.useCooldown('boss-attack', message.senderUserId, now, settings.attackCooldownMs);
-    if (left) return `⏳ Nächster Angriff in ${Math.ceil(left / 1000)} Sek.`;
     const critical = this.random(1, 100) <= 10;
     const rawDamage = this.random(settings.attackMin, settings.attackMax) * (critical ? 2 : 1);
     const xp = this.store.config<Record<string, number>>('xp_settings', { dailyGameCap: 100 });
     const result = this.store.attackBoss(message.senderUserId, cleanName(message.senderDisplayName), rawDamage, now,
-      message.eventId, 2, settings.bossWinXp, settings.bossTopBonusXp, xp.dailyGameCap);
+      message.eventId, 2, settings.bossWinXp, settings.bossTopBonusXp, xp.dailyGameCap, settings.attackCooldownMs);
+    if(result.status==='duplicate')return undefined;
+    if(result.status==='cooldown'){
+      if(this.store.useCooldown('boss-attack-rejection-log',message.senderUserId,now,10_000)===0)this.store.recordCommunityEvent('boss.attack.rejected',{reason:'personal-cooldown'},now);
+      return `⏳ ${cleanName(message.senderDisplayName)}, dein nächster Angriff ist in ${Math.ceil((result.remainingMs||0)/1000)} Sek. bereit.`;
+    }
     if (result.status === 'missing') return '👾 Kein aktiver Boss. Frag Jannik nach !startboss.';
-    if (result.status === 'defeated') return `💥 ${critical ? 'Kritischer Treffer! ' : ''}${cleanName(message.senderDisplayName)} verursacht ${result.damage} Schaden — ${result.name} ist besiegt! Die Gruppe erhält XP.`;
+    if (result.status === 'defeated') return `💥 ${critical ? 'Kritischer Treffer! ' : ''}${cleanName(message.senderDisplayName)} verursacht ${result.damage} Schaden — ${result.name} ist besiegt! Ergebnis und tatsächlich gebuchte XP folgen gleich.`;
     return `⚔️ ${critical ? 'Kritischer Treffer! ' : ''}${cleanName(message.senderDisplayName)} verursacht ${result.damage} Schaden. ${result.name}: ${result.hp} HP übrig.`;
   }
 

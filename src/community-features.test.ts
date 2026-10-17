@@ -200,6 +200,37 @@ test('Bosskampf überlebt Neustart und atomare Angriffe vergeben den Sieg nur ei
   store.close(); f.close();
 });
 
+test('Boss-Cooldowns gelten je Twitch-ID; fremder Spam blockiert keine Angriffe und Abschluss-XP/Nachricht sind idempotent',async()=>{
+  const f=fixture(),store=new FeatureStore(f.file),config={...loadConfig({testMode:true}),databasePath:f.file};
+  store.setConfig('game_settings',{guessMin:1,guessMax:100,guessTimeoutMs:120000,guessAttempts:5,duelTtlMs:60000,bossHp:30,bossDurationMs:900000,attackMin:10,attackMax:10,attackCooldownMs:10000,bossWinXp:10,bossTopBonusXp:5});
+  const community=new CommunityFeatures(store,config,async()=>undefined,(_min,max)=>max);
+  const chat=(eventId:string,userId:string,isModerator=false):ChatMessage=>({eventId,broadcasterUserId:config.broadcasterUserId,senderUserId:userId,senderLogin:userId,senderDisplayName:userId.toUpperCase(),message:'!attack',sentAt:100_000,isModerator});
+  try{
+    assert.equal(store.startBoss('fair-boss','Schattenwächter',30,900_000,99_000),true);
+    assert.equal((await community.handle(chat('hit-a','viewer-a'),'attack',[],100_000))[0]?.category,'attack');
+    for(let index=0;index<8;index++){
+      const spam=await community.handle(chat(`hit-a-spam-${index}`,'viewer-a',index===0),'attack',[],100_001+index);
+      assert.match(spam[0]?.message||'',/nächster Angriff ist in/u,'Spam erhält höchstens eine persönliche Cooldown-Antwort und baut keinen Schaden auf');
+    }
+    const [second,third]=await Promise.all([
+      community.handle(chat('hit-b','viewer-b'),'attack',[],100_010),
+      community.handle(chat('hit-c','viewer-c'),'attack',[],100_010),
+    ]);
+    assert.equal(second[0]?.message.includes('verursacht 10 Schaden'),true,'anderer Account kann während des Spams gültig angreifen');
+    assert.match(third[0]?.message||'',/Ergebnis und tatsächlich gebuchte XP folgen/u,'paralleler letzter Angriff beendet den Boss genau einmal');
+    assert.equal(store.activeBoss(100_004),undefined);
+    const history=store.bossHistory(10)[0]!;
+    assert.equal(history.status,'defeated');assert.equal(history.totalDamage,30);assert.equal(history.xpAwarded,41);
+    assert.equal((history.participants as Array<unknown>).length,3);
+    assert.equal(store.attackBoss('viewer-c','VIEWER-C',10,100_005,'hit-c',2,10,5,100,10_000).status,'duplicate','Wiederholung derselben Eingangs-ID erzeugt keinen neuen Schaden oder XP');
+    const outbox=store.claimBossResultMessages(100_020);assert.equal(outbox.length,1);assert.match(outbox[0]!.message,/BOSS BESIEGT/);assert.match(outbox[0]!.message,/41 insgesamt/);
+    store.finishBossResultDelivery(outbox[0]!.id,false,100_021,'simulierter Versandfehler');
+    store.close();const reopened=new FeatureStore(f.file);assert.equal(reopened.bossHistory(10)[0]?.xpAwarded,41);assert.equal((reopened.bossHistory(10)[0]!.delivery as {status:string}).status,'pending');
+    const retried=reopened.claimBossResultMessages(130_021);assert.equal(retried.length,1);assert.equal(retried[0]!.id,outbox[0]!.id);assert.equal(retried[0]!.message,outbox[0]!.message);
+    reopened.finishBossResultDelivery(retried[0]!.id,true,130_022);assert.equal((reopened.bossHistory(10)[0]!.delivery as {status:string}).status,'sent');assert.equal(reopened.bossHistory(10)[0]?.xpAwarded,41,'Auslieferungsretry bucht keine weiteren XP');reopened.close();
+  }finally{try{store.close()}catch{}f.close()}
+});
+
 test('Custom Chatbefehle sind persistent, aliasesicher und blockieren Code-/unbekannte Platzhalter', () => {
   const f = fixture(); let store = new FeatureStore(f.file);
   store.addCustomCommand({ name: 'communityhome', alias: 'homealias', response: 'Hi {user} auf {channel}', enabled: true,

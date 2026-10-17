@@ -5,13 +5,13 @@ export interface ChatResponseSettings { profile: ChatProfile; welcomeBots: strin
 export const DEFAULT_CHAT_RESPONSE_SETTINGS: ChatResponseSettings = {
   profile: 'normal', welcomeBots: ['streamelements', 'nightbot', 'sery_bot', 'moobot', 'streamlabs', 'fossabot', 'wizebot', 'botrix'],
 };
-export interface ChatDecisionInput { command?: string; message: string; now?: number; }
+export interface ChatDecisionInput { command?: string; message: string; now?: number; senderUserId?: string; }
 
 /** Output policy for ordinary chat replies. Critical, non-command announcements bypass it. */
 export class ChatResponsePolicy {
   private readonly recent = new Map<string, number>();
   private readonly personalStatus = new Set(['level','rank','pumpkins','dropstats','petstats','eventscore']);
-  private readonly routineSuccess = new Set(['claim','feed','play','petcare','trickortreat']);
+  private readonly routineSuccess = new Set(['claim','feed','play','petcare']);
   private suppressed = 0;
   private deferred = 0;
   private settings: ChatResponseSettings = { ...DEFAULT_CHAT_RESPONSE_SETTINGS, welcomeBots: [...DEFAULT_CHAT_RESPONSE_SETTINGS.welcomeBots] };
@@ -32,14 +32,26 @@ export class ChatResponsePolicy {
     return DEFAULT_CHAT_RESPONSE_SETTINGS.welcomeBots.includes(normalized) || this.settings.welcomeBots.includes(normalized);
   }
 
-  shouldSend({ command = '', message, now = Date.now() }: ChatDecisionInput): boolean {
+  shouldSend({ command = '', message, now = Date.now(), senderUserId }: ChatDecisionInput): boolean {
     const normalized = command.replace(/^!/u, '').toLowerCase();
+    // Replies to commands belong to the sender who caused them. A channel-wide
+    // command bucket made one viewer's !attack suppress every other viewer's
+    // result, even when the game accepted both actions and XP was persisted.
+    if (normalized && senderUserId) {
+      const key = `command:${senderUserId}:${normalized}`;
+      const cooldownMs = this.settings.profile === 'calm' ? 10_000 : this.settings.profile === 'lively' ? 1_000 : 3_000;
+      const last = this.recent.get(key) ?? 0;
+      if (last && now - last < cooldownMs) { this.suppressed++; return false; }
+      this.prune(now, 60_000);
+      this.recent.set(key, now);
+      return true;
+    }
     const isPersonal = this.personalStatus.has(normalized);
     const isRoutine = this.routineSuccess.has(normalized) && this.isSuccess(normalized, message);
     if (isPersonal && this.settings.profile !== 'lively') { this.suppressed++; return false; }
     if (isRoutine && this.settings.profile !== 'lively') { this.suppressed++; return false; }
     if (this.isPermissionFailure(message)) {
-      const key = `permission:${this.fingerprint(message)}`;
+      const key = `permission:${senderUserId || 'channel'}:${normalized}:${this.fingerprint(message)}`;
       if (!this.allowOnce(key, now, 60_000)) { this.suppressed++; return false; }
     }
     const limit = this.settings.profile === 'calm' ? 1 : this.settings.profile === 'normal' ? 3 : 8;

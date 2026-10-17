@@ -42,6 +42,15 @@ test('Tresor-Fehlalarm benötigt echte laufende Runde; Orakel begrenzt Antwortsp
   store.close();
 });
 
+test('Tresor-Fehlalarm darf die dafür erforderliche Tresorrunde nicht selbst als Konflikt behandeln',()=>{
+  const store=new FeatureStore(':memory:');let vault=true;const ignoredVault:boolean[]=[];
+  const p=new ModeratorPranks(store,()=>vault,(ignoreRequiredVault=false)=>{ignoredVault.push(ignoreRequiredVault);return false});
+  p.configure({enabled:{chief:true,accusation:true,'vault-alarm':true,oracle:true}});
+  assert.equal(p.start('vault-alarm','mod',100).ok,true);
+  assert.deepEqual(ignoredVault,[true]);
+  store.close();
+});
+
 test('Ziel kann Pranks dauerhaft abwählen; Verteidigung vergibt und verändert keine Punkte',()=>{
   const store=new FeatureStore(':memory:');const p=new ModeratorPranks(store,()=>false,()=>false);
   p.configure({enabled:{chief:true,accusation:true,'vault-alarm':true,oracle:true}});

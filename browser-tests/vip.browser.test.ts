@@ -58,7 +58,7 @@ test('VIP Lounge and dashboard settings work through real browser clicks on desk
     const desktopScreenshot=path.join(process.cwd(),'docs/verification/vip-lounge-desktop-local.png');await page.screenshot({path:desktopScreenshot,fullPage:true});
     await page.setViewportSize({width:390,height:844});await page.reload({waitUntil:'networkidle'});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'VIP-Lounge bleibt mobil ohne horizontales Überlaufen');
     const mobileScreenshot=path.join(process.cwd(),'docs/verification/vip-lounge-mobile-local.png');await page.screenshot({path:mobileScreenshot,fullPage:true});
-    await page.goto(base+'/dashboard',{waitUntil:'domcontentloaded'});await page.locator('[data-view-target="community"]').click();await page.locator('[data-community-target="vip"]').click();
+    await page.goto(base+'/dashboard#community/vip',{waitUntil:'domcontentloaded'});
     await page.getByText('✅ Twitch bestätigt die Broadcaster-Autorisierung und channel:read:vips.').waitFor();
     assert.equal(await page.locator('[data-community-page="vip"]').count(),1,'VIP-Verwaltung wird genau einmal eingebunden');
     assert.equal(await page.locator('body').innerText().then(text=>text.includes('+VIP_ADMIN_CARD+')),false,'kein Template-Platzhalter wird sichtbar ausgegeben');

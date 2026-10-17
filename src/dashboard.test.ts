@@ -210,7 +210,8 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.match(html,/Saisonpunkte für Halloween, Weihnachten und Ostern sind davon getrennt/u,'Saisonpunkte werden klar von XP getrennt');
     assert.match(html,/Privater OBS-Widget-Link/u);
     assert.match(html,/Erweiterte Einstellungen/u);
-    assert.match(html,/<h2>Chat-Ideen<\/h2>[\s\S]*Wie früh soll der Bot ein Thema erkennen\?/u,'Chat-Ideen bieten eine verständliche Empfindlichkeitsauswahl');
+    assert.match(html,/<h2>Gesprächs-Funken<\/h2>[\s\S]*Wie früh soll der Bot ein Thema erkennen\?/u,'Gesprächs-Funken bieten Status, Vorschau und verständliche Empfindlichkeitsauswahl');
+    assert.match(html,/spark-preview[^]*Lokale Vorschau anzeigen/u,'Gesprächs-Funken können ohne Chat-Nachricht lokal geprüft werden');
     assert.match(html,/Nach Freigabe im Chat veröffentlichen/u,'öffentliche Fragen erfordern ausdrücklich Freigabe');
     assert.doesNotMatch(html,/data-setting-target="general"/u,'leere Allgemein-Seite ist nicht in der Navigation');
     assert.match(html,/data-community-target="music"[^>]*>Song-Wünsche/u,'Song-Wünsche sind unter Community erreichbar');

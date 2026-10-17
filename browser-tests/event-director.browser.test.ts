@@ -19,7 +19,7 @@ test('Event Director settings card loads and remains usable at an iPhone viewpor
     const callback=await fetch(`${base}/dashboard/oauth/callback?code=synthetic&state=${state}`,{headers:{Cookie:stateCookie},redirect:'manual'});assert.equal(callback.status,303);
     const session=callback.headers.getSetCookie().find(value=>value.startsWith('community_admin='))?.split(';')[0]||'';assert.ok(session);
     browser=await chromium.launch({headless:true});const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});await context.addCookies([{name:'community_admin',value:session.split('=')[1]!,domain:'127.0.0.1',path:'/',httpOnly:true,secure:true,sameSite:'Lax'}]);
-    const page=await context.newPage(),errors:string[]=[];page.on('pageerror',error=>errors.push(error.message));await page.goto(`${base}/dashboard#community/events`,{waitUntil:'domcontentloaded'});
+    const page=await context.newPage(),errors:string[]=[];page.on('pageerror',error=>errors.push(error.message));await page.goto(`${base}/dashboard#spiele/director`,{waitUntil:'domcontentloaded'});
     const card=page.locator('[data-event-director]');await card.waitFor({state:'visible'});await page.getByLabel('Event Director aktiv').waitFor();await page.getByLabel('Boss-Intervall mindestens (Min.)').waitFor();
     const dimensions=await card.evaluate(element=>({width:element.getBoundingClientRect().width,right:element.getBoundingClientRect().right,viewport:innerWidth}));assert.ok(dimensions.width>0&&dimensions.right<=dimensions.viewport+1,`Director-Karte passt in den mobilen Viewport: ${JSON.stringify(dimensions)}`);assert.deepEqual(errors,[]);
     await context.close();
