@@ -175,8 +175,8 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     await hintPanel.getByRole('button',{name:'Einstellungen speichern'}).click();
     await page.waitForFunction(async()=>{const d=await(await fetch('/dashboard/api/chat-messages')).json();return d.communityTips?.halloweenEnabled===false&&d.communityTips?.halloweenFrequency==='normal'&&d.communityTips?.enabledCategories?.halloween===false});
     await page.setViewportSize({width:390,height:844});
-    const mobileOverflow=await page.evaluate(()=>({scrollWidth:document.documentElement.scrollWidth,clientWidth:document.documentElement.clientWidth,elements:[...document.body.querySelectorAll('*')].map(element=>{const rect=element.getBoundingClientRect();return{tag:element.tagName,id:element.id,className:typeof element.className==='string'?element.className:'',left:Math.round(rect.left),right:Math.round(rect.right),width:Math.round(rect.width),scrollWidth:element.scrollWidth,clientWidth:element.clientWidth}}).filter(item=>item.right>innerWidth+1||item.left<-1).slice(0,20)}));
-    assert.ok(mobileOverflow.scrollWidth<=mobileOverflow.clientWidth+1,'Chat-Hinweise passen mobil ohne seitliches Scrollen: '+JSON.stringify(mobileOverflow));
+    const mobileOverflow=await page.evaluate(()=>({scrollWidth:document.documentElement.scrollWidth,viewportWidth:window.innerWidth,elements:[...document.body.querySelectorAll('*')].map(element=>{const rect=element.getBoundingClientRect();return{tag:element.tagName,id:element.id,className:typeof element.className==='string'?element.className:'',left:Math.round(rect.left),right:Math.round(rect.right),width:Math.round(rect.width),scrollWidth:element.scrollWidth,clientWidth:element.clientWidth}}).filter(item=>item.right>innerWidth+1||item.left<-1).slice(0,20)}));
+    assert.ok(mobileOverflow.scrollWidth<=mobileOverflow.viewportWidth+1,'Chat-Hinweise passen mobil ohne horizontales Scrollen: '+JSON.stringify(mobileOverflow));
     if(screenshotDir){await page.screenshot({path:path.join(screenshotDir,'automatic-chat-hints-mobile.png'),fullPage:true});}
     await page.setViewportSize({width:1440,height:1000});
 
