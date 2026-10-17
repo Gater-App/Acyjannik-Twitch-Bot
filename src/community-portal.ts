@@ -199,7 +199,22 @@ export class ViewerCommunityPortal {
 
   private async startAccountLink(req:IncomingMessage,res:ServerResponse):Promise<void>{
     if(this.rejectRateLimit(res,this.rates.consume('account-link-start',trustedClientAddress(req),10,10*60_000),'Zu viele Verknüpfungsversuche. Bitte später erneut versuchen.'))return;
-    const origin=req.headers.origin;if(origin&&origin!==this.publicOrigin){this.sendJson(res,403,{error:'Die Anfrage stammt nicht von dieser Website.'});return;}
+    const origin=req.headers.origin;
+    // Some embedded browsers send the opaque Origin value "null". This route
+    // still requires the high-entropy, short-lived, single-use intent token
+    // below, so treat that value like an omitted Origin rather than accepting
+    // an arbitrary site. Any concrete foreign origin remains rejected.
+    if(origin&&origin!=='null'){
+      let normalizedOrigin:string;
+      try{
+        const parsed=new URL(origin);
+        if(parsed.username||parsed.password||parsed.pathname!=='/'||parsed.search||parsed.hash)throw new Error('invalid origin');
+        normalizedOrigin=parsed.origin;
+      }catch{
+        this.sendJson(res,403,{error:'Die Anfrage stammt nicht von dieser Website.'});return;
+      }
+      if(normalizedOrigin!==this.publicOrigin){this.sendJson(res,403,{error:'Die Anfrage stammt nicht von dieser Website.'});return;}
+    }
     let raw='';for await(const chunk of req){raw+=chunk;if(raw.length>2_000){this.sendJson(res,400,{error:'Der Verknüpfungslink ist ungültig.'});return;}}
     const token=new URLSearchParams(raw).get('token')||'';
     if(!/^[A-Za-z0-9_-]{43}$/u.test(token)){this.sendJson(res,400,{error:'Der Verknüpfungslink ist ungültig. Starte den Vorgang bitte erneut in Discord.'});return;}
