@@ -1020,6 +1020,17 @@ export class FeatureStore {
     return row?.twitch_user_id;
   }
 
+  processDiscordEvent<T>(eventId:string,now:number,perform:()=>T):{result:T;duplicate:boolean} {
+    if(!/^\d{17,20}$/u.test(eventId))throw new Error('Ungültige Discord-Ereignis-ID.');
+    return this.db.transaction(()=>{
+      const previous=this.db.prepare('SELECT result_json FROM discord_event_inbox WHERE event_id=?').get(eventId) as {result_json:string}|undefined;
+      if(previous)return {result:JSON.parse(previous.result_json) as T,duplicate:true};
+      const result=perform();
+      this.db.prepare('INSERT INTO discord_event_inbox(event_id,result_json,created_at) VALUES(?,?,?)').run(eventId,JSON.stringify(result),now);
+      return {result,duplicate:false};
+    })();
+  }
+
   disconnectCommunityAccountLink(input:{discordUserId:string;now:number}):boolean {
     return this.db.transaction(()=>{
       const row=this.db.prepare('SELECT twitch_user_id FROM community_account_links WHERE discord_user_id=?').get(input.discordUserId) as {twitch_user_id:string}|undefined;
