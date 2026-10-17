@@ -338,6 +338,7 @@ async function runLiveMode(): Promise<void> {
       community.moderatorPranks,async(login)=>{const user=(await api.getUsers([login]))[0];return user?{id:user.id,login:user.login,displayName:user.display_name}:undefined;},
       {weights:config.eventWeights,source:process.env.EVENT_WEIGHTS_JSON?.trim()?'EVENT_WEIGHTS_JSON (beim Bot-Start geladen)':'Standardwerte aus src/config.ts'},
       ()=>communityPortalHealth.isAvailable(),botLifecycle,vipService,vipExperience,()=>oauthServer.startUrlFor('vip-verification'));
+    dashboard.setDiscordGameHandler((message,game,args,now)=>community.discordGameReply(message,game,args,now));
     logger.info('OAuth-Server erreichbar unter http://127.0.0.1:3000/oauth/start');
     await dashboard.start();
     eventsub.start();
