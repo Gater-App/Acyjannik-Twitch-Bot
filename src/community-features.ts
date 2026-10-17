@@ -150,14 +150,18 @@ export class CommunityFeatures {
     return [];
   }
 
-  discordGameReply(message:ChatMessage,game:'8ball'|'rps',args:string[],now=Date.now()):string {
+  discordGameReply(message:ChatMessage,game:'8ball'|'rps'|'guess',args:string[],now=Date.now()):string {
     const modules=this.store.config<Record<string,boolean>>('modules',{});
     if(game==='8ball'){
       if(modules.eightBall===false)return '🎱 Das 8-Ball-Spiel ist derzeit deaktiviert.';
       return this.eightBall(message,args,now)||'🎱 Bitte versuche es gleich noch einmal.';
     }
-    if(modules.rps===false)return '✂️ Schere, Stein, Papier ist derzeit deaktiviert.';
-    return this.rps(message,args,now);
+    if(game==='rps'){
+      if(modules.rps===false)return '✂️ Schere, Stein, Papier ist derzeit deaktiviert.';
+      return this.rps(message,args,now);
+    }
+    if(modules.guess===false)return '🔢 Das Zahlenraten ist derzeit deaktiviert.';
+    return this.guess(message,args,now);
   }
 
   private handleIdeaCommand(message:ChatMessage,command:string,args:string[],now:number,say:(text:string,category?:ChatCategory)=>CommandReply[]):CommandReply[] {
