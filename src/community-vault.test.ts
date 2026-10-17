@@ -23,7 +23,8 @@ test('Tresor speichert keine Ratestrings, schützt den Geheimcode und begrenzt V
   vault.guess(chat('second','427',now),['427'],now);
   const rows=store.miniGameQuery(db=>db.prepare('SELECT exact_count,misplaced_count FROM community_vault_attempts ORDER BY submitted_at').all()) as Array<{exact_count:number;misplaced_count:number}>;
   assert.deepEqual(rows,[{exact_count:0,misplaced_count:2},{exact_count:0,misplaced_count:2}]);
-  assert.equal(JSON.stringify(store.miniGameQuery(db=>db.prepare('SELECT * FROM community_vault_attempts').all())).includes('404'),false);
+  const attemptColumns=store.miniGameQuery(db=>db.prepare('PRAGMA table_info(community_vault_attempts)').all()) as Array<{name:string}>;
+  assert.equal(attemptColumns.some(({name})=>/guess|code/iu.test(name)),false,'persisted attempts contain feedback only, never the submitted guess');
   const repeatedMessage=chat('repeat','000',now+1_000);repeatedMessage.senderUserId='viewer-first';const repeated=vault.guess(repeatedMessage,['000'],now+1_000);assert.match(repeated.privateHint||'',/Warte kurz/u);
   store.close();
 });
