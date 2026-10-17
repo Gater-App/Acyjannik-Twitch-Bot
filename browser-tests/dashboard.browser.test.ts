@@ -461,21 +461,41 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
         assert.ok(await view(name).isVisible(), `${name} bleibt bei ${label} sichtbar`);
         const widthCheck = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, content: document.documentElement.scrollWidth, overflowing: [...document.querySelectorAll('body *')].map((node) => ({ tag: node.tagName, id: (node as HTMLElement).id, className: typeof (node as HTMLElement).className === 'string' ? (node as HTMLElement).className : '', right: Math.round(node.getBoundingClientRect().right), width: Math.round(node.getBoundingClientRect().width) })).filter((node) => node.right > document.documentElement.clientWidth + 1 && node.width > 0).sort((a, b) => b.right - a.right).slice(0, 5) }));
         assert.ok(widthCheck.content <= widthCheck.viewport + 1, `${name} hat bei ${label} keinen horizontalen Seitenüberlauf: ${JSON.stringify(widthCheck)}`);
+        if(label==='iphone'){const nav=await page.locator('.main-nav').evaluate((node)=>[...node.querySelectorAll('button,a')].map(el=>{const r=el.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,height:r.height}}));assert.equal(nav.length,7,'mobile navigation shows all seven sections');assert.ok(nav.every(item=>item.height>=44),'mobile navigation has touch targets of at least 44 pixels');for(let i=0;i<nav.length;i++)for(let j=i+1;j<nav.length;j++)assert.ok(nav[i].right<=nav[j].left+1||nav[j].right<=nav[i].left+1||nav[i].bottom<=nav[j].top+1||nav[j].bottom<=nav[i].top+1,'mobile navigation items do not overlap')}
         await screenshot(`acy-ux50-${label}-${name}`);
       }
     }
 
-    const streamerPage = await browser.newPage();
+    const streamerPage = await context.newPage();
     await streamerPage.context().addCookies([{ name: 'community_admin', value: sessionCookie.split('=')[1], domain: '127.0.0.1', path: '/', httpOnly: true, secure: true, sameSite: 'Lax' }]);
     streamerPage.on('pageerror', (error) => pageErrors.push(error.message));
     await streamerPage.route('**/dashboard/api/minigames', (route) => route.fulfill({ json: { settings: { enabled: true }, state: { imposter: { phase: 'registration', players: [{}, {}], endsAt: Date.now() + 60_000 }, detective: null } } }));
-    await streamerPage.goto(`${base}/streamer`, { waitUntil: 'domcontentloaded', timeout: 10000 });
+    const interactiveSettings={battleEnabled:true,secretEventsEnabled:true,gameNightEnabled:true,elio2Enabled:true};
+    const interactiveCalls: Array<{action:string;body:Record<string,unknown>}> = [];
+    await streamerPage.route('**/dashboard/api/interactive', async (route) => {
+      if (route.request().method()==='GET') return route.fulfill({json:{settings:interactiveSettings,active:[],history:[]}});
+      const body=route.request().postDataJSON() as {action:string;[key:string]:unknown};interactiveCalls.push({action:body.action,body});
+      return route.fulfill({status:201,json:{ok:true,message:'Aktion vom Backend bestätigt.'}});
+    });
+    await streamerPage.route('**/dashboard/api/discord', (route) => route.fulfill({json:{settings:{enabled:true,notifyInteractiveEvents:true,rewardsChannelId:'configured-test-channel'}}}));
+    await streamerPage.route('**/dashboard/api/discord/channels', (route) => route.fulfill({json:{channels:[{id:'configured-test-channel',usable:true}]}}));
+    await streamerPage.goto(`${base}/dashboard`, { waitUntil: 'domcontentloaded', timeout: 10000 });
+    await streamerPage.getByRole('link', { name: 'Streamer-Steuerung öffnen' }).click();
+    await streamerPage.waitForURL('**/streamer');
     assert.equal(await streamerPage.getByRole('heading', { name: /Streamer-Steuerung/u }).isVisible(), true);
     await streamerPage.getByRole('heading',{name:'ACY Live Test'}).waitFor({state:'visible'});
     assert.equal(await streamerPage.locator('#live-viewers').innerText(),'42','Live-Control zeigt die vom Server gelieferten Zuschauerzahlen');
     assert.match(await streamerPage.locator('#chat-receive').innerText(),/Bestätigt/u);
     assert.match(await streamerPage.locator('#chat-send').innerText(),/Von Twitch angenommen/u);
-    assert.equal(await streamerPage.locator('form, input, select, textarea').count(), 0, 'Streamer-Modus bleibt eine Bedienoberfläche ohne Konfigurationsformulare');
+    assert.equal(await streamerPage.getByRole('heading',{name:'Community Interactive'}).isVisible(),true,'Streamer-Cockpit enthält die zentralen Community-Funktionen');
+    let actionResponse=streamerPage.waitForResponse((response)=>new URL(response.url()).pathname==='/dashboard/api/interactive'&&response.request().method()==='POST');await streamerPage.getByRole('button',{name:'Battle starten'}).click();await actionResponse;
+    assert.equal(interactiveCalls.at(-1)?.action,'start-battle','Battle wird über den bestehenden geschützten API-Vertrag gestartet');
+    actionResponse=streamerPage.waitForResponse((response)=>new URL(response.url()).pathname==='/dashboard/api/interactive'&&response.request().method()==='POST');await streamerPage.getByRole('button',{name:'Event starten'}).click();await actionResponse;
+    assert.equal(interactiveCalls.at(-1)?.action,'start-secret','Manuelles geheimes Community-Event ist direkt erreichbar');assert.equal(interactiveCalls.at(-1)?.body.kind,'mystery_case');
+    await streamerPage.locator('#game-title').fill('ACY Game Night');await streamerPage.locator('#game-name').fill('Testspiel');await streamerPage.locator('#game-time').fill('2026-11-15T19:00');
+    actionResponse=streamerPage.waitForResponse((response)=>new URL(response.url()).pathname==='/dashboard/api/interactive'&&response.request().method()==='POST');await streamerPage.getByRole('button',{name:'Spieleabend anlegen'}).click();await actionResponse;
+    assert.equal(interactiveCalls.at(-1)?.action,'create-game-night','Game Night wird über den vorhandenen Backend-Endpunkt angelegt');
+    assert.match(await streamerPage.locator('#discord-publish-status').innerText(),/Ereigniskanal und Sende-\/Einbettungsrechte zuletzt bestätigt/u);
     await streamerPage.getByText(/Anmeldung läuft/u).first().waitFor({ state: 'visible' });
     assert.equal(await streamerPage.locator('#active button').count(), 0, 'Statusbereich zeigt laufende Spiele ohne doppelte Steuerknöpfe');
     assert.equal(await streamerPage.locator('#games').getByRole('button', { name: 'Rollen verteilen' }).isVisible(), true, 'nächste Imposter-Aktion ist an einer einzigen Stelle verfügbar');
@@ -484,12 +504,21 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
       await streamerPage.setViewportSize({ width, height });
       const size = await streamerPage.evaluate(() => ({ viewport: document.documentElement.clientWidth, content: document.documentElement.scrollWidth }));
       assert.ok(size.content <= size.viewport + 1, `Streamer-Modus hat bei ${label} keinen horizontalen Überlauf: ${JSON.stringify(size)}`);
+      if(label==='iphone') assert.ok(await streamerPage.getByRole('button',{name:'Spieleabend anlegen'}).evaluate((button)=>button.getBoundingClientRect().height>=44),'Mobile Aktionen haben ausreichend große Touchflächen');
       if (ux50ScreenshotDir) {
         fs.mkdirSync(ux50ScreenshotDir, { recursive: true });
         await streamerPage.screenshot({ path: path.join(ux50ScreenshotDir, `acy-ux50-${label}-streamer.png`), fullPage: true });
       }
     }
     await streamerPage.close();
+
+    const failedStatusPage=await context.newPage();
+    await failedStatusPage.route('**/dashboard/api/status',route=>route.fulfill({status:503,json:{error:'Statusquelle nicht erreichbar.'}}));
+    await failedStatusPage.goto(`${base}/streamer`,{waitUntil:'domcontentloaded'});
+    await failedStatusPage.getByText('Aktualisierung fehlgeschlagen',{exact:true}).waitFor({state:'visible'});
+    assert.match(await failedStatusPage.locator('#stream-status').innerText(),/Statusquelle nicht erreichbar/u,'ein API-Fehler bleibt sichtbar statt als gültiger Status zu erscheinen');
+    assert.match(await failedStatusPage.locator('#active').innerText(),/Daten derzeit nicht verfügbar/u,'alte aktive Aktionen werden bei einem Ladefehler nicht als aktuell dargestellt');
+    await failedStatusPage.close();
 
     const portalPage = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
     portalPage.on('pageerror', (error) => pageErrors.push(error.message));
