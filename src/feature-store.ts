@@ -1015,6 +1015,11 @@ export class FeatureStore {
     return row?{linked:true,linkedAt:row.linked_at}:{linked:false};
   }
 
+  communityTwitchIdForDiscord(discordUserId:string):string|undefined {
+    const row=this.db.prepare('SELECT twitch_user_id FROM community_account_links WHERE discord_user_id=?').get(discordUserId) as {twitch_user_id:string}|undefined;
+    return row?.twitch_user_id;
+  }
+
   disconnectCommunityAccountLink(input:{discordUserId:string;now:number}):boolean {
     return this.db.transaction(()=>{
       const row=this.db.prepare('SELECT twitch_user_id FROM community_account_links WHERE discord_user_id=?').get(input.discordUserId) as {twitch_user_id:string}|undefined;
@@ -1154,7 +1159,7 @@ export class FeatureStore {
 
   private enqueueDiscordEvent(type:string,aggregateId:string,payload:unknown,now:number):string {
     const settings=this.config<Record<string,unknown>>('discord_integration',{});
-    const toggle=type.startsWith('idea.')?'notifyIdeas':type==='level.up'?'notifyLevels':type==='mystery.drop'?'notifyDrops':type==='quest.completed'?'notifyQuests':type==='seasonal.event'?'notifySeasonal':type==='twitch.live'?'notifyLive':null;
+    const toggle=type.startsWith('idea.')?'notifyIdeas':type==='level.up'?'notifyLevels':type==='mystery.drop'?'notifyDrops':type.startsWith('mystery.drop.')?'discordDropsEnabled':type==='quest.completed'?'notifyQuests':type==='seasonal.event'?'notifySeasonal':type==='twitch.live'?'notifyLive':null;
     if(settings.enabled!==true||!toggle||settings[toggle]!==true)return '';
     const id=randomUUID();this.db.prepare("INSERT INTO discord_event_outbox(id,event_type,aggregate_id,payload_json,created_at,available_at) VALUES(?,?,?,?,?,?)")
       .run(id,type,aggregateId,JSON.stringify(payload??{}),now,now);return id;
@@ -2170,9 +2175,15 @@ export class FeatureStore {
   recordCommunityEvent(type: string, payload: unknown, now: number): void {
     this.db.prepare('INSERT INTO community_events(type,payload_json,created_at) VALUES(?,?,?)').run(type, JSON.stringify(payload ?? {}), now);
     const data=(payload&&typeof payload==='object'?payload:{}) as Record<string,unknown>;
+    const discord=this.config<{discordDropsEnabled?:boolean}>('discord_integration',{});
     if(type==='quest.status.changed'&&data.status==='completed')this.enqueueDiscordEvent('quest.completed',String(data.id||`quest:${now}`),{title:String(data.title||'Eine Community-Quest'),status:'completed'},now);
     if(type==='seasonal.event.started'||type==='seasonal.event.ended')this.enqueueDiscordEvent('seasonal.event',String(data.id||`season:${now}`),data,now);
-    if(type==='mystery.drop.completed'&&Number(data.participants)>0)this.enqueueDiscordEvent('mystery.drop',String(data.id||`drop:${now}`),{participants:Number(data.participants)},now);
+    if(type==='mystery.drop.started'&&discord.discordDropsEnabled===true)this.enqueueDiscordEvent(type,String(data.id||`drop:${now}`),data,now);
+    if(type==='mystery.drop.completed'){
+      if(discord.discordDropsEnabled===true)this.enqueueDiscordEvent(type,String(data.id||`drop:${now}`),data,now);
+      else if(Number(data.participants)>0)this.enqueueDiscordEvent('mystery.drop',String(data.id||`drop:${now}`),{participants:Number(data.participants)},now);
+    }
+    if(type==='mystery.drop.canceled'&&discord.discordDropsEnabled===true)this.enqueueDiscordEvent(type,String(data.id||`drop:${now}`),data,now);
     this.db.prepare('DELETE FROM community_events WHERE id <= (SELECT MAX(id)-10000 FROM community_events)').run();
   }
 

@@ -91,6 +91,16 @@ export class CommunityArcade {
     if(!settings.petEnabled)return {ok:false,message:'Elio macht gerade Pause; die Katzenpflege ist derzeit deaktiviert.',remainingMs:0};
     return this.interact(m,kind,settings,now,true);
   }
+  claimFromPortal(m:ChatMessage,now=Date.now(),expectedDropId?:string):{ok:boolean;joined:boolean;message:string;dropId?:string;participants?:number} {
+    if(!this.settings().dropsEnabled)return {ok:false,joined:false,message:'Mystery Drops sind derzeit deaktiviert.'};
+    return this.store.miniGameTransaction(db=>{
+      const drop=db.prepare("SELECT id,ends_at FROM mystery_drops WHERE status IN ('announced','claiming') ORDER BY created_at DESC LIMIT 1").get() as {id:string;ends_at:number}|undefined;
+      if(!drop||drop.ends_at<=now||(expectedDropId&&drop.id!==expectedDropId))return {ok:false,joined:false,message:'Dieser Mystery Drop ist nicht mehr offen.'};
+      const inserted=db.prepare('INSERT OR IGNORE INTO mystery_claims(drop_id,user_id,display_name,claimed_at) VALUES(?,?,?,?)').run(drop.id,m.senderUserId,clean(m.senderDisplayName,48),now).changes===1;
+      const participants=(db.prepare('SELECT COUNT(*) n FROM mystery_claims WHERE drop_id=?').get(drop.id) as {n:number}).n;
+      return {ok:true,joined:inserted,message:inserted?'Du bist beim Mystery Drop dabei!':'Deine Teilnahme ist bereits gespeichert.',dropId:drop.id,participants};
+    });
+  }
   snapshot(type:'pet'|'drop'|'wheel',now=Date.now()):Record<string,unknown> {
     return this.store.miniGameQuery(db=>{
       if(type==='pet'){
@@ -102,7 +112,7 @@ export class CommunityArcade {
         const d=db.prepare("SELECT * FROM mystery_drops WHERE status IN ('announced','claiming','resolving','completed') ORDER BY created_at DESC LIMIT 1").get() as {id:string;rarity:string;status:string;starts_at:number;ends_at:number;result_json:string|null;resolved_at:number|null}|undefined;
         if(!d||(['completed'].includes(d.status)&&now-(d.resolved_at||0)>12000))return {type,visible:false,capturedAt:now};
         const participants=(db.prepare('SELECT COUNT(*) n FROM mystery_claims WHERE drop_id=?').get(d.id) as {n:number}).n;
-        return {type,visible:this.settings().dropsEnabled,drop:{rarityLabel:dropRarityLabel(d.rarity),status:d.status,endsAt:d.ends_at,participants,result:d.result_json?JSON.parse(d.result_json):null},capturedAt:now};
+        return {type,visible:this.settings().dropsEnabled,drop:{id:d.id,rarityLabel:dropRarityLabel(d.rarity),status:d.status,endsAt:d.ends_at,participants,result:d.result_json?JSON.parse(d.result_json):null},capturedAt:now};
       }
       const w=db.prepare("SELECT * FROM chaos_wheel_spins WHERE status IN ('active','completed','canceled') ORDER BY created_at DESC LIMIT 1").get() as {id:string;title:string;status:string;created_at:number;resolved_at:number|null;ends_at:number|null;action_type:string;wheel_key:string|null}|undefined;
       const visible=!!w&&this.settings().wheelEnabled&&(w.status==='active'||now-(w.resolved_at??w.created_at)<15_000);
@@ -207,7 +217,7 @@ export class CommunityArcade {
       for(const c of due.claims)this.store.awardXp(`drop:${due.id}:${c.user_id}`,c.user_id,c.display_name,due.amount,'bonus:mystery-drop',now,50);
       const completed=this.store.miniGameTransaction(db=>{
         const changed=db.prepare("UPDATE mystery_drops SET status='completed',result_json=?,resolved_at=? WHERE id=? AND status='resolving'").run(JSON.stringify(due.result),now,due.id).changes===1;
-        if(changed&&due.claims.length)this.store.recordCommunityEvent('mystery.drop.completed',{id:due.id,participants:due.claims.length,rewardXp:due.amount},now);
+        if(changed)this.store.recordCommunityEvent('mystery.drop.completed',{id:due.id,participants:due.claims.length,rewardXp:due.claims.length?due.amount:0},now);
         return changed;
       });
       if(completed)out.push({message:due.claims.length
@@ -369,14 +379,10 @@ export class CommunityArcade {
     catch{return '🎁 Es läuft bereits ein Drop.';}
   }
   private claim(m:ChatMessage,now:number):string {
-    return this.store.miniGameTransaction(db=>{
-      const d=db.prepare("SELECT id,ends_at FROM mystery_drops WHERE status IN ('announced','claiming') ORDER BY created_at DESC LIMIT 1").get() as {id:string;ends_at:number}|undefined;
-      if(!d||d.ends_at<=now)return '🎁 Gerade ist kein Drop zum Claim offen.';
-      const result=db.prepare('INSERT OR IGNORE INTO mystery_claims(drop_id,user_id,display_name,claimed_at) VALUES(?,?,?,?)').run(d.id,m.senderUserId,clean(m.senderDisplayName,48),now);
-      return result.changes?'🎁 Du bist beim Mystery Drop dabei!':'🎁 Dein Claim ist bereits gespeichert.';
-    });
+    const result=this.claimFromPortal(m,now);
+    return result.ok?`🎁 ${result.message}`:result.message;
   }
-  private cancelDrop(now:number):boolean {return this.store.miniGameTransaction(db=>db.prepare("UPDATE mystery_drops SET status='canceled',resolved_at=? WHERE status IN ('announced','claiming')").run(now).changes>0);}
+  private cancelDrop(now:number):boolean {return this.store.miniGameTransaction(db=>{const drop=db.prepare("SELECT id FROM mystery_drops WHERE status IN ('announced','claiming')").get() as {id:string}|undefined;if(!drop)return false;const changed=db.prepare("UPDATE mystery_drops SET status='canceled',resolved_at=? WHERE id=? AND status IN ('announced','claiming')").run(now,drop.id).changes===1;if(changed)this.store.recordCommunityEvent('mystery.drop.canceled',{id:drop.id},now);return changed;});}
   private spin(actor:string,now:number,includeTasks=false):string {
     if(this.store.config('arcade_wheel_paused',false))return '🎡 Das Rad ist pausiert.';
     if(!includeTasks&&!this.settings().wheelAutoPilotEnabled)return '🎡 Der Auto-Pilot ist ausgeschaltet.';
@@ -460,6 +466,7 @@ export class CommunityArcade {
     const id=randomUUID(),duration=this.settings().dropDurationMs,ends=now+duration;
     db.prepare("INSERT INTO mystery_drops(id,rarity,status,starts_at,ends_at,created_by,created_at,source_spin_id) VALUES(?,?,'claiming',?,?,?,?,?)")
       .run(id,rarity,now,ends,actor,now,sourceSpinId??null);
+    this.store.recordCommunityEvent('mystery.drop.started',{id,rarity,endsAt:ends,durationMs:duration},now);
     return `🎁 Ein Mystery Drop startet! Schreibt innerhalb von ${Math.ceil(duration/1000)} Sekunden !claim, um mitzumachen!`;
   }
   private bonusXpRemaining(db:BetterSqlite3.Database,userId:string,now:number,dailyCap:number):number{
