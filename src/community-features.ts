@@ -7,6 +7,7 @@ import { ConversationSpark } from './conversation-spark.js';
 import { MiniGames } from './mini-games.js';
 import { CommunityArcade } from './community-arcade.js';
 import { CommunityInteractive } from './community-interactive.js';
+import { CommunityChaos } from './community-chaos.js';
 import { CommunityVault } from './community-vault.js';
 import { CommunityHauntedHouse } from './community-haunted-house.js';
 import { ModeratorPranks } from './moderator-pranks.js';
@@ -25,6 +26,7 @@ export class CommunityFeatures {
   readonly miniGames: MiniGames;
   readonly arcade: CommunityArcade;
   readonly interactive:CommunityInteractive;
+  readonly chaos:CommunityChaos;
   readonly vault: CommunityVault;
   readonly moderatorPranks: ModeratorPranks;
   readonly hauntedHouse: CommunityHauntedHouse;
@@ -34,7 +36,7 @@ export class CommunityFeatures {
     private readonly config: AppConfig,
     private readonly lookupUser: UserLookup = async () => undefined,
     private readonly random: RandomInclusive = secureRandomInclusive,
-  ) { this.questPoll = new QuestPollFeatures(store, config); this.conversationSpark = new ConversationSpark(store, config.broadcasterUserId); this.miniGames = new MiniGames(store, config); this.arcade = new CommunityArcade(store,config.broadcasterUserId); this.interactive=new CommunityInteractive(store); this.vault = new CommunityVault(store,config.botUserId); this.hauntedHouse=new CommunityHauntedHouse(store); this.moderatorPranks = new ModeratorPranks(store,()=>((this.vault.publicSnapshot().vault as {status?:string}|undefined)?.status==='active'),()=>this.isMajorGameBusy()); }
+  ) { this.questPoll = new QuestPollFeatures(store, config); this.conversationSpark = new ConversationSpark(store, config.broadcasterUserId); this.miniGames = new MiniGames(store, config); this.arcade = new CommunityArcade(store,config.broadcasterUserId); this.interactive=new CommunityInteractive(store); this.chaos=new CommunityChaos(store); this.vault = new CommunityVault(store,config.botUserId); this.hauntedHouse=new CommunityHauntedHouse(store); this.moderatorPranks = new ModeratorPranks(store,()=>((this.vault.publicSnapshot().vault as {status?:string}|undefined)?.status==='active'),()=>this.isMajorGameBusy()); }
 
   private isMajorGameBusy():boolean {
     const now=Date.now(),mini=this.miniGames.snapshot(),drop=this.arcade.snapshot('drop'),wheel=this.arcade.wheelStatus();
@@ -81,14 +83,14 @@ export class CommunityFeatures {
       pet:arcade.petEnabled,petCare:arcade.petEnabled&&!Boolean((this.arcade.snapshot('pet').pet as {paused?:boolean}|undefined)?.paused),
       drops:arcade.dropsEnabled,wheel:arcade.wheelEnabled,imposter:mini.enabled,detective:mini.enabled,vault:this.vault.settings().enabled,
       quests:modules.quests!==false&&eventSettings.enabled!==false,ideas:modules.ideas!==false&&ideaSettings.enabled!==false&&ideaSettings.chatEnabled!==false,spark:spark.enabled,
-      eightBall:modules.eightBall!==false,rps:modules.rps!==false,guess:modules.guess!==false,duels:modules.duels!==false};
+      eightBall:modules.eightBall!==false,rps:modules.rps!==false,guess:modules.guess!==false,duels:modules.duels!==false,chaos:this.chaos.settings().enabled};
   }
 
   tick(now = Date.now(), advanceMiniGames = true): string[] { return this.tickMessages(now, advanceMiniGames).map(item => item.message); }
   tickMessages(now = Date.now(), advanceMiniGames = true): OutboundChatMessage[] {
     this.refreshScheduledEvents(now); this.questPoll.tick(now); this.conversationSpark.tick(now); this.moderatorPranks.tick(now);
     this.interactive.tick(now);
-    return [...(advanceMiniGames ? this.miniGames.tickMessages(now) : []), ...this.arcade.tickMessages(now), ...this.vault.tickMessages(now)];
+    return [...this.chaos.finishDue(now).map(message=>({message,category:'community' as const})),...(advanceMiniGames ? this.miniGames.tickMessages(now) : []), ...this.arcade.tickMessages(now), ...this.vault.tickMessages(now)];
   }
 
   async handle(message: ChatMessage, command: string, args: string[], now = Date.now()): Promise<CommandReply[]> {
@@ -98,6 +100,11 @@ export class CommunityFeatures {
       ...(message.messageId ? { replyParentMessageId: message.messageId } : {}) }];
 
     if(command==='idee'||command==='ideen')return this.handleIdeaCommand(message,command,args,now,say);
+
+    if(message.senderUserId!==this.config.botUserId&&message.senderLogin.toLowerCase()!==this.config.botLogin.toLowerCase()){
+      const chaosReply=this.chaos.participate(message,command,now);
+      if(chaosReply!==undefined)return say(chaosReply,'community');
+    }
 
     const interactiveReply=this.interactiveCommand(message,command,args,now);
     if(interactiveReply!==undefined)return say(interactiveReply,'community');

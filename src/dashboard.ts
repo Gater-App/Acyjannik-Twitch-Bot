@@ -46,6 +46,8 @@ import { COMMUNITY_WORLD_BADGES, CommunityWorld } from './community-world.js';
 import { ELIO_2_CARD, ELIO_2_SCRIPT } from './elio-2-ui.js';
 import { INTERACTIVE_COMMUNITY_CARD, INTERACTIVE_COMMUNITY_SCRIPT } from './community-interactive-ui.js';
 import { CommunityInteractive, type InteractiveEventKind, type InteractivePlatform } from './community-interactive.js';
+import { CommunityChaos, CHAOS_GAMES, type ChaosGame } from './community-chaos.js';
+import { COMMUNITY_CHAOS_CARD, COMMUNITY_CHAOS_SCRIPT } from './community-chaos-ui.js';
 
 interface Session { userId: string; login: string; csrf: string; expiresAt: number; role: 'admin'|'moderator'; }
 interface RuntimeStatus { twitchConnected: boolean; channel: string; channelProfileImageUrl?:string; startedAt: number; lastError?: string; queued?: number; suppressed?: number; streamLive?: boolean|undefined; streamStatusCheckedAt?: number; streamSnapshot?:{id?:string;title?:string;gameName?:string;viewerCount?:number;startedAt?:string;thumbnailUrl?:string}; lastChatReceiveAt?:number; lastBotChatSendAt?:number; lastBotChatSendErrorAt?:number; chatResponse?: { profile: string; suppressed: number; deferred: number }; }
@@ -158,6 +160,7 @@ const SETTINGS_SCRIPT = `api('settings').then(s=>document.querySelector('#settin
 
 export class DashboardServer {
   private readonly interactive: CommunityInteractive;
+  private readonly chaos: CommunityChaos;
   private readonly communityWorld:CommunityWorld;
   private playDiscordGame:((message:ChatMessage,game:'8ball'|'rps'|'guess',args:string[],now:number)=>string)|undefined;
   private server: http.Server | undefined;
@@ -201,7 +204,7 @@ export class DashboardServer {
     private readonly vipService?:TwitchVipService,
     private readonly vipExperience?:VipExperience,
     private readonly vipAuthorizationUrl?:()=>string,
-  ) { this.adminIds = new Set((process.env.DASHBOARD_ADMIN_IDS || '').split(/[ ,]+/u).filter(Boolean)); this.communityWorld=new CommunityWorld(store); this.interactive=new CommunityInteractive(store); }
+  ) { this.adminIds = new Set((process.env.DASHBOARD_ADMIN_IDS || '').split(/[ ,]+/u).filter(Boolean)); this.communityWorld=new CommunityWorld(store); this.interactive=new CommunityInteractive(store); this.chaos=new CommunityChaos(store); }
 
   setDiscordGameHandler(handler:(message:ChatMessage,game:'8ball'|'rps'|'guess',args:string[],now:number)=>string):void { this.playDiscordGame=handler; }
 
@@ -316,7 +319,9 @@ export class DashboardServer {
       if(session.role==='moderator'){
         if(this.rejectRateLimit(res,this.rates.consume('admin-page',session.userId,120,60_000),'Zu viele Seitenaufrufe. Bitte kurz warten.'))return;
         const nonce=randomBytes(18).toString('base64');res.setHeader('Content-Security-Policy',`default-src 'self'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`);
-        res.setHeader('Content-Type','text/html; charset=utf-8');res.end(moderatorPranksPage(session.csrf).replace('</main>',`${VIP_MODERATOR_CARD}</main>`).replace('</script>',`${VIP_MODERATOR_SCRIPT}</script>`).replaceAll('__NONCE__',nonce));return;
+        const chaosCard=COMMUNITY_CHAOS_CARD.replace('data-community-chaos','data-community-chaos data-chaos-admin="false"');
+        const chaosScript=COMMUNITY_CHAOS_SCRIPT.replace('const csrf=','if(root.dataset.chaosAdmin===\'false\'){for(const item of root.querySelectorAll(\'[data-chaos-setting],[data-chaos-game],[data-chaos-reward],[data-chaos-weight],#chaos-duration,#chaos-interval,#chaos-jitter,#chaos-wake-energy,#chaos-save\'))item.disabled=true}const csrf=');
+        res.setHeader('Content-Type','text/html; charset=utf-8');res.end(moderatorPranksPage(session.csrf).replace('</main>',`${VIP_MODERATOR_CARD}${chaosCard}</main>`).replace('</script>',`${VIP_MODERATOR_SCRIPT}${chaosScript}</script>`).replaceAll('__NONCE__',nonce));return;
       }
       const nonce = randomBytes(18).toString('base64');
       res.setHeader('Content-Security-Policy', `default-src 'self'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`);
@@ -329,10 +334,10 @@ export class DashboardServer {
         .replace('<div id="dashboard-community" class="legacy-staging">','<section data-community-page="fairness" class="subpage"><div class="view-grid"><article class="card"><h3>!trickortreat – theoretische Fairness</h3><p>Die Anzeige zeigt die aktuell geladene Konfiguration. Sie ist keine Garantie für einzelne Ziehungen. Verlustereignisse können den Stand bei 0 Kürbissen nicht unter null senken.</p><div id="halloween-fairness">Wahrscheinlichkeiten werden geladen …</div></article></div></section><div id="dashboard-community" class="legacy-staging">')
         .replace('<section data-community-page="welcome"','<section data-community-page="music" class="subpage"><div class="view-grid">'+SONG_REQUESTS_CARD+'</div></section><section data-community-page="welcome"')
         .replace('<section data-community-page="welcome"','<section data-community-page="vip" class="subpage"><div class="view-grid">'+VIP_ADMIN_CARD+'</div></section><section data-community-page="welcome"');
-      const withInteractiveCard=integratedStructure.replace('<section data-community-page="events" class="subpage"><div class="view-grid"></div></section>',`<section data-community-page="events" class="subpage"><div class="view-grid">${INTERACTIVE_COMMUNITY_CARD}</div></section>`);
+      const withInteractiveCard=integratedStructure.replace('<section data-community-page="events" class="subpage"><div class="view-grid"></div></section>',`<section data-community-page="events" class="subpage"><div class="view-grid">${INTERACTIVE_COMMUNITY_CARD}${COMMUNITY_CHAOS_CARD}</div></section>`);
       const page = PAGE.replace('</style>', DASHBOARD_STYLE+DASHBOARD_SIMPLICITY_STYLE+'</style>').replace('<div class="row"><div><h1>Community Bot','<header class="dashboard-top"><div><h1>Community Bot').replace('</button></div><p id="notice"','</button></header><p id="notice"').replace('<p class="muted">Hier steuerst du Chatspiele und Stream-Anzeigen. Fast alles ist optional – starte nur, was du wirklich nutzen möchtest.</p>','').replace('</p><section class="grid">', `</p>${withInteractiveCard}<div id="dashboard-legacy-source" class="legacy-source"><section class="grid">`).replace('</section></main>', `</section><h2>Community-Aktionen</h2><p class="muted">Community-Spiele und Aktionen</p><section class="grid">${WELCOME_CARD}${QUEST_POLL_CARD}${SPARK_CARD}${MINI_GAME_CARD}${ARCADE_CARD}${ELIO_2_CARD}${ARCADE_REWARDS_CARD}</section><h2>OBS</h2><section class="grid">${OBS_CARD}</section><h2>Einstellungen</h2><section class="grid">${CHANNEL_POINTS_CARD}${SETTINGS_CARD}</section></div></main>`)
         .replace('<script nonce="__NONCE__">', `<script nonce="__NONCE__">${DASHBOARD_POLLING_SCRIPT}`)
-        .replace('</script>', `${OBS_SCRIPT}${SETTINGS_SCRIPT}${WELCOME_SCRIPT}${QUEST_POLL_SCRIPT}${SPARK_SCRIPT}${MINI_GAME_SCRIPT}${CHANNEL_POINTS_SCRIPT}${ARCADE_SCRIPT}${ELIO_2_SCRIPT}${INTERACTIVE_COMMUNITY_SCRIPT}${ARCADE_REWARDS_SCRIPT}${VAULT_SCRIPT}${PRANKS_SCRIPT}${DASHBOARD_FAIRNESS_SCRIPT}${ARCADE_SMART_CONTROLS_SCRIPT}${DASHBOARD_WORDING_SCRIPT}${DASHBOARD_STRUCTURE_SCRIPT}${DASHBOARD_CLEANUP_SCRIPT}${DASHBOARD_REMAINDER_SCRIPT}${DASHBOARD_OBS_GUARD_SCRIPT}${DASHBOARD_TIMER_SCRIPT}${CHAT_IDENTITY_PREVIEW_SCRIPT}${DASHBOARD_UX_V3_SCRIPT}${EIGHT_BALL_SETTINGS_SCRIPT}${ELIO_STATUS_SCRIPT}${DASHBOARD_APP_SCRIPT}</script>`);
+        .replace('</script>', `${OBS_SCRIPT}${SETTINGS_SCRIPT}${WELCOME_SCRIPT}${QUEST_POLL_SCRIPT}${SPARK_SCRIPT}${MINI_GAME_SCRIPT}${CHANNEL_POINTS_SCRIPT}${ARCADE_SCRIPT}${ELIO_2_SCRIPT}${INTERACTIVE_COMMUNITY_SCRIPT}${COMMUNITY_CHAOS_SCRIPT}${ARCADE_REWARDS_SCRIPT}${VAULT_SCRIPT}${PRANKS_SCRIPT}${DASHBOARD_FAIRNESS_SCRIPT}${ARCADE_SMART_CONTROLS_SCRIPT}${DASHBOARD_WORDING_SCRIPT}${DASHBOARD_STRUCTURE_SCRIPT}${DASHBOARD_CLEANUP_SCRIPT}${DASHBOARD_REMAINDER_SCRIPT}${DASHBOARD_OBS_GUARD_SCRIPT}${DASHBOARD_TIMER_SCRIPT}${CHAT_IDENTITY_PREVIEW_SCRIPT}${DASHBOARD_UX_V3_SCRIPT}${EIGHT_BALL_SETTINGS_SCRIPT}${ELIO_STATUS_SCRIPT}${DASHBOARD_APP_SCRIPT}</script>`);
       const autoScript=AUTOMATIC_CHAT_MESSAGES_SCRIPT.replace("const style=document.createElement('style');","const style=document.createElement('style');style.nonce=document.querySelector('script[nonce]')?.nonce||'';");
       const withAutomaticScript=page.replace('</script>',`${autoScript}${AUTOMATIC_CHAT_HINTS_UI_SCRIPT}${SONG_REQUESTS_SCRIPT}${VIP_ADMIN_SCRIPT}</script>`);
       const reducedPolling=withAutomaticScript
@@ -542,6 +547,31 @@ export class DashboardServer {
   private async api(url: URL, req: http.IncomingMessage, res: http.ServerResponse, session: Session): Promise<void> {
     const route = url.pathname.slice('/dashboard/api/'.length);
     const now = Date.now();
+    if(route==='community-chaos'&&req.method==='GET'){
+      if(session.role!=='admin'&&session.role!=='moderator'){this.json(res,403,{error:'Nur berechtigte Moderatoren oder Jannik können Community-Chaos verwalten.'});return;}
+      this.json(res,200,this.chaos.status(now));return;
+    }
+    if(route==='community-chaos'&&req.method==='POST'){
+      if(session.role!=='admin'&&session.role!=='moderator'){this.json(res,403,{error:'Nur berechtigte Moderatoren oder Jannik können Community-Chaos verwalten.'});return;}
+      const body=await this.readJson(req);if(!body||typeof body.action!=='string'){this.json(res,400,{error:'Ungültige Community-Chaos-Aktion.'});return;}
+      try{
+        if(body.action==='settings'){
+          if(session.role!=='admin'){this.json(res,403,{error:'Nur Jannik kann Community-Chaos-Einstellungen ändern.'});return;}
+          if(!isRecord(body.settings)){this.json(res,400,{error:'Community-Chaos-Einstellungen ungültig.'});return;}
+          const settings=this.chaos.updateSettings(body.settings);this.audit(session,'community-chaos-settings','community-chaos',{enabled:settings.enabled,autoEnabled:settings.autoEnabled,discordAnnouncements:settings.discordAnnouncements},now);this.json(res,200,{ok:true,settings});return;
+        }
+        if(body.action==='start'){
+          if(typeof body.game!=='string'||!CHAOS_GAMES.includes(body.game as ChaosGame)){this.json(res,400,{error:'Minispiel ungültig.'});return;}
+          const testMode=body.testMode===true,started=this.chaos.start(body.game as ChaosGame,session.userId,now,testMode);
+          this.audit(session,testMode?'community-chaos-test':'community-chaos-start',started.id,{game:started.game,testMode},now);
+          this.json(res,201,{ok:true,event:started,testMode});return;
+        }
+        if(body.action==='cancel'){
+          const ok=this.chaos.cancel(session.userId,now);if(ok)this.audit(session,'community-chaos-cancel','community-chaos',{},now);this.json(res,ok?200:409,{ok,...(!ok?{error:'Es läuft kein Community-Chaos-Event.'}:{})});return;
+        }
+        this.json(res,400,{error:'Diese Community-Chaos-Aktion ist nicht verfügbar.'});return;
+      }catch(error){this.json(res,409,{error:error instanceof Error?error.message:'Community-Chaos-Aktion fehlgeschlagen.'});return;}
+    }
     if(route==='interactive'&&req.method==='GET'){
       if(session.role!=='admin'){this.json(res,403,{error:'Nur Jannik kann Community-Events verwalten.'});return;}
       this.json(res,200,{settings:this.interactive.settings(),active:this.interactive.active().map(event=>({...event,...(event.kind==='game_night'?{roster:this.interactive.participants(event.id)}:{})})),history:this.interactive.history()});return;
@@ -1264,7 +1294,8 @@ export class DashboardServer {
     }
     if(url.pathname==='/api/discord/v1/config'&&req.method==='GET'){
       const settings=this.store.config<typeof DISCORD_DEFAULTS>('discord_integration',DISCORD_DEFAULTS);
-      this.json(res,200,{enabled:settings.enabled,ideasChannelId:settings.ideasChannelId,rewardsChannelId:settings.rewardsChannelId,liveChannelId:settings.liveChannelId,dropChannelId:settings.dropChannelId,features:{elioEnabled:settings.elioEnabled,discordDropsEnabled:settings.discordDropsEnabled,discordEightBallEnabled:settings.discordEightBallEnabled,discordRpsEnabled:settings.discordRpsEnabled,discordGuessEnabled:settings.discordGuessEnabled,discordDuelsEnabled:settings.discordDuelsEnabled,discordProfilesEnabled:settings.discordProfilesEnabled===true||settings.profilesEnabled===true,discordVipChaosEnabled:settings.discordVipChaosEnabled},notifications:{ideas:settings.notifyIdeas,levels:settings.notifyLevels,drops:settings.notifyDrops,quests:settings.notifyQuests,seasonal:settings.notifySeasonal,live:settings.notifyLive,elioEvents:settings.notifyElioEvents,chaosWheel:settings.notifyChaosWheel,communityEvents:settings.notifyInteractiveEvents===true,liveUpdate:settings.liveUpdateEnabled!==false,liveCompletion:settings.liveCompletionEnabled!==false,liveUpdateIntervalSeconds:settings.liveUpdateIntervalSeconds||300}});return;
+      const chaos=this.chaos.settings();
+      this.json(res,200,{enabled:settings.enabled,ideasChannelId:settings.ideasChannelId,rewardsChannelId:settings.rewardsChannelId,liveChannelId:settings.liveChannelId,dropChannelId:settings.dropChannelId,features:{elioEnabled:settings.elioEnabled,discordDropsEnabled:settings.discordDropsEnabled,discordEightBallEnabled:settings.discordEightBallEnabled,discordRpsEnabled:settings.discordRpsEnabled,discordGuessEnabled:settings.discordGuessEnabled,discordDuelsEnabled:settings.discordDuelsEnabled,discordProfilesEnabled:settings.discordProfilesEnabled===true||settings.profilesEnabled===true,discordVipChaosEnabled:settings.discordVipChaosEnabled},notifications:{ideas:settings.notifyIdeas,levels:settings.notifyLevels,drops:settings.notifyDrops,quests:settings.notifyQuests,seasonal:settings.notifySeasonal,live:settings.notifyLive,elioEvents:settings.notifyElioEvents,chaosWheel:settings.notifyChaosWheel,communityEvents:settings.notifyInteractiveEvents===true,communityChaos:chaos.enabled===true&&chaos.discordAnnouncements===true,liveUpdate:settings.liveUpdateEnabled!==false,liveCompletion:settings.liveCompletionEnabled!==false,liveUpdateIntervalSeconds:settings.liveUpdateIntervalSeconds||300}});return;
     }
     if(url.pathname==='/api/discord/v1/heartbeat'&&req.method==='POST'){
       const body=await this.readJson(req);if(!body||typeof body.guildId!=='string'||!/^\d{17,20}$/u.test(body.guildId)||(body.channels!==undefined&&(!Array.isArray(body.channels)||body.channels.length>500))){this.json(res,400,{error:'Ungültiger Discord-Heartbeat.'});return;}

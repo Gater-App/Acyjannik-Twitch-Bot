@@ -21,6 +21,7 @@ export interface HelpAvailability {
   rps: boolean;
   guess: boolean;
   duels: boolean;
+  chaos?: boolean;
 }
 
 export const DEFAULT_HELP_AVAILABILITY: HelpAvailability = {
@@ -73,6 +74,7 @@ export function helpReply(args: string[], message: ChatMessage, availability: He
     case 'gluecksrad': return availability.wheel ? '🎡 Jannik dreht das Glücksrad. Das Ergebnis startet automatisch; bei einer Challenge spielt Jannik die Aufgabe. Status: !wheel.' : '🎡 Das Chaos Wheel ist derzeit deaktiviert.';
     case 'tresor': return availability.vault ? '🔐 Knackt gemeinsam den dreistelligen Code mit !code 427. Der geheime Hinweis zu deinem letzten Tipp erscheint angemeldet im Community-Portal: https://twitch.gater-app.de/community' : '🔐 Der Community-Tresor ist derzeit deaktiviert.';
     case 'community-portal': return '💜 XP, Elio 🐱, Community-Ideen und Spiele: https://twitch.gater-app.de/community';
+    case 'chaos': return availability.chaos ? '🎉 Community-Chaos läuft zeitweise im Chat: !retten, !rot / !blau / !gruen, !schatz, !aufwachen, !portal oder !bodyguard. Teilnahme zählt nur beim passenden aktiven Spiel.' : '🎉 Community-Chaos ist derzeit ausgeschaltet.';
     default: return '🎮 !help spiele | 🎃 !help events | 🏆 !help xp | 📜 !help quests | 📖 Alle Befehle: https://twitch.gater-app.de/hilfe | 💜 Portal: https://twitch.gater-app.de/community';
   }
 }
@@ -82,10 +84,11 @@ function gameHelp(a: HelpAvailability): string {
     a.eightBall && '!8ball FRAGE (40 % Ja · 40 % Nein · 20 % Vielleicht)', a.rps && '!rps stein (Schere-Stein-Papier)',
     a.guess && '!startguess (Jannik/Mods/VIPs) · !guess ZAHL (mitraten)', a.duels && '!duel @Name (Duell)', a.vault && '!code 427 (Community-Tresor)',
   ].filter(Boolean);
+  if(a.chaos)games.push('!help chaos (zeitweise Community-Chaos-Runden)');
   return games.length ? `🎮 Weitere Chatspiele: ${games.join(' · ')}.` : '🎮 Weitere Chatspiele sind derzeit deaktiviert. Für Community-Runden: !help imposter oder !help detective.';
 }
 
-export const HELP_TOPICS = ['start','spiele','events','xp','quests','ideen','imposter','detektiv','pet','drop','gluecksrad','community'];
+export const HELP_TOPICS = ['start','spiele','events','xp','quests','ideen','imposter','detektiv','pet','drop','gluecksrad','community','chaos'];
 
 function seasonalHelp(id:string,availability:HelpAvailability):string {
   const event=availability.seasonalEvents?.find(item=>item.id===id);
