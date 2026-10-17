@@ -55,6 +55,9 @@ export class ViewerCommunityPortal {
       if(this.rejectRateLimit(res,this.rates.consume('viewer-oauth-start',trustedClientAddress(req),20,10*60_000),'Zu viele Anmeldeversuche. Bitte später erneut versuchen.'))return true;
       this.login(res);return true;
     }
+    if(path==='/community/link/twitch'&&req.method==='GET'){this.accountLinkConsentPage(res);return true;}
+    if(path==='/community/link/twitch'&&req.method==='POST'){await this.startAccountLink(req,res);return true;}
+    if(path==='/community/link/complete'&&req.method==='GET'){this.accountLinkCompletePage(res);return true;}
     if(path==='/community/logout'&&req.method==='POST'){this.logout(req,res);return true;}
     if(path==='/community/api/state'&&req.method==='GET'){
       const session=this.session(req),identity=session?.userId||trustedClientAddress(req);
@@ -109,7 +112,8 @@ export class ViewerCommunityPortal {
   async handleOAuthCallback(url:URL,req:IncomingMessage,res:ServerResponse):Promise<boolean>{
     const state=url.searchParams.get('state')||'';
     if(!/^[a-f0-9]{48}$/u.test(state)||!this.store.viewerOAuthStateExists(hash(state)))return false;
-    const clearState=this.cookieHeader(STATE_COOKIE,'/',0),sameBrowser=cookie(req,STATE_COOKIE)===state,validState=this.store.consumeViewerOAuthState(hash(state),Date.now());
+    const stateHash=hash(state),accountLinkFlow=this.store.communityAccountLinkOAuthStateExists(stateHash,Date.now());
+    const clearState=this.cookieHeader(STATE_COOKIE,'/',0),sameBrowser=cookie(req,STATE_COOKIE)===state,validState=this.store.consumeViewerOAuthState(stateHash,Date.now());
     if(!sameBrowser||!validState){
       res.setHeader('Set-Cookie',clearState);this.sendJson(res,400,{error:'Die Twitch-Anmeldung ist abgelaufen. Bitte versuche es erneut.'});return true;
     }
@@ -129,12 +133,18 @@ export class ViewerCommunityPortal {
       if(!profileResponse.ok)throw new Error('profile');
       const profile=(await profileResponse.json() as {data?:HelixViewer[]}).data?.[0];
       if(!profile||profile.id!==identity.user_id||!/^[a-z0-9_]{1,25}$/iu.test(profile.login))throw new Error('identity mismatch');
+      if(accountLinkFlow){
+        const result=this.store.completeCommunityAccountLink({stateHash,twitchUserId:profile.id,now:Date.now()});
+        if(result!=='linked'&&result!=='already-linked'){
+          res.setHeader('Set-Cookie',clearState);this.sendJson(res,409,{error:result==='discord-linked'?'Dieses Discord-Konto ist bereits mit einem anderen Twitch-Konto verbunden. Trenne die Verbindung zuerst.':result==='twitch-linked'?'Dieses Twitch-Konto ist bereits mit einem anderen Discord-Konto verbunden.':'Die Verknüpfung ist abgelaufen. Bitte starte sie in Discord erneut.'});return true;
+        }
+      }
       const now=Date.now(),rawSession=randomBytes(32).toString('base64url'),csrfToken=randomBytes(32).toString('base64url');
       const image=profile.profile_image_url&&/^https:\/\/static-cdn\.jtvnw\.net\//u.test(profile.profile_image_url)?profile.profile_image_url:null;
       this.store.createViewerSession({sessionHash:hash(rawSession),userId:profile.id,login:profile.login,displayName:clean(profile.display_name,32)||profile.login,
         profileImageUrl:image,csrfToken,createdAt:now,expiresAt:now+VIEWER_SESSION_MS});
       res.setHeader('Set-Cookie',[clearState,this.cookieHeader(COOKIE,'/community',VIEWER_SESSION_MS/1000,rawSession)]);
-      res.statusCode=303;res.setHeader('Location','/community');res.end();
+      res.statusCode=303;res.setHeader('Location',accountLinkFlow?'/community/link/complete':'/community');res.end();
     }catch{
       res.setHeader('Set-Cookie',clearState);this.sendJson(res,401,{error:'Twitch konnte dein Konto nicht bestätigen. Bitte versuche es erneut.'});
     }
@@ -150,7 +160,7 @@ export class ViewerCommunityPortal {
   private privacyPage(res:ServerResponse):void{
     const nonce=randomBytes(18).toString('base64');res.setHeader('Cache-Control','no-store');
     res.setHeader('Content-Security-Policy',`default-src 'self'; style-src 'nonce-${nonce}'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`);
-    res.statusCode=200;res.setHeader('Content-Type','text/html; charset=utf-8');res.end(`<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Datenschutz · ACY Community</title><style nonce="${nonce}">:root{color-scheme:dark;font:16px/1.6 system-ui;background:#11131b;color:#eee}body{margin:0;padding:20px;background:radial-gradient(ellipse at 80% 0,#34234c,transparent 35%),#11131b}.box{max-width:760px;margin:4vh auto;background:#1b1d29;border:1px solid #383447;border-radius:18px;padding:26px}p,li{color:#c1bfd0}h1,h2{color:#f4efff}a{color:#c3a4ff}</style><main class="box"><h1>Datenschutz im Community-Portal</h1><p>Die Anmeldung ist freiwillig und ordnet deine Teilnahme deinem Twitch-Konto zu.</p><h2>Welche Daten anfallen</h2><ul><li>Twitch-Konto-ID, Login, Anzeigename und optional öffentliches Profilbild. OAuth-Code und Zugriffstoken werden nur während der Anmeldung verarbeitet und nicht gespeichert.</li><li>Eine zufällige, gehashte Sitzungskennung und ein CSRF-Schutzwert. Die Sitzung endet nach 12 Stunden; Abmelden löscht sie sofort.</li><li>Spielteilnahmen, Quests, Abstimmungen und Punkte werden in den bestehenden Community-Systemen gespeichert. Es gibt keine zweite Punkteverwaltung.</li></ul><h2>Geheime Rollen</h2><p>Eine Imposter-Rolle wird nur an das angemeldete eigene Twitch-Konto ausgeliefert. Öffentliche Listen enthalten keine Twitch-IDs, Stimmen oder Rollen.</p><h2>Aufbewahrung und Löschung</h2><p>Abgelaufene Sitzungen und OAuth-States werden regelmäßig entfernt. Logout löscht die Portal-Sitzung, aber nicht bereits entstandene Spielteilnahmen, Quests oder Punkte. Für die Löschung solcher Spieldaten wende dich an Jannik oder die Moderation.</p><p>Diese technische Beschreibung ersetzt keine rechtliche Prüfung oder vollständigen Datenschutzhinweise des Kanalbetreibers.</p><p><a href="/community">Zur Community</a> · <a href="/community/login">Anmeldung</a></p></main></html>`);
+    res.statusCode=200;res.setHeader('Content-Type','text/html; charset=utf-8');res.end(`<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Datenschutz · ACY Community</title><style nonce="${nonce}">:root{color-scheme:dark;font:16px/1.6 system-ui;background:#11131b;color:#eee}body{margin:0;padding:20px;background:radial-gradient(ellipse at 80% 0,#34234c,transparent 35%),#11131b}.box{max-width:760px;margin:4vh auto;background:#1b1d29;border:1px solid #383447;border-radius:18px;padding:26px}p,li{color:#c1bfd0}h1,h2{color:#f4efff}a{color:#c3a4ff}</style><main class="box"><h1>Datenschutz im Community-Portal</h1><p>Die Anmeldung ist freiwillig und ordnet deine Teilnahme deinem Twitch-Konto zu.</p><h2>Welche Daten anfallen</h2><ul><li>Twitch-Konto-ID, Login, Anzeigename und optional öffentliches Profilbild. OAuth-Code und Zugriffstoken werden nur während der Anmeldung verarbeitet und nicht gespeichert.</li><li>Eine zufällige, gehashte Sitzungskennung und ein CSRF-Schutzwert. Die Sitzung endet nach 12 Stunden; Abmelden löscht sie sofort.</li><li>Spielteilnahmen, Quests, Abstimmungen und Punkte werden in den bestehenden Community-Systemen gespeichert. Es gibt keine zweite Punkteverwaltung.</li></ul><h2>Twitch- und Discord-Verknüpfung</h2><p>Wenn du dein Konto in Discord freiwillig verknüpfst, speichern wir deine Twitch-ID und Discord-ID gemeinsam sowie Zeitpunkt und Status. Damit können ausgewählte Community-Fortschritte plattformübergreifend angezeigt werden. Es werden keine Konten zusammengeführt und keine XP kopiert. Du kannst die Verbindung jederzeit privat mit /trennen lösen; dein bisheriger Fortschritt bleibt erhalten. Der einmalige Link läuft nach zehn Minuten ab.</p><h2>Geheime Rollen</h2><p>Eine Imposter-Rolle wird nur an das angemeldete eigene Twitch-Konto ausgeliefert. Öffentliche Listen enthalten keine Twitch-IDs, Stimmen oder Rollen.</p><h2>Aufbewahrung und Löschung</h2><p>Abgelaufene Sitzungen und OAuth-States werden regelmäßig entfernt. Logout löscht die Portal-Sitzung, aber nicht bereits entstandene Spielteilnahmen, Quests oder Punkte. Für die Löschung solcher Spieldaten wende dich an Jannik oder die Moderation.</p><p>Diese technische Beschreibung ersetzt keine rechtliche Prüfung oder vollständigen Datenschutzhinweise des Kanalbetreibers.</p><p><a href="/community">Zur Community</a> · <a href="/community/login">Anmeldung</a></p></main></html>`);
   }
 
   private async vipState(session:ViewerSession|undefined,res:ServerResponse):Promise<void>{
@@ -178,6 +188,37 @@ export class ViewerCommunityPortal {
     const auth=new URL('https://id.twitch.tv/oauth2/authorize');auth.searchParams.set('client_id',this.clientId);auth.searchParams.set('redirect_uri',this.config.redirectUri);
     auth.searchParams.set('response_type','code');auth.searchParams.set('scope','');auth.searchParams.set('state',state);
     res.statusCode=302;res.setHeader('Cache-Control','no-store');res.setHeader('Set-Cookie',this.cookieHeader(STATE_COOKIE,'/',600,state));res.setHeader('Location',auth.toString());res.end();
+  }
+
+  private accountLinkConsentPage(res:ServerResponse):void{
+    const nonce=randomBytes(18).toString('base64');res.setHeader('Cache-Control','no-store');res.setHeader('Referrer-Policy','no-referrer');
+    res.setHeader('Content-Security-Policy',`default-src 'self'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`);
+    res.statusCode=200;res.setHeader('Content-Type','text/html; charset=utf-8');
+    res.end(`<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Twitch und Discord verbinden · ACY Community</title><style nonce="${nonce}">:root{color-scheme:dark;font:16px/1.55 system-ui;background:#11131b;color:#eee}main{max-width:680px;margin:7vh auto;padding:24px;background:#1b1d29;border:1px solid #393449;border-radius:18px}p,li{color:#c1bfd0}a{color:#c3a4ff}button{font:inherit;background:#7652bd;color:white;border:0;border-radius:10px;padding:12px 16px;min-height:44px}button:disabled{opacity:.55}</style></head><body><main><h1>🔗 Twitch und Discord verbinden</h1><p>Mit deiner Zustimmung speichern wir die Twitch-ID und Discord-ID deiner Konten gemeinsam, damit ausgewählte Community-Fortschritte später plattformübergreifend angezeigt werden können.</p><ul><li>Deine vorhandenen XP oder Spielstände werden nicht kopiert oder zusammengeführt.</li><li>Für Twitch werden keine zusätzlichen Berechtigungen angefragt.</li><li>Du kannst die Verbindung jederzeit privat mit /trennen lösen; dein Fortschritt bleibt bestehen.</li><li>Der einmalige Startlink wird nach zehn Minuten ungültig.</li></ul><form method="post" action="/community/link/twitch"><input id="token" name="token" type="hidden"><button id="continue" type="submit" disabled>Weiter zu Twitch und verbinden</button></form><p id="status" role="status"></p><p><a href="/community">Abbrechen und zurück</a> · <a href="/community/datenschutz">Datenschutz</a></p></main><script nonce="${nonce}">(()=>{const token=location.hash.startsWith('#token=')?location.hash.slice(7):'';history.replaceState(null,'',location.pathname);if(/^[A-Za-z0-9_-]{43}$/.test(token)){document.querySelector('#token').value=token;document.querySelector('#continue').disabled=false}else document.querySelector('#status').textContent='Dieser Verknüpfungslink fehlt oder ist ungültig. Starte den Vorgang bitte erneut in Discord.'})()</script></body></html>`);
+  }
+
+  private async startAccountLink(req:IncomingMessage,res:ServerResponse):Promise<void>{
+    if(this.rejectRateLimit(res,this.rates.consume('account-link-start',trustedClientAddress(req),10,10*60_000),'Zu viele Verknüpfungsversuche. Bitte später erneut versuchen.'))return;
+    const origin=req.headers.origin;if(origin&&origin!==this.publicOrigin){this.sendJson(res,403,{error:'Die Anfrage stammt nicht von dieser Website.'});return;}
+    let raw='';for await(const chunk of req){raw+=chunk;if(raw.length>2_000){this.sendJson(res,400,{error:'Der Verknüpfungslink ist ungültig.'});return;}}
+    const token=new URLSearchParams(raw).get('token')||'';
+    if(!/^[A-Za-z0-9_-]{43}$/u.test(token)){this.sendJson(res,400,{error:'Der Verknüpfungslink ist ungültig. Starte den Vorgang bitte erneut in Discord.'});return;}
+    const tokenHash=hash(token),now=Date.now(),intent=this.store.accountLinkIntent(tokenHash,now);
+    if(!intent){this.sendJson(res,410,{error:'Der Verknüpfungslink ist abgelaufen oder wurde bereits verwendet. Starte den Vorgang bitte erneut in Discord.'});return;}
+    const settings=this.store.config<{enabled?:boolean;accountLinkEnabled?:boolean}>('discord_integration',{});
+    if(!settings.enabled||!settings.accountLinkEnabled){this.sendJson(res,403,{error:'Die Konto-Verknüpfung ist derzeit deaktiviert.'});return;}
+    const state=randomBytes(24).toString('hex'),stateHash=hash(state),expiresAt=Math.min(now+OAUTH_STATE_MS,intent.expiresAt);
+    if(!this.store.beginCommunityAccountLinkOAuthState({stateHash,tokenHash,expiresAt,now})){this.sendJson(res,410,{error:'Der Verknüpfungslink wurde bereits verwendet. Starte den Vorgang bitte erneut in Discord.'});return;}
+    const auth=new URL('https://id.twitch.tv/oauth2/authorize');auth.searchParams.set('client_id',this.clientId);auth.searchParams.set('redirect_uri',this.config.redirectUri);
+    auth.searchParams.set('response_type','code');auth.searchParams.set('scope','');auth.searchParams.set('state',state);
+    res.statusCode=302;res.setHeader('Cache-Control','no-store');res.setHeader('Referrer-Policy','no-referrer');res.setHeader('Set-Cookie',this.cookieHeader(STATE_COOKIE,'/',Math.max(1,(expiresAt-now)/1000),state));res.setHeader('Location',auth.toString());res.end();
+  }
+
+  private accountLinkCompletePage(res:ServerResponse):void{
+    const nonce=randomBytes(18).toString('base64');res.setHeader('Cache-Control','no-store');res.setHeader('Referrer-Policy','no-referrer');
+    res.setHeader('Content-Security-Policy',`default-src 'self'; style-src 'nonce-${nonce}'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`);
+    res.statusCode=200;res.setHeader('Content-Type','text/html; charset=utf-8');
+    res.end(`<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Konto verbunden · ACY Community</title><style nonce="${nonce}">:root{color-scheme:dark;font:16px/1.55 system-ui;background:#11131b;color:#eee}main{max-width:620px;margin:8vh auto;padding:24px;background:#1b1d29;border:1px solid #393449;border-radius:18px}p{color:#c1bfd0}a{color:#c3a4ff}</style></head><body><main><h1>💜 Twitch und Discord sind verbunden</h1><p>Deine bestehenden Community-Punkte bleiben im zentralen Twitch-System. Es wurden keine Konten oder XP-Stände zusammengeführt.</p><p>Du kannst dieses Fenster schließen und in Discord mit <strong>/konto</strong> prüfen.</p><p><a href="/community">Community-Portal öffnen</a></p></main></body></html>`);
   }
 
   private logout(req:IncomingMessage,res:ServerResponse):void{
