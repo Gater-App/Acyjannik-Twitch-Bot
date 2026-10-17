@@ -50,6 +50,8 @@ import { CommunityChaos, CHAOS_GAMES, type ChaosGame } from './community-chaos.j
 import { COMMUNITY_CHAOS_CARD, COMMUNITY_CHAOS_SCRIPT } from './community-chaos-ui.js';
 import { ElioChronicles } from './elio-chronicles.js';
 import { ELIO_CHRONICLES_CARD, ELIO_CHRONICLES_SCRIPT } from './elio-chronicles-ui.js';
+import { EVENT_DIRECTOR_CARD, EVENT_DIRECTOR_SCRIPT } from './event-director-ui.js';
+import { EventDirector } from './event-director.js';
 
 interface Session { userId: string; login: string; csrf: string; expiresAt: number; role: 'admin'|'moderator'; }
 interface RuntimeStatus { twitchConnected: boolean; channel: string; channelProfileImageUrl?:string; startedAt: number; lastError?: string; queued?: number; suppressed?: number; streamLive?: boolean|undefined; streamStatusCheckedAt?: number; streamSnapshot?:{id?:string;title?:string;gameName?:string;viewerCount?:number;startedAt?:string;thumbnailUrl?:string}; lastChatReceiveAt?:number; lastBotChatSendAt?:number; lastBotChatSendErrorAt?:number; chatResponse?: { profile: string; suppressed: number; deferred: number }; }
@@ -165,6 +167,7 @@ export class DashboardServer {
   private readonly chaos: CommunityChaos;
   private readonly chronicles: ElioChronicles;
   private readonly communityWorld:CommunityWorld;
+  private readonly eventDirector:EventDirector;
   private playDiscordGame:((message:ChatMessage,game:'8ball'|'rps'|'guess',args:string[],now:number)=>string)|undefined;
   private server: http.Server | undefined;
   private readonly sessions = new Map<string, Session>();
@@ -207,7 +210,8 @@ export class DashboardServer {
     private readonly vipService?:TwitchVipService,
     private readonly vipExperience?:VipExperience,
     private readonly vipAuthorizationUrl?:()=>string,
-  ) { this.adminIds = new Set((process.env.DASHBOARD_ADMIN_IDS || '').split(/[ ,]+/u).filter(Boolean)); this.communityWorld=new CommunityWorld(store); this.interactive=new CommunityInteractive(store); this.chaos=new CommunityChaos(store); this.chronicles=new ElioChronicles(store,this.chaos); }
+    eventDirector?:EventDirector,
+  ) { this.adminIds = new Set((process.env.DASHBOARD_ADMIN_IDS || '').split(/[ ,]+/u).filter(Boolean)); this.communityWorld=new CommunityWorld(store); this.interactive=new CommunityInteractive(store); this.chaos=new CommunityChaos(store); this.chronicles=new ElioChronicles(store,this.chaos); this.eventDirector=eventDirector||new EventDirector(store); }
 
   setDiscordGameHandler(handler:(message:ChatMessage,game:'8ball'|'rps'|'guess',args:string[],now:number)=>string):void { this.playDiscordGame=handler; }
 
@@ -337,10 +341,10 @@ export class DashboardServer {
         .replace('<div id="dashboard-community" class="legacy-staging">','<section data-community-page="fairness" class="subpage"><div class="view-grid"><article class="card"><h3>!trickortreat – theoretische Fairness</h3><p>Die Anzeige zeigt die aktuell geladene Konfiguration. Sie ist keine Garantie für einzelne Ziehungen. Verlustereignisse können den Stand bei 0 Kürbissen nicht unter null senken.</p><div id="halloween-fairness">Wahrscheinlichkeiten werden geladen …</div></article></div></section><div id="dashboard-community" class="legacy-staging">')
         .replace('<section data-community-page="welcome"','<section data-community-page="music" class="subpage"><div class="view-grid">'+SONG_REQUESTS_CARD+'</div></section><section data-community-page="welcome"')
         .replace('<section data-community-page="welcome"','<section data-community-page="vip" class="subpage"><div class="view-grid">'+VIP_ADMIN_CARD+'</div></section><section data-community-page="welcome"');
-      const withInteractiveCard=integratedStructure.replace('<section data-community-page="events" class="subpage"><div class="view-grid"></div></section>',`<section data-community-page="events" class="subpage"><div class="view-grid">${INTERACTIVE_COMMUNITY_CARD}${COMMUNITY_CHAOS_CARD}${ELIO_CHRONICLES_CARD}</div></section>`);
+      const withInteractiveCard=integratedStructure.replace('<section data-community-page="events" class="subpage"><div class="view-grid"></div></section>',`<section data-community-page="events" class="subpage"><div class="view-grid">${EVENT_DIRECTOR_CARD}${INTERACTIVE_COMMUNITY_CARD}${COMMUNITY_CHAOS_CARD}${ELIO_CHRONICLES_CARD}</div></section>`);
       const page = PAGE.replace('</style>', DASHBOARD_STYLE+DASHBOARD_SIMPLICITY_STYLE+'</style>').replace('<div class="row"><div><h1>Community Bot','<header class="dashboard-top"><div><h1>Community Bot').replace('</button></div><p id="notice"','</button></header><p id="notice"').replace('<p class="muted">Hier steuerst du Chatspiele und Stream-Anzeigen. Fast alles ist optional – starte nur, was du wirklich nutzen möchtest.</p>','').replace('</p><section class="grid">', `</p>${withInteractiveCard}<div id="dashboard-legacy-source" class="legacy-source"><section class="grid">`).replace('</section></main>', `</section><h2>Community-Aktionen</h2><p class="muted">Community-Spiele und Aktionen</p><section class="grid">${WELCOME_CARD}${QUEST_POLL_CARD}${SPARK_CARD}${MINI_GAME_CARD}${ARCADE_CARD}${ELIO_2_CARD}${ARCADE_REWARDS_CARD}</section><h2>OBS</h2><section class="grid">${OBS_CARD}</section><h2>Einstellungen</h2><section class="grid">${CHANNEL_POINTS_CARD}${SETTINGS_CARD}</section></div></main>`)
         .replace('<script nonce="__NONCE__">', `<script nonce="__NONCE__">${DASHBOARD_POLLING_SCRIPT}`)
-        .replace('</script>', `${OBS_SCRIPT}${SETTINGS_SCRIPT}${WELCOME_SCRIPT}${QUEST_POLL_SCRIPT}${SPARK_SCRIPT}${MINI_GAME_SCRIPT}${CHANNEL_POINTS_SCRIPT}${ARCADE_SCRIPT}${ELIO_2_SCRIPT}${INTERACTIVE_COMMUNITY_SCRIPT}${COMMUNITY_CHAOS_SCRIPT}${ELIO_CHRONICLES_SCRIPT}${ARCADE_REWARDS_SCRIPT}${VAULT_SCRIPT}${PRANKS_SCRIPT}${DASHBOARD_FAIRNESS_SCRIPT}${ARCADE_SMART_CONTROLS_SCRIPT}${DASHBOARD_WORDING_SCRIPT}${DASHBOARD_STRUCTURE_SCRIPT}${DASHBOARD_CLEANUP_SCRIPT}${DASHBOARD_REMAINDER_SCRIPT}${DASHBOARD_OBS_GUARD_SCRIPT}${DASHBOARD_TIMER_SCRIPT}${CHAT_IDENTITY_PREVIEW_SCRIPT}${DASHBOARD_UX_V3_SCRIPT}${EIGHT_BALL_SETTINGS_SCRIPT}${ELIO_STATUS_SCRIPT}${DASHBOARD_APP_SCRIPT}</script>`);
+        .replace('</script>', `${OBS_SCRIPT}${SETTINGS_SCRIPT}${WELCOME_SCRIPT}${QUEST_POLL_SCRIPT}${SPARK_SCRIPT}${MINI_GAME_SCRIPT}${CHANNEL_POINTS_SCRIPT}${ARCADE_SCRIPT}${ELIO_2_SCRIPT}${INTERACTIVE_COMMUNITY_SCRIPT}${COMMUNITY_CHAOS_SCRIPT}${ELIO_CHRONICLES_SCRIPT}${EVENT_DIRECTOR_SCRIPT}${ARCADE_REWARDS_SCRIPT}${VAULT_SCRIPT}${PRANKS_SCRIPT}${DASHBOARD_FAIRNESS_SCRIPT}${ARCADE_SMART_CONTROLS_SCRIPT}${DASHBOARD_WORDING_SCRIPT}${DASHBOARD_STRUCTURE_SCRIPT}${DASHBOARD_CLEANUP_SCRIPT}${DASHBOARD_REMAINDER_SCRIPT}${DASHBOARD_OBS_GUARD_SCRIPT}${DASHBOARD_TIMER_SCRIPT}${CHAT_IDENTITY_PREVIEW_SCRIPT}${DASHBOARD_UX_V3_SCRIPT}${EIGHT_BALL_SETTINGS_SCRIPT}${ELIO_STATUS_SCRIPT}${DASHBOARD_APP_SCRIPT}</script>`);
       const autoScript=AUTOMATIC_CHAT_MESSAGES_SCRIPT.replace("const style=document.createElement('style');","const style=document.createElement('style');style.nonce=document.querySelector('script[nonce]')?.nonce||'';");
       const withAutomaticScript=page.replace('</script>',`${autoScript}${AUTOMATIC_CHAT_HINTS_UI_SCRIPT}${SONG_REQUESTS_SCRIPT}${VIP_ADMIN_SCRIPT}</script>`);
       const reducedPolling=withAutomaticScript
@@ -550,6 +554,29 @@ export class DashboardServer {
   private async api(url: URL, req: http.IncomingMessage, res: http.ServerResponse, session: Session): Promise<void> {
     const route = url.pathname.slice('/dashboard/api/'.length);
     const now = Date.now();
+    if(route==='event-director'&&req.method==='GET'){
+      if(session.role!=='admin'&&session.role!=='moderator'){this.json(res,403,{error:'Der Event Director ist nur für Jannik und berechtigte Moderatoren sichtbar.'});return;}
+      this.json(res,200,this.eventDirector.snapshot(now));return;
+    }
+    if(route==='event-director'&&req.method==='POST'){
+      if(session.role!=='admin'){this.json(res,403,{error:'Nur Jannik kann die Event-Director-Automatik konfigurieren.'});return;}
+      const body=await this.readJson(req);if(!body||body.action!=='settings'||!isRecord(body.settings)){this.json(res,400,{error:'Ungültige Event-Director-Aktion.'});return;}
+      try{
+        const chaos=this.chaos.settings(),story=this.chronicles.settings(),interactive=this.interactive.settings(),arcade=this.arcade?.settings();
+        if(body.settings.autoChaos===true&&!chaos.enabled)throw new Error('Community-Chaos muss zuerst im vorhandenen Modul aktiviert werden.');
+        if(body.settings.autoStories===true&&(!story.enabled||!chaos.enabled))throw new Error('Elio Chronicles und Community-Chaos müssen zuerst freigegeben werden.');
+        if(body.settings.autoSecretEvents===true&&!interactive.secretEventsEnabled)throw new Error('Geheime Community-Events müssen zuerst im vorhandenen Modul aktiviert werden.');
+        if(body.settings.autoDrops===true&&!arcade?.dropsEnabled)throw new Error('Mystery Drops müssen zuerst im vorhandenen Modul aktiviert werden.');
+        if(body.settings.autoWheel===true&&!arcade?.wheelEnabled)throw new Error('Das bestehende Chaos Wheel muss zuerst aktiviert werden.');
+        const settings=this.eventDirector.updateSettings(body.settings);
+        this.chaos.updateSettings({...chaos,autoEnabled:settings.autoChaos||settings.autoStories,discordAnnouncements:settings.discordAnnouncements});
+        this.chronicles.updateSettings({...story,autoEnabled:settings.autoStories});
+        this.interactive.updateSettings({...interactive,autoSecretEventsEnabled:settings.autoSecretEvents});
+        if(arcade&&settings.autoDrops&&!arcade.autoDrops)this.arcade?.updateSettings({...arcade,autoDrops:true});
+        this.audit(session,'event-director-settings','event-director',{enabled:settings.enabled,autoBosses:settings.autoBosses,autoDrops:settings.autoDrops,autoWheel:settings.autoWheel,autoChaos:settings.autoChaos,autoStories:settings.autoStories,autoSecretEvents:settings.autoSecretEvents},now);this.json(res,200,{ok:true,settings});return;
+      }
+      catch(error){this.json(res,400,{error:error instanceof Error?error.message:'Event-Director-Einstellungen ungültig.'});return;}
+    }
     if(route==='elio-chronicles'&&req.method==='GET'){
       if(session.role!=='admin'&&session.role!=='moderator'){this.json(res,403,{error:'Elio Chronicles ist nur für Jannik und berechtigte Moderatoren sichtbar.'});return;}
       this.chronicles.reconcile(now);this.json(res,200,this.chronicles.status());return;
@@ -1299,9 +1326,9 @@ export class DashboardServer {
     if(expected.length<32||a.length!==b.length||!timingSafeEqual(a,b)){this.json(res,401,{error:'Integration nicht autorisiert.'});return;}
     if(this.rejectRateLimit(res,this.rates.consume('discord-integration',clientIp,120,60_000),'Discord-Integration kurz gedrosselt.'))return;
     if(url.pathname==='/api/discord/v1/community/events'&&req.method==='GET'){
-      const settings=this.interactive.settings(),discord=this.store.config<typeof DISCORD_DEFAULTS>('discord_integration',DISCORD_DEFAULTS);
+      const settings=this.interactive.settings(),discord=this.store.config<typeof DISCORD_DEFAULTS>('discord_integration',DISCORD_DEFAULTS),director=this.eventDirector.settings();
       if(!discord.enabled){this.json(res,200,{enabled:false,events:[],history:[],features:{battle:false,secretEvents:false,gameNight:false}});return;}
-      this.json(res,200,{enabled:settings.battleEnabled||settings.secretEventsEnabled||settings.gameNightEnabled,events:this.interactive.active(),history:this.interactive.history(10),features:{battle:settings.battleEnabled,secretEvents:settings.secretEventsEnabled,gameNight:settings.gameNightEnabled},publishToDiscord:discord.notifyInteractiveEvents===true,rewardsChannelConfigured:Boolean(discord.rewardsChannelId)});return;
+      this.json(res,200,{enabled:settings.battleEnabled||settings.secretEventsEnabled||settings.gameNightEnabled,events:this.interactive.active(),history:this.interactive.history(10),features:{battle:settings.battleEnabled,secretEvents:settings.secretEventsEnabled,gameNight:settings.gameNightEnabled},publishToDiscord:discord.notifyInteractiveEvents===true||director.enabled&&director.discordAnnouncements,rewardsChannelConfigured:Boolean(discord.rewardsChannelId)});return;
     }
     if(url.pathname==='/api/discord/v1/community/events/join'&&req.method==='POST'){
       const body=await this.readJson(req);if(!body||typeof body.eventId!=='string'||!/^[a-f0-9-]{36}$/iu.test(body.eventId)||typeof body.discordUserId!=='string'||!/^[0-9]{17,20}$/u.test(body.discordUserId)||typeof body.displayName!=='string'){this.json(res,400,{error:'Ungültige Community-Teilnahme.'});return;}
@@ -1323,8 +1350,8 @@ export class DashboardServer {
     if(url.pathname==='/api/discord/v1/config'&&req.method==='GET'){
       const settings=this.store.config<typeof DISCORD_DEFAULTS>('discord_integration',DISCORD_DEFAULTS);
       const chaos=this.chaos.settings();
-      const chronicles=this.chronicles.settings();
-      this.json(res,200,{enabled:settings.enabled,ideasChannelId:settings.ideasChannelId,rewardsChannelId:settings.rewardsChannelId,liveChannelId:settings.liveChannelId,dropChannelId:settings.dropChannelId,storyDiaryChannelId:chronicles.diaryChannelId,features:{elioEnabled:settings.elioEnabled,discordDropsEnabled:settings.discordDropsEnabled,discordEightBallEnabled:settings.discordEightBallEnabled,discordRpsEnabled:settings.discordRpsEnabled,discordGuessEnabled:settings.discordGuessEnabled,discordDuelsEnabled:settings.discordDuelsEnabled,discordProfilesEnabled:settings.discordProfilesEnabled===true||settings.profilesEnabled===true,discordVipChaosEnabled:settings.discordVipChaosEnabled},notifications:{ideas:settings.notifyIdeas,levels:settings.notifyLevels,drops:settings.notifyDrops,quests:settings.notifyQuests,seasonal:settings.notifySeasonal,live:settings.notifyLive,elioEvents:settings.notifyElioEvents,chaosWheel:settings.notifyChaosWheel,communityEvents:settings.notifyInteractiveEvents===true,communityChaos:chaos.enabled===true&&chaos.discordAnnouncements===true,elioChronicles:chronicles.enabled===true&&chronicles.diaryEnabled===true,liveUpdate:settings.liveUpdateEnabled!==false,liveCompletion:settings.liveCompletionEnabled!==false,liveUpdateIntervalSeconds:settings.liveUpdateIntervalSeconds||300}});return;
+      const chronicles=this.chronicles.settings(),director=this.eventDirector.snapshot();
+      this.json(res,200,{enabled:settings.enabled,ideasChannelId:settings.ideasChannelId,rewardsChannelId:settings.rewardsChannelId,liveChannelId:settings.liveChannelId,dropChannelId:settings.dropChannelId,storyDiaryChannelId:chronicles.diaryChannelId,features:{elioEnabled:settings.elioEnabled,discordDropsEnabled:settings.discordDropsEnabled,discordEightBallEnabled:settings.discordEightBallEnabled,discordRpsEnabled:settings.discordRpsEnabled,discordGuessEnabled:settings.discordGuessEnabled,discordDuelsEnabled:settings.discordDuelsEnabled,discordProfilesEnabled:settings.discordProfilesEnabled===true||settings.profilesEnabled===true,discordVipChaosEnabled:settings.discordVipChaosEnabled},notifications:{ideas:settings.notifyIdeas,levels:settings.notifyLevels,drops:settings.notifyDrops,quests:settings.notifyQuests,seasonal:settings.notifySeasonal,elioEvents:settings.notifyElioEvents,chaosWheel:settings.notifyChaosWheel,communityEvents:settings.notifyInteractiveEvents===true,communityChaos:chaos.enabled===true&&chaos.discordAnnouncements===true,eventDirector:director.settings.enabled===true&&director.settings.discordAnnouncements===true,elioChronicles:chronicles.enabled===true&&chronicles.diaryEnabled===true,liveUpdate:settings.liveUpdateEnabled!==false,liveCompletion:settings.liveCompletionEnabled!==false,liveUpdateIntervalSeconds:settings.liveUpdateIntervalSeconds||300}});return;
     }
     if(url.pathname==='/api/discord/v1/elio-story'&&req.method==='GET'){
       const chronicles=this.chronicles.settings();if(!chronicles.enabled){this.json(res,200,{enabled:false,season:null,chapter:null,progress:null,clues:[],events:[]});return;}

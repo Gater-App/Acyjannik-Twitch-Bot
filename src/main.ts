@@ -212,10 +212,6 @@ async function runLiveMode(): Promise<void> {
   let lastTipLiveCheckAt = 0;
   let checkingLive = false;
   const communityPortalHealth=new CommunityPortalHealth(new URL('/community',config.redirectUri).toString());
-  let lastWheelLiveCheckAt = 0;
-  let checkingWheelLive = false;
-  let lastVaultLiveCheckAt = 0;
-  let checkingVaultLive = false;
   const runFeatureTick = singleFlight(async () => {
       try {
         const tickNow=Date.now();
@@ -238,50 +234,17 @@ async function runLiveMode(): Promise<void> {
         const dropStatus = (arcade.drop as { status?: string } | undefined)?.status;
         const busy = Boolean(snapshots.imposter || snapshots.detective || community.vault.isActive(now) || features.activeQuest() || features.activePoll(now) || features.activeBoss(now)
           || ['announced','claiming','resolving'].includes(dropStatus || '') || wheel.active
-          || community.interactive.active().some(event=>event.status==='open') || Boolean(community.activeEventId())
+          || community.interactive.active().some(event=>event.status==='open') || Boolean(community.chaos.status(now).active) || Boolean(community.activeEventId())
           || queue.busy || now - lastSpecialAnnouncementAt < 60_000);
-        const chaosSettings=community.chaos.settings();
-        if(chaosSettings.enabled&&chaosSettings.autoEnabled&&lastKnownStreamLive!==undefined&&Date.now()-streamStatusCheckedAt<45_000){
-          for(const prompt of community.chaos.tick(lastKnownStreamLive,busy,now))void queue.enqueue(prompt,undefined,'community').catch(error=>logger.warn('Community-Chaos-Meldung konnte nicht gesendet werden.',{error:error instanceof Error?error.message:'unbekannt'}));
+        if(lastKnownStreamLive!==undefined&&Date.now()-streamStatusCheckedAt<45_000){
+          const directorAction=community.runEventDirector(lastKnownStreamLive,busy,now);
+          if(directorAction){lastSpecialAnnouncementAt=now;void queue.enqueue(directorAction.message,undefined,directorAction.category).then(sent=>{if(directorAction.chaosEventId){if(sent)community.chaos.markAnnouncementSent(directorAction.chaosEventId);else community.chaos.releaseStartAnnouncement(directorAction.chaosEventId);}}).catch(error=>{if(directorAction.chaosEventId)community.chaos.releaseStartAnnouncement(directorAction.chaosEventId);logger.warn('Event-Director-Ankündigung konnte nicht gesendet werden.',{eventType:directorAction.category,error:error instanceof Error?error.message:'unbekannt'});});return;}
         }
         const chaosStart=community.chaos.claimStartAnnouncement();
         if(chaosStart)void queue.enqueue(chaosStart.prompt,undefined,'community').then(sent=>{if(sent)community.chaos.markAnnouncementSent(chaosStart.id);else community.chaos.releaseStartAnnouncement(chaosStart.id);}).catch(error=>{community.chaos.releaseStartAnnouncement(chaosStart.id);logger.warn('Community-Chaos-Startmeldung konnte nicht gesendet werden.',{error:error instanceof Error?error.message:'unbekannt'});});
-        const vaultReady=community.vault.autoStartReady(now,community.vault.activeViewerCount(now),busy,lastSpecialAnnouncementAt);
-        if(vaultReady&&!checkingVaultLive&&now-lastVaultLiveCheckAt>=15_000){
-          checkingVaultLive=true;lastVaultLiveCheckAt=now;
-          try{
-            const stream=await api.getStreamStatus(config.broadcasterUserId);recordStreamStatus(stream);
-            if(stream&&community.vault.autoStartReady(Date.now(),community.vault.activeViewerCount(),busy,lastSpecialAnnouncementAt)){
-              const started=community.vault.startAutomatic(Date.now());
-              if(started.ok){lastSpecialAnnouncementAt=Date.now();try{await queue.enqueue(started.message,undefined,'vault');}
-                catch(error){logger.warn('Tresor-Startmeldung konnte nicht gesendet werden; die Runde bleibt im Dashboard sichtbar.',{error:error instanceof Error?error.message:'unbekannt'});}
-                return;
-              }
-            }
-          }catch(error){recordStreamStatusError();logger.warn('Automatischer Tresor-Start wegen unbekanntem Live-Status zurückgestellt.',{error:error instanceof Error?error.message:'unbekannt'});}
-          finally{checkingVaultLive=false;}
-        }
         const profile = chatPolicy.snapshot().profile, availability = {...community.helpAvailability(),communityPortal:communityTips.settings().portalEnabled};
         const dueMessage=automaticChatMessages.hasDue(now,communityTips.eligibleActivityMessages,busy);
         const wantsTip=communityTips.shouldEvaluate(profile,availability,busy,now)&&automaticChatMessages.canReserveGlobalSlot(now);
-        const wheelReady=community.arcade.wheelStatus(now) as {enabled:boolean;autoPilotEnabled:boolean;canSpin:boolean;autoSpinDue:boolean};
-        if(wheelReady.enabled&&wheelReady.autoPilotEnabled&&wheelReady.canSpin&&wheelReady.autoSpinDue
-          &&!checkingWheelLive&&now-lastWheelLiveCheckAt>=15_000){
-          checkingWheelLive=true;lastWheelLiveCheckAt=now;
-          try{
-            const stream=await api.getStreamStatus(config.broadcasterUserId);recordStreamStatus(stream);
-            if(stream){
-              const result=community.arcade.autoSpinIfDue(Date.now());
-              if(result){
-                lastSpecialAnnouncementAt=Date.now();
-                try{if(community.arcade.winnerChatAnnouncementEnabled())await queue.enqueue(result,undefined,'wheel');}
-                catch(error){logger.warn('Automatisches Glücksrad-Ergebnis konnte nicht in den Chat gestellt werden; die Aktion bleibt gespeichert und wird nicht erneut ausgeführt.',{error:error instanceof Error?error.message:'unbekannt'});}
-                return;
-              }
-            }
-          }catch(error){recordStreamStatusError();logger.warn('Automatischer Glücksrad-Dreh wegen unbekanntem Live-Status oder Twitch-Fehler zurückgestellt.',{error:error instanceof Error?error.message:'unbekannt'});}
-          finally{checkingWheelLive=false;}
-        }
         if (!checkingLive && now - lastTipLiveCheckAt >= 15_000 && (Boolean(dueMessage)||wantsTip)) {
           checkingLive = true;
           try {
@@ -357,7 +320,7 @@ async function runLiveMode(): Promise<void> {
       async()=>{const now=Date.now(),settings=community.vault.settings();if(!settings.enabled)return 'Der Community-Tresor ist ausgeschaltet. Aktiviere ihn zuerst in den Einstellungen.';const remaining=community.vault.cooldownRemainingMs(now);if(remaining>0)return `⏳ Der globale Tresor-Cooldown läuft noch ${Math.ceil(remaining/60_000)} Min.`;if(community.vault.isActive(now))return '⏳ Der Tresor läuft bereits.';const stream=await api.getStreamStatus(config.broadcasterUserId);recordStreamStatus(stream);if(!stream)return '📴 Der Twitch-Stream ist derzeit offline.';const active=community.vault.activeViewerCount(now),minimum=settings.minActiveViewers;if(active<minimum)return `⏳ Der Start braucht ${minimum} aktive Zuschauer; aktuell sind ${active} bestätigt.`;const wait=5*60_000-(now-lastSpecialAnnouncementAt);if(wait>0)return `⏳ Nach einer wichtigen Chat-Aktion bitte noch ${Math.ceil(wait/60_000)} Min. warten.`;const game=community.miniGames.snapshot(),drop=community.arcade.snapshot('drop'),wheel=community.arcade.wheelStatus(),dropStatus=(drop.drop as {status?:string}|undefined)?.status;if(game.imposter||game.detective||features.activeQuest()||features.activePoll(now)||features.activeBoss(now)||['announced','claiming','resolving'].includes(dropStatus||'')||wheel.active)return '⏳ Ein anderes Community-Spiel läuft gerade.';if(queue.busy)return '⏳ Der Chat verarbeitet gerade eine wichtige Meldung.';return true;},
       community.moderatorPranks,async(login)=>{const user=(await api.getUsers([login]))[0];return user?{id:user.id,login:user.login,displayName:user.display_name}:undefined;},
       {weights:config.eventWeights,source:process.env.EVENT_WEIGHTS_JSON?.trim()?'EVENT_WEIGHTS_JSON (beim Bot-Start geladen)':'Standardwerte aus src/config.ts'},
-      ()=>communityPortalHealth.isAvailable(),botLifecycle,vipService,vipExperience,()=>oauthServer.startUrlFor('vip-verification'));
+      ()=>communityPortalHealth.isAvailable(),botLifecycle,vipService,vipExperience,()=>oauthServer.startUrlFor('vip-verification'),community.eventDirector);
     dashboard.setDiscordGameHandler((message,game,args,now)=>community.discordGameReply(message,game,args,now));
     logger.info('OAuth-Server erreichbar unter http://127.0.0.1:3000/oauth/start');
     await dashboard.start();

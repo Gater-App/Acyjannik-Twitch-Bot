@@ -1035,6 +1035,26 @@ export class FeatureStore {
         INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (38, unixepoch()*1000);
       `))();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 39) {
+      if (currentVersion > 0) this.backupBeforeMigration(39);
+      this.db.transaction(() => this.db.exec(`
+        CREATE TABLE IF NOT EXISTS event_director_runs (
+          id TEXT PRIMARY KEY, event_type TEXT NOT NULL, started_at INTEGER NOT NULL,
+          completed_at INTEGER, participant_count INTEGER NOT NULL DEFAULT 0,
+          xp_total INTEGER NOT NULL DEFAULT 0, outcome TEXT, reason TEXT NOT NULL DEFAULT 'automatic'
+        );
+        CREATE INDEX IF NOT EXISTS event_director_runs_started ON event_director_runs(started_at DESC);
+        CREATE TABLE IF NOT EXISTS event_director_lease (
+          id INTEGER PRIMARY KEY CHECK(id=1), owner TEXT, lease_until INTEGER NOT NULL DEFAULT 0,
+          updated_at INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT OR IGNORE INTO event_director_lease(id,owner,lease_until,updated_at) VALUES(1,NULL,0,0);
+        INSERT OR IGNORE INTO feature_config(key,value) VALUES
+          ('event_director_settings','{"enabled":false,"autoBosses":false,"autoDrops":false,"autoWheel":false,"autoChaos":false,"autoSecretEvents":false,"autoStories":false,"minimumActivity":"normal","minimumGapMs":900000,"maxEventsPerHour":2,"bossMinIntervalMs":4500000,"bossMaxIntervalMs":6300000,"bossAdaptiveHp":true,"discordAnnouncements":false}');
+        INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (39, unixepoch()*1000);
+      `))();
+    }
   }
 
   private backupBeforeMigration(version: number): void {
@@ -2252,13 +2272,23 @@ export class FeatureStore {
   startBoss(id: string, name: string, hp: number, durationMs: number, now: number): boolean {
     try {
       this.db.transaction(() => {
+        const conflict=this.db.prepare(`SELECT 1 FROM community_chaos_events WHERE status='active'
+          UNION ALL SELECT 1 FROM community_interactive_events WHERE status='open' AND kind!='game_night'
+          UNION ALL SELECT 1 FROM mystery_drops WHERE status IN ('announced','claiming','resolving')
+          UNION ALL SELECT 1 FROM chaos_wheel_spins WHERE status IN ('spinning','active')
+          UNION ALL SELECT 1 FROM polls WHERE status='active'
+          UNION ALL SELECT 1 FROM imposter_rounds WHERE phase IN ('registration','role_distribution','playing','voting')
+          UNION ALL SELECT 1 FROM detective_rounds WHERE phase IN ('playing','results')
+          UNION ALL SELECT 1 FROM community_vault_rounds WHERE status='active'
+          UNION ALL SELECT 1 FROM seasonal_events WHERE active=1 LIMIT 1`).get();
+        if(conflict)throw new Error('Ein anderes Community-Event läuft bereits.');
         this.db.prepare('INSERT INTO boss_fights(id,name,max_hp,hp,status,started_at,expires_at) VALUES(?,?,?,?,?,?,?)')
           .run(id, name, hp, hp, 'active', now, now + durationMs);
         this.recordCommunityEvent('boss.started', { id, name, hp, expiresAt: now + durationMs }, now);
       })();
       return true;
     } catch (error) {
-      if (error instanceof Error && error.message.includes('UNIQUE')) return false;
+      if (error instanceof Error && (error.message.includes('UNIQUE')||error.message.includes('Ein anderes Community-Event'))) return false;
       throw error;
     }
   }
@@ -2369,6 +2399,15 @@ export class FeatureStore {
   recordCommunityEvent(type: string, payload: unknown, now: number): void {
     this.db.prepare('INSERT INTO community_events(type,payload_json,created_at) VALUES(?,?,?)').run(type, JSON.stringify(payload ?? {}), now);
     const data=(payload&&typeof payload==='object'?payload:{}) as Record<string,unknown>;
+    if(type==='boss.started'||type==='boss.defeated'||type==='boss.timeout'){
+      const director=this.config<Record<string,unknown>>('event_director_settings',{}),discord=this.config<Record<string,unknown>>('discord_integration',{});
+      if(director.discordAnnouncements===true&&discord.enabled===true&&typeof discord.rewardsChannelId==='string'&&discord.rewardsChannelId){
+        const status=type==='boss.started'?'active':type==='boss.defeated'?'completed':'failed',bossId=String(data.id||data.bossId||`boss:${now}`);
+        const safe={status,title:String(data.name||'Community-Boss').slice(0,100),hp:Math.max(0,Number(data.hp)||0),expiresAt:Math.max(0,Number(data.expiresAt)||0),participants:Math.max(0,Number(data.participants)||0),discordMention:{mode:'none'}};
+        const id=randomUUID();this.db.prepare("INSERT INTO discord_event_outbox(id,event_type,aggregate_id,payload_json,created_at,available_at) VALUES(?,'event.director.boss',?,?,?,?)")
+          .run(id,bossId,JSON.stringify(safe),now,now);
+      }
+    }
     if(type==='quest.status.changed'&&data.status==='active')this.enqueueDiscordEvent('quest.started',String(data.id||`quest:${now}`),{title:String(data.title||'Eine Community-Quest'),status:'active'},now);
     if(type==='quest.status.changed'&&data.status==='completed')this.enqueueDiscordEvent('quest.completed',String(data.id||`quest:${now}`),{title:String(data.title||'Eine Community-Quest'),status:'completed'},now);
     if(type==='elio.rare')this.enqueueDiscordEvent('elio.rare',String(data.id||`elio:${now}`),{message:String(data.message||'Elio hat ein seltenes Ereignis erlebt.')},now);

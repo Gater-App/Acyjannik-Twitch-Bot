@@ -110,8 +110,9 @@ test('automatic secret events stay off by default, require recent activity, obey
     assert.equal(interactive.tick(now),0);assert.equal(interactive.active(undefined,now).length,0);
     interactive.updateSettings({secretEventsEnabled:true,autoSecretEventsEnabled:true,secretAutoMinIntervalMs:3_600_000,secretAutoMaxPerDay:1,secretAutoMinActiveChatters:2});
     assert.equal(interactive.tick(now),0);
+    assert.equal(interactive.startAutomaticSecretEvent(now),true,'only Event Director calls this centralized automatic start entry point');
     const event=interactive.active(undefined,now)[0];assert.ok(event);assert.ok(['mystery_case','elio_rescue','secret_portal'].includes(event.kind));assert.equal(event.status,'open');
-    assert.equal(interactive.tick(now+1000),0,'active event prevents overlapping automation');assert.equal(interactive.active(undefined,now+1000).length,1);
+    assert.equal(interactive.tick(now+1000),0,'expiry processing does not start a second scheduler');assert.equal(interactive.active(undefined,now+1000).length,1);
     assert.equal(interactive.finish(event.id,'admin',now+2000),true);
     assert.equal(interactive.tick(now+3_600_000),0,'daily event limit prevents another surprise');
     assert.equal(interactive.active(undefined,now+3_600_000).length,0);
