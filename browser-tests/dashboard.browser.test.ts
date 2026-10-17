@@ -94,11 +94,15 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     await discordPage.locator('[name="notifyLive"]').check();
     await discordPage.locator('[name="liveUpdateEnabled"]').check();
     await discordPage.locator('[name="liveCompletionEnabled"]').check();
+    assert.equal(await discordPage.locator('[name="elioEnabled"]').isChecked(),false,'Elio-Integration bleibt standardmäßig deaktiviert');
+    assert.equal(await discordPage.locator('[name="discordDropsEnabled"]').isChecked(),false,'Discord-Drops bleiben standardmäßig deaktiviert');
+    await discordPage.locator('[name="accountLinkEnabled"]').check();
+    await discordPage.locator('[name="dropChannelId"]').fill('1206225751544832042');
     await discordPage.locator('[name="enabled"]').check();
     await discordPage.getByRole('button',{name:'Einstellungen speichern'}).click();
     await discordPage.getByText('Einstellungen gespeichert.',{exact:true}).waitFor();
-    const discordSaved=await (await discordPage.request.get(`${base}/dashboard/api/discord`)).json() as {settings:{enabled:boolean;ideasChannelId:string;notifyIdeas:boolean;liveChannelId:string;notifyLive:boolean;liveUpdateEnabled:boolean;liveCompletionEnabled:boolean}};
-    assert.equal(discordSaved.settings.enabled,true);assert.equal(discordSaved.settings.profilesEnabled,true);assert.equal(discordSaved.settings.ideasChannelId,'1206225751544832041');assert.equal(discordSaved.settings.notifyIdeas,true);assert.equal(discordSaved.settings.liveChannelId,'1206225751544832043');assert.equal(discordSaved.settings.notifyLive,true);assert.equal(discordSaved.settings.liveUpdateEnabled,true);assert.equal(discordSaved.settings.liveCompletionEnabled,true);
+    const discordSaved=await (await discordPage.request.get(`${base}/dashboard/api/discord`)).json() as {settings:{enabled:boolean;profilesEnabled:boolean;accountLinkEnabled:boolean;elioEnabled:boolean;discordDropsEnabled:boolean;ideasChannelId:string;dropChannelId:string;notifyIdeas:boolean;liveChannelId:string;notifyLive:boolean;liveUpdateEnabled:boolean;liveCompletionEnabled:boolean}};
+    assert.equal(discordSaved.settings.enabled,true);assert.equal(discordSaved.settings.profilesEnabled,true);assert.equal(discordSaved.settings.ideasChannelId,'1206225751544832041');assert.equal(discordSaved.settings.notifyIdeas,true);assert.equal(discordSaved.settings.liveChannelId,'1206225751544832043');assert.equal(discordSaved.settings.notifyLive,true);assert.equal(discordSaved.settings.liveUpdateEnabled,true);assert.equal(discordSaved.settings.liveCompletionEnabled,true);assert.equal(discordSaved.settings.dropChannelId,'1206225751544832042');assert.equal(discordSaved.settings.accountLinkEnabled,true);assert.equal(discordSaved.settings.elioEnabled,true);assert.equal(discordSaved.settings.discordDropsEnabled,true);
     await discordPage.setViewportSize({width:390,height:844});assert.ok(await discordPage.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth+1),'Discord-Einstellungen passen mobil ohne seitliches Scrollen');
     await discordPage.close();
     const assertSubpage = async (selector: string, active: boolean) => {

@@ -1034,6 +1034,11 @@ export class FeatureStore {
     return {total,rows};
   }
 
+  communityTwitchIdForDiscord(discordUserId:string):string|undefined {
+    const row=this.db.prepare('SELECT twitch_user_id FROM community_account_links WHERE discord_user_id=?').get(discordUserId) as {twitch_user_id:string}|undefined;
+    return row?.twitch_user_id;
+  }
+
   disconnectCommunityAccountLink(input:{discordUserId:string;now:number}):boolean {
     return this.db.transaction(()=>{
       const row=this.db.prepare('SELECT twitch_user_id FROM community_account_links WHERE discord_user_id=?').get(input.discordUserId) as {twitch_user_id:string}|undefined;
@@ -1173,7 +1178,7 @@ export class FeatureStore {
 
   private enqueueDiscordEvent(type:string,aggregateId:string,payload:unknown,now:number):string {
     const settings=this.config<Record<string,unknown>>('discord_integration',{});
-    const toggle=type.startsWith('idea.')?'notifyIdeas':type==='level.up'?'notifyLevels':type==='mystery.drop'?'notifyDrops':type==='quest.completed'?'notifyQuests':type==='seasonal.event'?'notifySeasonal':type.startsWith('twitch.live')?'notifyLive':null;
+    const toggle=type.startsWith('idea.')?'notifyIdeas':type==='level.up'?'notifyLevels':type==='mystery.drop'?'notifyDrops':type.startsWith('mystery.drop.')?'discordDropsEnabled':type==='quest.completed'?'notifyQuests':type==='seasonal.event'?'notifySeasonal':type.startsWith('twitch.live')?'notifyLive':null;
     if(settings.enabled!==true||!toggle||settings[toggle]!==true)return '';
     const id=randomUUID();this.db.prepare("INSERT INTO discord_event_outbox(id,event_type,aggregate_id,payload_json,created_at,available_at) VALUES(?,?,?,?,?,?)")
       .run(id,type,aggregateId,JSON.stringify(payload??{}),now,now);return id;
