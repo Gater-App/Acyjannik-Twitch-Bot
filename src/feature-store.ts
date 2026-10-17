@@ -985,6 +985,29 @@ export class FeatureStore {
           INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (36, unixepoch()*1000);`);
       })();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 37) {
+      if (currentVersion > 0) this.backupBeforeMigration(37);
+      this.db.transaction(() => this.db.exec(`
+        CREATE TABLE IF NOT EXISTS community_chaos_events (
+          id TEXT PRIMARY KEY, game TEXT NOT NULL CHECK(game IN ('elio_rescue','potion','treasure','wake_elio','portal','bodyguard')),
+          status TEXT NOT NULL CHECK(status IN ('active','completed','canceled')), starts_at INTEGER NOT NULL,
+          deadline INTEGER NOT NULL, settings_json TEXT NOT NULL, test_mode INTEGER NOT NULL DEFAULT 0 CHECK(test_mode IN (0,1)),
+          created_by TEXT NOT NULL, result_json TEXT, completed_at INTEGER, announcement_sent INTEGER NOT NULL DEFAULT 0 CHECK(announcement_sent IN (0,1)), announcement_lease_until INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS community_chaos_single_active ON community_chaos_events(status) WHERE status='active';
+        CREATE INDEX IF NOT EXISTS community_chaos_history ON community_chaos_events(starts_at DESC);
+        CREATE TABLE IF NOT EXISTS community_chaos_participants (
+          event_id TEXT NOT NULL REFERENCES community_chaos_events(id) ON DELETE CASCADE, user_id TEXT NOT NULL,
+          display_name TEXT NOT NULL CHECK(length(display_name)<=48), command TEXT NOT NULL, choice TEXT, outcome INTEGER NOT NULL DEFAULT 0,
+          sequence INTEGER NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(event_id,user_id), UNIQUE(event_id,sequence)
+        );
+        CREATE TABLE IF NOT EXISTS community_chaos_scheduler (id INTEGER PRIMARY KEY CHECK(id=1), next_at INTEGER, last_game TEXT, updated_at INTEGER NOT NULL);
+        INSERT OR IGNORE INTO community_chaos_scheduler(id,next_at,last_game,updated_at) VALUES(1,NULL,NULL,0);
+        INSERT OR IGNORE INTO feature_config(key,value) VALUES ('community_chaos_settings','{"enabled":false,"autoEnabled":false,"discordAnnouncements":false,"durationMs":40000,"minIntervalMs":2700000,"randomDelayMs":900000,"maxXpPerEvent":20,"wakeEnergy":3,"portalWeights":[40,30,10,20],"gameEnabled":{"elio_rescue":true,"potion":true,"treasure":true,"wake_elio":true,"portal":true,"bodyguard":true}}');
+        INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (37, unixepoch()*1000);
+      `))();
+    }
   }
 
   private backupBeforeMigration(version: number): void {
@@ -1266,6 +1289,18 @@ export class FeatureStore {
     const eventPayload={...publicData,discordMention:mention};
     const id=randomUUID();this.db.prepare("INSERT INTO discord_event_outbox(id,event_type,aggregate_id,payload_json,created_at,available_at) VALUES(?,?,?,?,?,?)")
       .run(id,type,aggregateId,JSON.stringify(eventPayload),now,now);return id;
+  }
+
+  enqueueChaosDiscordEvent(aggregateId:string,payload:unknown,now:number):string {
+    const settings=this.config<Record<string,unknown>>('community_chaos_settings',{});
+    const discord=this.config<Record<string,unknown>>('discord_integration',{});
+    if(settings.enabled!==true||settings.discordAnnouncements!==true||discord.enabled!==true||!discord.rewardsChannelId)return '';
+    const data=payload&&typeof payload==='object'&&!Array.isArray(payload)?payload as Record<string,unknown>:{};
+    const safe={game:String(data.game||'').slice(0,32),title:String(data.title||'Community-Chaos').slice(0,120),status:data.status==='active'?'active':'completed',...(data.status==='active'?{prompt:String(data.prompt||'Macht im Twitch-Chat mit!').slice(0,380),deadline:Number(data.deadline)||now}:{participants:Math.max(0,Number(data.participants)||0),totalXp:Math.max(0,Number(data.totalXp)||0)})};
+    const id=randomUUID();
+    this.db.prepare("INSERT INTO discord_event_outbox(id,event_type,aggregate_id,payload_json,created_at,available_at) VALUES(?,'community.chaos',?,?,?,?)")
+      .run(id,aggregateId,JSON.stringify({...safe,discordMention:{mode:'none'}}),now,now);
+    return id;
   }
 
   discordOutboxBatch(now:number,limit=25):Array<{id:string;type:string;aggregateId:string;payload:unknown;createdAt:number;attempts:number}> {

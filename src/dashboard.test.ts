@@ -129,8 +129,18 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assertInlineScriptsParse(html);
     assert.match(html,/data-dashboard-view="overview" data-active="true"/u,'Übersicht bleibt bei einem Frontend-Startfehler sichtbar');
     assert.match(html,/dashboardPollVisible/u);assert.match(html,/Retry-After/u);assert.doesNotMatch(html,/setInterval\(refreshMini,3000\)|setInterval\(update,3000\)/u,'veraltete aggressive Minispiel-/Streamer-Polls sind nicht mehr aktiv');
+    assert.match(html,/data-community-chaos/u);for(const game of ['elio_rescue','potion','treasure','wake_elio','portal','bodyguard'])assert.match(html,new RegExp(`data-chaos-game="${game}"`,'u'));
     const csrf = html.match(/name="csrf" content="([a-f0-9]+)"/u)?.[1] || '';
     assert.ok(csrf);
+    const chaosUrl=`${base}/dashboard/api/community-chaos`,chaosHeaders={Cookie:sessionCookie,Origin:base,'X-CSRF-Token':csrf,'Content-Type':'application/json'};
+    const chaosDefault=await fetch(chaosUrl,{headers:{Cookie:sessionCookie}}),chaosDefaultBody=await chaosDefault.json() as {settings:{enabled:boolean;autoEnabled:boolean};active:unknown};
+    assert.equal(chaosDefaultBody.settings.enabled,false);assert.equal(chaosDefaultBody.settings.autoEnabled,false);assert.equal(chaosDefaultBody.active,null);
+    const invalidChaosAuto=await fetch(chaosUrl,{method:'POST',headers:chaosHeaders,body:JSON.stringify({action:'settings',settings:{autoEnabled:true}})});assert.equal(invalidChaosAuto.status,409);
+    const enableChaos=await fetch(chaosUrl,{method:'POST',headers:chaosHeaders,body:JSON.stringify({action:'settings',settings:{enabled:true}})});assert.equal(enableChaos.status,200);
+    const startChaos=await fetch(chaosUrl,{method:'POST',headers:chaosHeaders,body:JSON.stringify({action:'start',game:'elio_rescue'})});assert.equal(startChaos.status,201);assert.equal((await startChaos.json() as {event:{testMode:boolean}}).event.testMode,false);
+    const cancelChaos=await fetch(chaosUrl,{method:'POST',headers:chaosHeaders,body:JSON.stringify({action:'cancel'})});assert.equal(cancelChaos.status,200);
+    const testChaos=await fetch(chaosUrl,{method:'POST',headers:chaosHeaders,body:JSON.stringify({action:'start',game:'portal',testMode:true})});assert.equal(testChaos.status,201);assert.equal((await testChaos.json() as {event:{testMode:boolean}}).event.testMode,true);
+    const endTestChaos=await fetch(chaosUrl,{method:'POST',headers:chaosHeaders,body:JSON.stringify({action:'cancel'})});assert.equal(endTestChaos.status,200);
     const discordPage=await fetch(`${base}/dashboard/discord`,{headers:{Cookie:sessionCookie}});assert.equal(discordPage.status,200);
     const discordHtml=await discordPage.text();assert.match(discordHtml,/name="mentionLevels"/u);assert.match(discordHtml,/Betroffene verknüpfte Person erwähnen/u);assert.match(discordHtml,/@everyone benachrichtigen/u);assert.match(discordHtml,/name="dailyRewardXp"/u);assert.match(discordHtml,/name="liveUpdateIntervalSeconds"/u);assert.match(discordHtml,/Twitch-Live-Hub/u);
     const discordSettingsResponse=await fetch(`${base}/dashboard/api/discord`,{headers:{Cookie:sessionCookie}});assert.equal(discordSettingsResponse.status,200);

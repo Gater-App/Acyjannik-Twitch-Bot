@@ -6,7 +6,7 @@ Vollständige Übersicht der im aktuellen Bot-Code fest eingebauten Chatbefehle.
 
 | Befehl | Zweck / Voraussetzung |
 |---|---|
-| `!help [basics\|events\|xp\|games\|quests\|spark\|imposter\|detective\|pet\|drops\|wheel]` | Themenhilfe; `!help mods` nur Mods/Jannik, `!help admin` nur Jannik. |
+| `!help [basics\|events\|xp\|games\|quests\|spark\|imposter\|detective\|pet\|drops\|wheel\|chaos]` | Themenhilfe; `!help mods` nur Mods/Jannik, `!help admin` nur Jannik. |
 | `!community` | Öffnet den Wegweiser zum öffentlichen Community-Portal; persönliche Werte und Spielaktionen können Twitch-Anmeldung erfordern. |
 | `!trickortreat`, `!pumpkins`, `!top`, `!halloween` | Halloween spielen, Stand, Topliste und Status ansehen. |
 | `!gift`, `!egghunt` | Sammeln, wenn das aktive Event so konfiguriert ist. |
@@ -27,6 +27,7 @@ Vollständige Übersicht der im aktuellen Bot-Code fest eingebauten Chatbefehle.
 | `!pet`, `!feed`, `!play`, `!petcare`, `!petstats`, `!petname`, `!pethelp`, `!petevolution` | Elio 🐱 ansehen, mit Katzenfutter füttern, pflegen und mit Spielangel/Wollknäuel spielen; sofern aktiviert. |
 | `!drops`, `!drop`, `!claim`, `!dropstats` | Drop-Hilfe/-Status, teilnehmen und eigene Claims ansehen, sofern aktiviert. |
 | `!wheel`, `!wheelstatus`, `!spin` | Wheel-Status; `!spin` nur Mod/Jannik, sofern Chat-Dreh freigegeben. |
+| `!retten`, `!rot`, `!blau`, `!gruen`, `!schatz`, `!aufwachen`, `!portal`, `!bodyguard` | Community-Chaos-Teilnahme. Nur der zum gerade aktiven Minispiel passende Befehl zählt; Antworten gelten einmal je Twitch-Konto innerhalb des gespeicherten 40-Sekunden-Fensters. `!help chaos` zeigt die Kurzregeln. |
 
 ## Jannik und/oder Moderatoren
 

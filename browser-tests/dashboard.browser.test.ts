@@ -212,7 +212,6 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     assert.match(await page.locator('#obs-description').innerText(), /Geheimcode bleibt verborgen/u, 'Tresorvorschau erklärt den Schutz des Codes');
     assert.match(await page.locator('#obs-size').innerText(), /900 × 440 Pixel/u, 'Assistent empfiehlt eine verständliche Quellgröße');
     await screenshot('acy-dashboard-obs-assistant');
-    page.once('dialog', dialog => dialog.accept());
     await page.locator('#obs-create').click();
     await page.locator('#obs-result input').waitFor({ state: 'visible', timeout: 4000 }).catch(async () => assert.fail(`Widget-Link wurde nicht erstellt. Meldung: ${await page.locator('#notice').innerText()} · Status: ${await page.locator('#obs-link-status').innerText()} · API: ${apiResponses.join(', ')}`));
     await page.locator('#obs-test').click();
@@ -270,6 +269,27 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
         if (other !== name) await assertSubpage(`[data-community-page="${other}"]`, false);
       }
     }
+    await page.locator('[data-community-target="events"]').click();
+    for(const game of ['elio_rescue','potion','treasure','wake_elio','portal','bodyguard'])assert.equal(await page.locator(`[data-chaos-game="${game}"]`).isChecked(),true,`${game} ist vorbereitet, Automatik bleibt dennoch aus`);
+    assert.equal(await page.locator('[data-chaos-setting="enabled"]').isChecked(),false);
+    assert.equal(await page.locator('[data-chaos-setting="autoEnabled"]').isChecked(),false);
+    await page.locator('#chaos-wake-energy').fill('4');
+    await page.locator('#chaos-weight-0').fill('41');await page.locator('#chaos-weight-3').fill('19');
+    await page.locator('[data-chaos-reward="rescue-1"]').fill('14');
+    await page.locator('#chaos-save').click();
+    await page.locator('#chaos-status').getByText('Einstellungen gespeichert.').waitFor();
+    assert.equal(await page.locator('#chaos-wake-energy').inputValue(),'4');
+    assert.equal(await page.locator('#chaos-weight-0').inputValue(),'41');
+    assert.equal(await page.locator('[data-chaos-reward="rescue-1"]').inputValue(),'14');
+    const beforeChaosChat=sentChatMessages.length;
+    await page.setViewportSize({width:390,height:844});
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth+1),'Community-Chaos passt auf den iPhone-Viewport');
+    await page.getByRole('button',{name:'Testlauf ohne XP/Nachrichten'}).click();
+    await page.locator('#chaos-status').getByText(/Testlauf/u).waitFor();
+    assert.equal(sentChatMessages.length,beforeChaosChat,'Testmodus sendet keine Chatnachricht');
+    page.once('dialog',dialog=>dialog.accept());await page.getByRole('button',{name:'Event abbrechen'}).click();
+    await page.locator('#chaos-status').getByText(/Kein Event aktiv/u).waitFor();
+    await page.setViewportSize({width:1440,height:1000});
     await page.locator('[data-community-target="elio"]').click();
     assert.match(await page.locator('[data-community-page="elio"] .subpage-guide').innerText(), /Status zeigt Lebensphase/u);
     await screenshot('acy-ux50-desktop-community-elio');

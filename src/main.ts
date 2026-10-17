@@ -238,7 +238,14 @@ async function runLiveMode(): Promise<void> {
         const dropStatus = (arcade.drop as { status?: string } | undefined)?.status;
         const busy = Boolean(snapshots.imposter || snapshots.detective || community.vault.isActive(now) || features.activeQuest() || features.activePoll(now) || features.activeBoss(now)
           || ['announced','claiming','resolving'].includes(dropStatus || '') || wheel.active
+          || community.interactive.active().some(event=>event.status==='open') || Boolean(community.activeEventId())
           || queue.busy || now - lastSpecialAnnouncementAt < 60_000);
+        const chaosSettings=community.chaos.settings();
+        if(chaosSettings.enabled&&chaosSettings.autoEnabled&&lastKnownStreamLive!==undefined&&Date.now()-streamStatusCheckedAt<45_000){
+          for(const prompt of community.chaos.tick(lastKnownStreamLive,busy,now))void queue.enqueue(prompt,undefined,'community').catch(error=>logger.warn('Community-Chaos-Meldung konnte nicht gesendet werden.',{error:error instanceof Error?error.message:'unbekannt'}));
+        }
+        const chaosStart=community.chaos.claimStartAnnouncement();
+        if(chaosStart)void queue.enqueue(chaosStart.prompt,undefined,'community').then(sent=>{if(sent)community.chaos.markAnnouncementSent(chaosStart.id);else community.chaos.releaseStartAnnouncement(chaosStart.id);}).catch(error=>{community.chaos.releaseStartAnnouncement(chaosStart.id);logger.warn('Community-Chaos-Startmeldung konnte nicht gesendet werden.',{error:error instanceof Error?error.message:'unbekannt'});});
         const vaultReady=community.vault.autoStartReady(now,community.vault.activeViewerCount(now),busy,lastSpecialAnnouncementAt);
         if(vaultReady&&!checkingVaultLive&&now-lastVaultLiveCheckAt>=15_000){
           checkingVaultLive=true;lastVaultLiveCheckAt=now;
