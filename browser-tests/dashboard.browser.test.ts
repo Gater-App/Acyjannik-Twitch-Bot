@@ -40,6 +40,7 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
   process.env.DASHBOARD_ADMIN_IDS = 'admin-id';
   process.env.DASHBOARD_HOST = '127.0.0.1';
   process.env.DASHBOARD_PORT = String(port);
+  process.env.DISCORD_INTEGRATION_SECRET = 'browser-test-integration-secret-1234567890';
   const fetchImpl: typeof fetch = async (input) => {
     const url = String(input);
     if (url.endsWith('/oauth2/token')) return Response.json({ access_token: 'ephemeral-token' });
@@ -82,6 +83,18 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     const apiResponses: string[] = [];
     page.on('pageerror', (error) => pageErrors.push(`${error.message} at ${error.stack}`));
     page.on('response', (response) => { if (new URL(response.url()).pathname.startsWith('/dashboard/api/')) apiResponses.push(`${response.status()} ${new URL(response.url()).pathname}`); });
+    const discordPage=await context.newPage();
+    discordPage.on('pageerror',(error)=>pageErrors.push(`${error.message} at ${error.stack}`));
+    await discordPage.goto(`${base}/dashboard/discord`,{waitUntil:'domcontentloaded'});
+    await discordPage.getByRole('heading',{name:'Discord-Verbindung'}).waitFor();
+    await discordPage.locator('[name="ideasChannelId"]').fill('1206225751544832041');
+    await discordPage.locator('[name="enabled"]').check();
+    await discordPage.getByRole('button',{name:'Einstellungen speichern'}).click();
+    await discordPage.getByText('Einstellungen gespeichert.',{exact:true}).waitFor();
+    const discordSaved=await (await discordPage.request.get(`${base}/dashboard/api/discord`)).json() as {settings:{enabled:boolean;ideasChannelId:string;notifyIdeas:boolean}};
+    assert.equal(discordSaved.settings.enabled,true);assert.equal(discordSaved.settings.ideasChannelId,'1206225751544832041');assert.equal(discordSaved.settings.notifyIdeas,true);
+    await discordPage.setViewportSize({width:390,height:844});assert.ok(await discordPage.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth+1),'Discord-Einstellungen passen mobil ohne seitliches Scrollen');
+    await discordPage.close();
     const assertSubpage = async (selector: string, active: boolean) => {
       const state = await page.locator(selector).evaluate((node) => ({ hidden: (node as HTMLElement).hidden, display: getComputedStyle(node).display, active: (node as HTMLElement).dataset.active === 'true' }));
       assert.equal(state.hidden, !active, `${selector} hidden-Flag`);

@@ -877,6 +877,23 @@ export class FeatureStore {
         INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (32, unixepoch()*1000);
       `))();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 33) {
+      if (currentVersion > 0) this.backupBeforeMigration(33);
+      this.db.transaction(() => this.db.exec(`
+        CREATE TABLE IF NOT EXISTS discord_event_outbox (
+          id TEXT PRIMARY KEY, event_type TEXT NOT NULL, aggregate_id TEXT NOT NULL, payload_json TEXT NOT NULL,
+          created_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','leased','delivered','dead')),
+          attempts INTEGER NOT NULL DEFAULT 0, available_at INTEGER NOT NULL, lease_until INTEGER,
+          delivered_at INTEGER, last_error TEXT
+        );
+        CREATE INDEX IF NOT EXISTS discord_event_outbox_ready ON discord_event_outbox(status,available_at,created_at);
+        CREATE TABLE IF NOT EXISTS discord_event_inbox (
+          event_id TEXT PRIMARY KEY, result_json TEXT NOT NULL, created_at INTEGER NOT NULL
+        );
+        INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (33, unixepoch()*1000);
+      `))();
+    }
   }
 
   private backupBeforeMigration(version: number): void {
@@ -989,6 +1006,7 @@ export class FeatureStore {
         .run(input.id,input.userId,input.displayName,input.text,normalized,input.now,input.now);
       this.db.prepare(`INSERT INTO feature_cooldowns(feature,user_id,last_used_at) VALUES('community-idea',?,?) ON CONFLICT(feature,user_id) DO UPDATE SET last_used_at=excluded.last_used_at`).run(input.userId,input.now);
       this.recordCommunityEvent('community.idea.submitted',{id:input.id,userId:input.userId},input.now);
+      this.enqueueDiscordEvent('idea.submitted',input.id,{id:input.id,text:input.text,displayName:input.displayName,category:null,status:'pending',submittedAt:input.now},input.now);
       return {ok:true as const,idea:this.communityIdea(input.id,input.userId)!};
     })();
   }
@@ -1016,15 +1034,112 @@ export class FeatureStore {
   }
 
   voteCommunityIdea(id:string,userId:string,now:number):boolean {
-    return this.db.prepare("INSERT OR IGNORE INTO community_idea_votes(idea_id,user_id,created_at) SELECT id,?,? FROM community_ideas WHERE id=? AND status='approved'")
-      .run(userId,now,id).changes===1;
+    return this.db.transaction(()=>{
+      const changed=this.db.prepare("INSERT OR IGNORE INTO community_idea_votes(idea_id,user_id,created_at) SELECT id,?,? FROM community_ideas WHERE id=? AND status='approved'")
+        .run(userId,now,id).changes===1;
+      if(changed){const idea=this.communityIdea(id);if(idea)this.enqueueDiscordEvent('idea.vote',id,{id,votes:idea.votes},now);}
+      return changed;
+    })();
   }
 
   moderateCommunityIdea(id:string,action:'review'|'approve'|'reject'|'accept'|'plan'|'implement'|'archive',moderatorId:string,now:number,comment:string|null=null,category:string|null=null):boolean {
     const status:IdeaStatus=({review:'reviewing',approve:'approved',reject:'rejected',accept:'accepted',plan:'planned',implement:'implemented',archive:'archived'} as const)[action];
     const allowed:Record<typeof action,string[]>={review:['pending'],approve:['pending','reviewing'],reject:['pending','reviewing','approved'],accept:['approved','voting'],plan:['accepted'],implement:['accepted','planned'],archive:['rejected','implemented','accepted','planned','approved']};
-    return this.db.prepare(`UPDATE community_ideas SET status=?,updated_at=?,moderated_by=?,moderation_comment=?,category=COALESCE(?,category)
-      WHERE id=? AND status IN (${allowed[action].map(()=>'?').join(',')})`).run(status,now,moderatorId,comment,category,id,...allowed[action]).changes===1;
+    return this.db.transaction(()=>{
+      const changed=this.db.prepare(`UPDATE community_ideas SET status=?,updated_at=?,moderated_by=?,moderation_comment=?,category=COALESCE(?,category)
+        WHERE id=? AND status IN (${allowed[action].map(()=>'?').join(',')})`).run(status,now,moderatorId,comment,category,id,...allowed[action]).changes===1;
+      if(changed){const idea=this.communityIdea(id);if(idea)this.enqueueDiscordEvent('idea.status',id,{id:idea.id,status:idea.status,text:idea.text,category:idea.category,votes:idea.votes},now);}
+      return changed;
+    })();
+  }
+
+  private enqueueDiscordEvent(type:string,aggregateId:string,payload:unknown,now:number):string {
+    const settings=this.config<Record<string,unknown>>('discord_integration',{});
+    const toggle=type.startsWith('idea.')?'notifyIdeas':type==='level.up'?'notifyLevels':type==='mystery.drop'?'notifyDrops':type==='quest.completed'?'notifyQuests':type==='seasonal.event'?'notifySeasonal':type==='twitch.live'?'notifyLive':null;
+    if(settings.enabled!==true||!toggle||settings[toggle]!==true)return '';
+    const id=randomUUID();this.db.prepare("INSERT INTO discord_event_outbox(id,event_type,aggregate_id,payload_json,created_at,available_at) VALUES(?,?,?,?,?,?)")
+      .run(id,type,aggregateId,JSON.stringify(payload??{}),now,now);return id;
+  }
+
+  discordOutboxBatch(now:number,limit=25):Array<{id:string;type:string;aggregateId:string;payload:unknown;createdAt:number;attempts:number}> {
+    return this.db.transaction(()=>{
+      this.db.prepare("DELETE FROM discord_event_outbox WHERE status='delivered' AND delivered_at<?").run(now-90*24*60*60_000);
+      this.db.prepare('DELETE FROM discord_event_inbox WHERE created_at<?').run(now-90*24*60*60_000);
+      const rows=this.db.prepare("SELECT id,event_type,aggregate_id,payload_json,created_at,attempts FROM discord_event_outbox WHERE ((status='pending' AND available_at<=?) OR (status='leased' AND lease_until<=?)) ORDER BY created_at,id LIMIT ?")
+        .all(now,now,Math.max(1,Math.min(50,limit))) as Array<{id:string;event_type:string;aggregate_id:string;payload_json:string;created_at:number;attempts:number}>;
+      const lease=this.db.prepare("UPDATE discord_event_outbox SET status='leased',lease_until=? WHERE id=?");
+      for(const row of rows)lease.run(now+30_000,row.id);
+      return rows.map(row=>({id:row.id,type:row.event_type,aggregateId:row.aggregate_id,payload:JSON.parse(row.payload_json) as unknown,createdAt:row.created_at,attempts:row.attempts}));
+    })();
+  }
+
+  settleDiscordOutbox(id:string,success:boolean,now:number,error?:string):boolean {
+    if(success)return this.db.prepare("UPDATE discord_event_outbox SET status='delivered',delivered_at=?,lease_until=NULL,last_error=NULL WHERE id=? AND status='leased'").run(now,id).changes===1;
+    const row=this.db.prepare("SELECT attempts FROM discord_event_outbox WHERE id=? AND status='leased'").get(id) as {attempts:number}|undefined;if(!row)return false;
+    const attempts=row.attempts+1,dead=attempts>=8,backoff=Math.min(6*60*60_000,15_000*2**Math.min(attempts-1,10));
+    return this.db.prepare("UPDATE discord_event_outbox SET status=?,attempts=?,available_at=?,lease_until=NULL,last_error=? WHERE id=? AND status='leased'")
+      .run(dead?'dead':'pending',attempts,now+backoff,(error||'delivery failed').slice(0,300),id).changes===1;
+  }
+
+  discordOutboxStats():{pending:number;leased:number;dead:number;delivered:number} {
+    const rows=this.db.prepare('SELECT status,COUNT(*) AS n FROM discord_event_outbox GROUP BY status').all() as Array<{status:string;n:number}>;
+    const result={pending:0,leased:0,dead:0,delivered:0};for(const row of rows)if(row.status in result)result[row.status as keyof typeof result]=row.n;return result;
+  }
+
+  discordOutboxFailures(limit=25):Array<{id:string;type:string;attempts:number;lastError:string|null;createdAt:number}> {
+    return this.db.prepare("SELECT id,event_type type,attempts,last_error lastError,created_at createdAt FROM discord_event_outbox WHERE status='dead' ORDER BY created_at DESC LIMIT ?")
+      .all(Math.max(1,Math.min(100,limit))) as Array<{id:string;type:string;attempts:number;lastError:string|null;createdAt:number}>;
+  }
+
+  retryDiscordOutbox(id:string,now:number):boolean {
+    return this.db.prepare("UPDATE discord_event_outbox SET status='pending',attempts=0,available_at=?,lease_until=NULL,last_error=NULL WHERE id=? AND status='dead'")
+      .run(now,id).changes===1;
+  }
+
+  recordDiscordLiveTransition(live:boolean,stream:{id:string;title?:string;game_name?:string}|undefined,now:number):void {
+    this.db.transaction(()=>{
+      const previous=this.state<{live:boolean}|null>('discord_live_state',null);
+      if(previous&&previous.live!==live)this.enqueueDiscordEvent('twitch.live',stream?.id||`offline:${now}`,{active:live,title:live?stream?.title||'':undefined,gameName:live?stream?.game_name||'':undefined},now);
+      this.setState('discord_live_state',{live,streamId:live?stream?.id||null:null},now);
+    })();
+  }
+
+  submitDiscordCommunityIdea(input:{eventId:string;id:string;discordUserId:string;displayName:string;text:string;category:string;now:number}):{ok:true;idea:CommunityIdea;duplicateEvent?:boolean}|{ok:false;reason:'duplicate'|'cooldown'|'limit'|'invalid';duplicateEvent?:boolean} {
+    const text=input.text.normalize('NFKC').replace(/\s+/gu,' ').trim();
+    if(text.length<8||text.length>240||!/^\d{17,20}$/u.test(input.eventId)||!/^\d{17,20}$/u.test(input.discordUserId)||!input.id)return {ok:false,reason:'invalid'};
+    return this.db.transaction(()=>{
+      const previous=this.db.prepare('SELECT result_json FROM discord_event_inbox WHERE event_id=?').get(input.eventId) as {result_json:string}|undefined;
+      if(previous)return {...JSON.parse(previous.result_json) as {ok:true;idea:CommunityIdea}|{ok:false;reason:'duplicate'|'cooldown'|'limit'|'invalid'},duplicateEvent:true};
+      const userId=`discord:${input.discordUserId}`,normalized=text.toLocaleLowerCase('de').replace(/[^\p{L}\p{N}]+/gu,' ').trim();
+      const same=this.db.prepare("SELECT 1 FROM community_ideas WHERE submitter_user_id=? AND normalized_text=? AND status NOT IN ('rejected','archived') AND submitted_at>? LIMIT 1").get(userId,normalized,input.now-90*24*60*60_000);
+      const open=this.db.prepare("SELECT COUNT(*) AS n FROM community_ideas WHERE submitter_user_id=? AND status IN ('pending','reviewing','approved','voting')").get(userId) as {n:number};
+      const cooldown=this.db.prepare('SELECT last_used_at FROM feature_cooldowns WHERE feature=? AND user_id=?').get('community-idea',userId) as {last_used_at:number}|undefined;
+      const reason:'duplicate'|'limit'|'cooldown'|null=same?'duplicate':open.n>=5?'limit':cooldown&&cooldown.last_used_at+600_000>input.now?'cooldown':null;
+      if(reason){const result={ok:false as const,reason};this.db.prepare('INSERT INTO discord_event_inbox(event_id,result_json,created_at) VALUES(?,?,?)').run(input.eventId,JSON.stringify(result),input.now);return result;}
+      this.db.prepare("INSERT INTO community_ideas(id,submitter_user_id,display_name,idea_text,normalized_text,category,status,submitted_at,updated_at) VALUES(?,?,?,?,?,?,'pending',?,?)")
+        .run(input.id,userId,input.displayName.replace(/[\u0000-\u001f\u007f]/gu,' ').slice(0,48),text,normalized,input.category.slice(0,40),input.now,input.now);
+      this.db.prepare("INSERT INTO feature_cooldowns(feature,user_id,last_used_at) VALUES('community-idea',?,?) ON CONFLICT(feature,user_id) DO UPDATE SET last_used_at=excluded.last_used_at").run(userId,input.now);
+      this.recordCommunityEvent('community.idea.submitted',{id:input.id,source:'discord'},input.now);
+      const idea=this.communityIdea(input.id,userId)!;
+      this.enqueueDiscordEvent('idea.submitted',input.id,{id:idea.id,text:idea.text,displayName:idea.displayName,category:idea.category,status:idea.status,submittedAt:input.now},input.now);
+      const result={ok:true as const,idea};this.db.prepare('INSERT INTO discord_event_inbox(event_id,result_json,created_at) VALUES(?,?,?)').run(input.eventId,JSON.stringify(result),input.now);return result;
+    })();
+  }
+
+  voteDiscordCommunityIdea(input:{eventId:string;ideaId:string;discordUserId:string;now:number}):{ok:boolean;reason?:string;votes?:number;duplicateEvent?:boolean} {
+    if(!/^\d{17,20}$/u.test(input.eventId)||!/^\d{17,20}$/u.test(input.discordUserId))return {ok:false,reason:'invalid'};
+    return this.db.transaction(()=>{
+      const previous=this.db.prepare('SELECT result_json FROM discord_event_inbox WHERE event_id=?').get(input.eventId) as {result_json:string}|undefined;
+      if(previous)return {...JSON.parse(previous.result_json) as {ok:boolean;reason?:string;votes?:number},duplicateEvent:true};
+      const userId=`discord:${input.discordUserId}`;
+      const inserted=this.db.prepare("INSERT OR IGNORE INTO community_idea_votes(idea_id,user_id,created_at) SELECT id,?,? FROM community_ideas WHERE id=? AND status='approved'")
+        .run(userId,input.now,input.ideaId);
+      const idea=this.communityIdea(input.ideaId);
+      const response=inserted.changes===1&&idea?{ok:true as const,votes:idea.votes}:{ok:false as const,reason:idea?'already-voted-or-closed':'not-found'};
+      if(response.ok)this.enqueueDiscordEvent('idea.vote',input.ideaId,{id:input.ideaId,votes:response.votes},input.now);
+      this.db.prepare('INSERT INTO discord_event_inbox(event_id,result_json,created_at) VALUES(?,?,?)').run(input.eventId,JSON.stringify(response),input.now);
+      return response;
+    })();
   }
 
   categorizeCommunityIdea(id:string,category:string,moderatorId:string,now:number):boolean {
@@ -1326,7 +1441,7 @@ export class FeatureStore {
       }
       const finalQuest = this.quest(id)!;
       this.adminAudit(actorId, `quest-${target}`, id, { rewardedXp }, now);
-      this.recordCommunityEvent('quest.status.changed', { id, status: target, title: target === 'active' ? current.title : undefined,
+      this.recordCommunityEvent('quest.status.changed', { id, status: target, title: target === 'active'||target==='completed' ? current.title : undefined,
         displayName: target === 'active' ? current.displayName : undefined, game: target === 'active' ? current.game : undefined,
         rewardedXp }, now);
       return { ok: true as const, quest: finalQuest, rewardedXp };
@@ -1576,12 +1691,16 @@ export class FeatureStore {
       amount = Math.min(amount, Math.max(0, dailyCap - earned.total));
     }
     if (amount <= 0) return 0;
+    const before=this.db.prepare('SELECT xp FROM xp_users WHERE user_id=?').get(userId) as {xp:number}|undefined;
     const inserted = this.db.prepare('INSERT OR IGNORE INTO xp_ledger(event_id,user_id,amount,reason,created_at) VALUES(?,?,?,?,?)')
       .run(eventId, userId, amount, reason, now);
     if (!inserted.changes) return 0;
     this.db.prepare(`INSERT INTO xp_users(user_id,display_name,xp,updated_at) VALUES(?,?,?,?)
       ON CONFLICT(user_id) DO UPDATE SET display_name=excluded.display_name,xp=xp_users.xp+excluded.xp,updated_at=excluded.updated_at`)
       .run(userId, displayName, amount, now);
+    const after=(before?.xp||0)+amount,base=Math.max(1,Number(this.config<{levelBase?:number}>('xp_settings',{levelBase:100}).levelBase)||100);
+    const oldLevel=1+Math.floor(Math.sqrt(Math.max(0,before?.xp||0)/base)),newLevel=1+Math.floor(Math.sqrt(after/base));
+    if(newLevel>oldLevel)this.enqueueDiscordEvent('level.up',eventId,{displayName:displayName.slice(0,48),level:newLevel},now);
     return amount;
   }
 
@@ -1728,7 +1847,7 @@ export class FeatureStore {
       }
       this.db.prepare('UPDATE seasonal_events SET active=?,archived_at=? WHERE id=?').run(active ? 1 : 0, active ? null : now, id);
       if (id === 'halloween') this.db.prepare('UPDATE game_state SET active=?,changed_at=? WHERE id=1').run(active ? 1 : 0, now);
-      this.recordCommunityEvent(active ? 'seasonal.event.started' : 'seasonal.event.ended', { id, name: event.name, emoji: event.emoji }, now);
+      this.recordCommunityEvent(active ? 'seasonal.event.started' : 'seasonal.event.ended', { id, name: event.name, emoji: event.emoji, active }, now);
       return true;
     })();
   }
@@ -1948,6 +2067,10 @@ export class FeatureStore {
 
   recordCommunityEvent(type: string, payload: unknown, now: number): void {
     this.db.prepare('INSERT INTO community_events(type,payload_json,created_at) VALUES(?,?,?)').run(type, JSON.stringify(payload ?? {}), now);
+    const data=(payload&&typeof payload==='object'?payload:{}) as Record<string,unknown>;
+    if(type==='quest.status.changed'&&data.status==='completed')this.enqueueDiscordEvent('quest.completed',String(data.id||`quest:${now}`),{title:String(data.title||'Eine Community-Quest'),status:'completed'},now);
+    if(type==='seasonal.event.started'||type==='seasonal.event.ended')this.enqueueDiscordEvent('seasonal.event',String(data.id||`season:${now}`),data,now);
+    if(type==='mystery.drop.completed'&&Number(data.participants)>0)this.enqueueDiscordEvent('mystery.drop',String(data.id||`drop:${now}`),{participants:Number(data.participants)},now);
     this.db.prepare('DELETE FROM community_events WHERE id <= (SELECT MAX(id)-10000 FROM community_events)').run();
   }
 

@@ -124,7 +124,7 @@ async function runLiveMode(): Promise<void> {
   let lastKnownStreamLive:boolean|undefined;
   let lastStreamSnapshot:TwitchStream|undefined;
   let streamStatusCheckedAt=0;
-  const recordStreamStatus=(stream:TwitchStream|undefined)=>{lastKnownStreamLive=Boolean(stream);lastStreamSnapshot=stream;streamStatusCheckedAt=Date.now();community.arcade.setCurrentStreamId(stream?.id);};
+  const recordStreamStatus=(stream:TwitchStream|undefined)=>{const live=Boolean(stream),now=Date.now();features.recordDiscordLiveTransition(live,stream?{id:stream.id,...(stream.title?{title:stream.title}:{}),...(stream.game_name?{game_name:stream.game_name}:{})}:undefined,now);lastKnownStreamLive=live;lastStreamSnapshot=stream;streamStatusCheckedAt=now;community.arcade.setCurrentStreamId(stream?.id);};
   const recordStreamStatusError=()=>{lastKnownStreamLive=undefined;lastStreamSnapshot=undefined;streamStatusCheckedAt=Date.now();community.arcade.setCurrentStreamId(undefined);};
   const eventsub = new EventSubClient(
     async (sessionId) => {

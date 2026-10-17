@@ -205,7 +205,11 @@ export class CommunityArcade {
     });
     if(due){
       for(const c of due.claims)this.store.awardXp(`drop:${due.id}:${c.user_id}`,c.user_id,c.display_name,due.amount,'bonus:mystery-drop',now,50);
-      const completed=this.store.miniGameTransaction(db=>db.prepare("UPDATE mystery_drops SET status='completed',result_json=?,resolved_at=? WHERE id=? AND status='resolving'").run(JSON.stringify(due.result),now,due.id).changes===1);
+      const completed=this.store.miniGameTransaction(db=>{
+        const changed=db.prepare("UPDATE mystery_drops SET status='completed',result_json=?,resolved_at=? WHERE id=? AND status='resolving'").run(JSON.stringify(due.result),now,due.id).changes===1;
+        if(changed&&due.claims.length)this.store.recordCommunityEvent('mystery.drop.completed',{id:due.id,participants:due.claims.length,rewardXp:due.amount},now);
+        return changed;
+      });
       if(completed)out.push({message:due.claims.length
         ?`🎁 Der Mystery Drop ist geöffnet! ${due.claims.length} ${due.claims.length===1?'Person erhält':'Personen erhalten'} je ${due.amount} XP. Danke fürs Mitmachen – Elio schnurrt schon!`
         :'🎁 Der Mystery Drop ist vorbei – diesmal hat niemand mitgemacht. Beim nächsten Mal mit !claim dabei sein!',category:'drop'});
