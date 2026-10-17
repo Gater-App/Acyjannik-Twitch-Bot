@@ -287,7 +287,7 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     await page.getByRole('button',{name:'Testlauf ohne XP/Nachrichten'}).click();
     await page.locator('#chaos-status').getByText(/Testlauf/u).waitFor();
     assert.equal(sentChatMessages.length,beforeChaosChat,'Testmodus sendet keine Chatnachricht');
-    page.once('dialog',dialog=>dialog.accept());await page.getByRole('button',{name:'Event abbrechen'}).click();
+    page.once('dialog',dialog=>dialog.accept());await page.getByRole('button',{name:'Event abbrechen',exact:true}).click();
     await page.locator('#chaos-status').getByText(/Kein Event aktiv/u).waitFor();
     await page.setViewportSize({width:1440,height:1000});
     await page.locator('[data-community-target="elio"]').click();

@@ -1008,6 +1008,33 @@ export class FeatureStore {
         INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (37, unixepoch()*1000);
       `))();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 38) {
+      if (currentVersion > 0) this.backupBeforeMigration(38);
+      this.db.transaction(() => this.db.exec(`
+        CREATE TABLE IF NOT EXISTS elio_chronicles_state (
+          id INTEGER PRIMARY KEY CHECK(id=1), status TEXT NOT NULL CHECK(status IN ('draft','active','paused','completed')),
+          season_id TEXT NOT NULL, chapter_index INTEGER NOT NULL DEFAULT 0, mission_index INTEGER NOT NULL DEFAULT 0,
+          clues_json TEXT NOT NULL DEFAULT '[]', decisions_json TEXT NOT NULL DEFAULT '{}', relationships_json TEXT NOT NULL DEFAULT '{}',
+          failed_missions INTEGER NOT NULL DEFAULT 0, automatic_gap INTEGER NOT NULL DEFAULT 0,
+          final_ending TEXT, started_at INTEGER, updated_at INTEGER NOT NULL
+        );
+        INSERT OR IGNORE INTO elio_chronicles_state(id,status,season_id,updated_at) VALUES(1,'draft','season-1',0);
+        CREATE TABLE IF NOT EXISTS elio_chronicles_events (
+          id TEXT PRIMARY KEY, chaos_event_id TEXT NOT NULL UNIQUE REFERENCES community_chaos_events(id),
+          chapter_id TEXT NOT NULL, mission_id TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('active','completed','canceled')),
+          started_at INTEGER NOT NULL, completed_at INTEGER, result_json TEXT, diary_outbox_id TEXT, discord_message_id TEXT
+        );
+        CREATE INDEX IF NOT EXISTS elio_chronicles_timeline ON elio_chronicles_events(started_at,id);
+        CREATE TABLE IF NOT EXISTS elio_chronicles_votes (
+          event_id TEXT NOT NULL REFERENCES elio_chronicles_events(id) ON DELETE CASCADE,
+          user_id TEXT NOT NULL, option_id TEXT NOT NULL, created_at INTEGER NOT NULL,
+          PRIMARY KEY(event_id,user_id)
+        );
+        INSERT OR IGNORE INTO feature_config(key,value) VALUES ('elio_chronicles_settings','{"enabled":false,"autoEnabled":false,"diaryEnabled":false,"diaryChannelId":"","eventsBetweenStory":2}');
+        INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (38, unixepoch()*1000);
+      `))();
+    }
   }
 
   private backupBeforeMigration(version: number): void {
@@ -1301,6 +1328,16 @@ export class FeatureStore {
     this.db.prepare("INSERT INTO discord_event_outbox(id,event_type,aggregate_id,payload_json,created_at,available_at) VALUES(?,'community.chaos',?,?,?,?)")
       .run(id,aggregateId,JSON.stringify({...safe,discordMention:{mode:'none'}}),now,now);
     return id;
+  }
+
+  enqueueChronicleDiscordEvent(aggregateId:string,payload:unknown,now:number):string {
+    const settings=this.config<Record<string,unknown>>('elio_chronicles_settings',{});
+    const discord=this.config<Record<string,unknown>>('discord_integration',{});
+    if(settings.enabled!==true||settings.diaryEnabled!==true||discord.enabled!==true||typeof settings.diaryChannelId!=='string'||!/^[0-9]{17,20}$/u.test(settings.diaryChannelId))return '';
+    const data=payload&&typeof payload==='object'&&!Array.isArray(payload)?payload as Record<string,unknown>:{};
+    const safe={channelId:settings.diaryChannelId,seasonId:String(data.seasonId||'season-1').slice(0,40),seasonTitle:String(data.seasonTitle||'Elio Chronicles · Staffel 1').slice(0,100),chapterTitle:String(data.chapterTitle||'Kapitel').slice(0,100),chapterNumber:Number(data.chapterNumber)||1,title:String(data.title||'Story-Ereignis').slice(0,120),summary:String(data.summary||'').slice(0,1500),success:data.success===true,clue:typeof data.clue==='string'?data.clue.slice(0,180):null,decision:typeof data.decision==='string'?data.decision.slice(0,180):null,heroes:Array.isArray(data.heroes)?data.heroes.slice(0,3).map(x=>String(x).replace(/@/gu,'＠').replace(/[\u0000-\u001f\u007f]/gu,' ').slice(0,48)):[],participants:Math.max(0,Number(data.participants)||0),totalXp:Math.max(0,Number(data.totalXp)||0),ending:typeof data.ending==='string'?data.ending.slice(0,400):null,completedAt:now,discordMention:{mode:'none'}};
+    const id=randomUUID();this.db.prepare("INSERT INTO discord_event_outbox(id,event_type,aggregate_id,payload_json,created_at,available_at) VALUES(?,'elio.chronicles',?,?,?,?)")
+      .run(id,aggregateId,JSON.stringify(safe),now,now);return id;
   }
 
   discordOutboxBatch(now:number,limit=25):Array<{id:string;type:string;aggregateId:string;payload:unknown;createdAt:number;attempts:number}> {

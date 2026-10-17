@@ -22,6 +22,7 @@ export interface HelpAvailability {
   guess: boolean;
   duels: boolean;
   chaos?: boolean;
+  chronicles?: boolean;
 }
 
 export const DEFAULT_HELP_AVAILABILITY: HelpAvailability = {
@@ -40,6 +41,7 @@ const ALIASES: Record<string,string> = {
   basics:'start', start:'start', games:'spiele', game:'spiele', drops:'drop', wheel:'gluecksrad',
   halloween:'event-halloween', weihnachten:'event-christmas', christmas:'event-christmas', ostern:'event-easter', easter:'event-easter',
   tresor:'tresor', vault:'tresor',
+  chronicles:'story', 'elio-story':'story',
   detektiv:'detektiv', detective:'detektiv', pet:'pet', quests:'quests', spark:'ideen', 'chat-ideen':'ideen',
   community:'community-portal', portal:'community-portal',
 };
@@ -75,6 +77,7 @@ export function helpReply(args: string[], message: ChatMessage, availability: He
     case 'tresor': return availability.vault ? '🔐 Knackt gemeinsam den dreistelligen Code mit !code 427. Der geheime Hinweis zu deinem letzten Tipp erscheint angemeldet im Community-Portal: https://twitch.gater-app.de/community' : '🔐 Der Community-Tresor ist derzeit deaktiviert.';
     case 'community-portal': return '💜 XP, Elio 🐱, Community-Ideen und Spiele: https://twitch.gater-app.de/community';
     case 'chaos': return availability.chaos ? '🎉 Community-Chaos läuft zeitweise im Chat: !retten, !rot / !blau / !gruen, !schatz, !aufwachen, !portal oder !bodyguard. Teilnahme zählt nur beim passenden aktiven Spiel.' : '🎉 Community-Chaos ist derzeit ausgeschaltet.';
+    case 'story': return availability.chronicles ? '📖 Elio Chronicles entwickelt sich während echter Streams. Wenn eine Story-Abstimmung läuft, nutze nur die angezeigten Antworten. In Discord zeigen /elio-story status, /elio-story kapitel, /elio-story hinweise und /elio-story zusammenfassung den freigeschalteten Fortschritt.' : '📖 Elio Chronicles ist derzeit nicht freigegeben.';
     default: return '🎮 !help spiele | 🎃 !help events | 🏆 !help xp | 📜 !help quests | 📖 Alle Befehle: https://twitch.gater-app.de/hilfe | 💜 Portal: https://twitch.gater-app.de/community';
   }
 }
@@ -88,7 +91,7 @@ function gameHelp(a: HelpAvailability): string {
   return games.length ? `🎮 Weitere Chatspiele: ${games.join(' · ')}.` : '🎮 Weitere Chatspiele sind derzeit deaktiviert. Für Community-Runden: !help imposter oder !help detective.';
 }
 
-export const HELP_TOPICS = ['start','spiele','events','xp','quests','ideen','imposter','detektiv','pet','drop','gluecksrad','community','chaos'];
+export const HELP_TOPICS = ['start','spiele','events','xp','quests','ideen','imposter','detektiv','pet','drop','gluecksrad','community','chaos','story'];
 
 function seasonalHelp(id:string,availability:HelpAvailability):string {
   const event=availability.seasonalEvents?.find(item=>item.id===id);
