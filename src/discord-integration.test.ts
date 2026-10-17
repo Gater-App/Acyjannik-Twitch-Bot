@@ -10,7 +10,7 @@ async function freePort():Promise<number>{const server=net.createServer();await 
 test('Discord ideas use Twitch source of truth, idempotent inbox and acknowledged outbox',async()=>{
   const env={...process.env},store=new FeatureStore(':memory:'),port=await freePort();
   process.env.TWITCH_CLIENT_ID='test-client';process.env.TWITCH_CLIENT_SECRET='test-secret';process.env.DASHBOARD_REDIRECT_URI='https://bot.example.test/dashboard/oauth/callback';process.env.DASHBOARD_ADMIN_IDS='test-admin';process.env.DASHBOARD_HOST='127.0.0.1';process.env.DASHBOARD_PORT=String(port);process.env.DISCORD_INTEGRATION_SECRET='synthetic-integration-secret-123456789';
-  store.setConfig('discord_integration',{enabled:true,accountLinkEnabled:true,ideasChannelId:'1206225751544832041',rewardsChannelId:'',liveChannelId:'',notifyIdeas:true,notifyLevels:false,notifyDrops:false,notifyQuests:false,notifySeasonal:false,notifyLive:false});
+  store.setConfig('discord_integration',{enabled:true,accountLinkEnabled:true,profilesEnabled:true,ideasChannelId:'1206225751544832041',rewardsChannelId:'',liveChannelId:'',notifyIdeas:true,notifyLevels:false,notifyDrops:false,notifyQuests:false,notifySeasonal:false,notifyLive:false});
   const server=new DashboardServer(store,()=>({twitchConnected:false,channel:'acyjannik',startedAt:1}),logger,fetch);
   const base=`http://127.0.0.1:${port}/api/discord/v1`,auth={authorization:'Bearer synthetic-integration-secret-123456789','content-type':'application/json'};
   try{
@@ -28,6 +28,22 @@ test('Discord ideas use Twitch source of truth, idempotent inbox and acknowledge
     const linkIntent=await fetch(`${base}/account-links/intents`,{method:'POST',headers:auth,body:JSON.stringify({discordUserId:'1206225751544832053'})});assert.equal(linkIntent.status,201);
     const intentBody=await linkIntent.json() as {authorizationUrl:string;expiresAt:number};assert.match(intentBody.authorizationUrl,/\/community\/link\/twitch#token=/u);
     assert.equal((await fetch(`${base}/account-links/status`,{method:'POST',headers:auth,body:JSON.stringify({discordUserId:'1206225751544832053'})})).status,200);
+    const tokenHash='d'.repeat(64),stateHash='e'.repeat(64),linkedDiscordId='1206225751544832053';
+    store.createCommunityAccountLinkIntent({tokenHash,discordUserId:linkedDiscordId,createdAt:1000,expiresAt:601000});
+    assert.equal(store.beginCommunityAccountLinkOAuthState({stateHash,tokenHash,expiresAt:601000,now:1000}),true);
+    assert.equal(store.completeCommunityAccountLink({stateHash,twitchUserId:'twitch-profile-1',now:2000}),'linked');
+    store.awardXp('profile-xp-a','twitch-profile-1','Twitch Viewer',250,'activity',3000);
+    store.miniGameQuery(db=>db.prepare('INSERT INTO community_world_badges(user_id,badge_id,unlocked_at) VALUES(?,?,?)').run('twitch-profile-1','elio_friend',4000));
+    const ownProfile=await fetch(`${base}/profiles/me`,{method:'POST',headers:auth,body:JSON.stringify({discordUserId:linkedDiscordId})});assert.equal(ownProfile.status,200);
+    const ownProfileBody=await ownProfile.json() as {profile:{displayName:string;xp:number;level:number;rank:number;progress:{current:number;required:number};badges:Array<{name:string}>}};
+    assert.deepEqual(ownProfileBody.profile,{displayName:'Twitch Viewer',xp:250,level:2,rank:1,progress:{current:150,required:300},badges:[{name:'Elios bester Freund',emoji:'🐱',unlockedAt:4000}]});
+    assert.equal(JSON.stringify(ownProfileBody).includes('twitch-profile-1'),false,'API gibt keine Twitch-ID an den Discord-Client aus');
+    const missingProfile=await fetch(`${base}/profiles/me`,{method:'POST',headers:auth,body:JSON.stringify({discordUserId:'1206225751544832054'})});assert.equal(missingProfile.status,404);
+    const leaderboard=await fetch(`${base}/profiles/leaderboard`,{method:'POST',headers:auth,body:JSON.stringify({page:1})});assert.equal(leaderboard.status,200);
+    const leaderboardBody=await leaderboard.json() as {entries:Array<{displayName:string;xp:number;level:number;rank:number}>};assert.deepEqual(leaderboardBody.entries[0],{rank:1,displayName:'Twitch Viewer',xp:250,level:2});
+    assert.equal(JSON.stringify(leaderboardBody).includes('twitch-profile-1'),false,'Rangliste veröffentlicht keine Konto-IDs');
+    store.setConfig('discord_integration',{enabled:true,profilesEnabled:false});
+    assert.equal((await fetch(`${base}/profiles/me`,{method:'POST',headers:auth,body:JSON.stringify({discordUserId:linkedDiscordId})})).status,403,'Profile-Flag ist sofort wirksam');
     assert.equal((await fetch(`${base}/account-links/intents`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({discordUserId:'1206225751544832053'})})).status,401);
     const polled=await fetch(`${base}/outbox/poll`,{method:'POST',headers:auth,body:'{}'});assert.equal(polled.status,200);
     const events=(await polled.json() as {events:Array<{id:string;type:string}>}).events;assert.deepEqual(events.map(event=>event.type),['idea.submitted','idea.status','idea.vote']);
