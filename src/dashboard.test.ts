@@ -131,12 +131,13 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     const csrf = html.match(/name="csrf" content="([a-f0-9]+)"/u)?.[1] || '';
     assert.ok(csrf);
     const discordPage=await fetch(`${base}/dashboard/discord`,{headers:{Cookie:sessionCookie}});assert.equal(discordPage.status,200);
-    const discordHtml=await discordPage.text();assert.match(discordHtml,/name="mentionLevels"/u);assert.match(discordHtml,/Betroffene verknüpfte Person erwähnen/u);assert.match(discordHtml,/@everyone benachrichtigen/u);
+    const discordHtml=await discordPage.text();assert.match(discordHtml,/name="mentionLevels"/u);assert.match(discordHtml,/Betroffene verknüpfte Person erwähnen/u);assert.match(discordHtml,/@everyone benachrichtigen/u);assert.match(discordHtml,/name="dailyRewardXp"/u);
     const discordSettingsResponse=await fetch(`${base}/dashboard/api/discord`,{headers:{Cookie:sessionCookie}});assert.equal(discordSettingsResponse.status,200);
-    const discordSettings=(await discordSettingsResponse.json() as {settings:Record<string,unknown>}).settings;
+    const discordPayload=await discordSettingsResponse.json() as {settings:Record<string,unknown>;dailyRewardXp:number},discordSettings=discordPayload.settings;assert.equal(discordPayload.dailyRewardXp,25);
     assert.equal(discordSettings.mentionLevels,'none');assert.equal(discordSettings.mentionLive,'none','bestehende Konfiguration erhält keine Erwähnung als impliziten Standard');
-    const saveDiscordMentions=await fetch(`${base}/dashboard/api/discord/settings`,{method:'POST',headers:{Cookie:sessionCookie,Origin:base,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({...discordSettings,mentionLevels:'user',mentionLive:'everyone'})});
+    const saveDiscordMentions=await fetch(`${base}/dashboard/api/discord/settings`,{method:'POST',headers:{Cookie:sessionCookie,Origin:base,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({...discordSettings,mentionLevels:'user',mentionLive:'everyone',dailyRewardXp:40})});
     assert.equal(saveDiscordMentions.status,200,await saveDiscordMentions.clone().text());
+    assert.equal(store.config<{dailyRewardXp?:number}>('xp_settings',{}).dailyRewardXp,40,'Tages-XP werden über das geschützte Dashboard zentral gespeichert');
     const invalidDiscordMentions=await fetch(`${base}/dashboard/api/discord/settings`,{method:'POST',headers:{Cookie:sessionCookie,Origin:base,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({...discordSettings,mentionSeasonal:'user'})});
     assert.equal(invalidDiscordMentions.status,400,'nur Levelmeldungen dürfen eine einzelne Person auswählen; @everyone muss ausdrücklich gesetzt werden');
     assert.match(html,/Magic 8-Ball/u);assert.match(html,/Sichere Antwort-Vorschau/u);
@@ -469,6 +470,21 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     for (const [key, value] of Object.entries(env)) process.env[key] = value;
     for (const key of Object.keys(process.env)) if (!(key in env)) delete process.env[key];
   }
+});
+
+test('Discord-Tagesbelohnung nutzt zentrale XP, ist parallel cooldown-geschützt und idempotent',async()=>{
+  const env={...process.env},directory=fs.mkdtempSync(path.join(os.tmpdir(),'acy-discord-daily-')),store=new FeatureStore(path.join(directory,'features.sqlite')),port=await freePort();
+  process.env.TWITCH_CLIENT_ID='test-client';process.env.TWITCH_CLIENT_SECRET='test-secret';process.env.DASHBOARD_REDIRECT_URI='https://bot.example.test/dashboard/oauth/callback';process.env.DASHBOARD_ADMIN_IDS='admin-id';process.env.DASHBOARD_HOST='127.0.0.1';process.env.DASHBOARD_PORT=String(port);process.env.DISCORD_INTEGRATION_SECRET='test-discord-integration-secret-that-is-long-enough';
+  store.setConfig('discord_integration',{enabled:true,accountLinkEnabled:true});store.setConfig('xp_settings',{dailyRewardXp:25,dailyGameCap:100});
+  store.miniGameTransaction(db=>db.prepare('INSERT INTO community_account_links(twitch_user_id,discord_user_id,linked_at) VALUES(?,?,?)').run('twitch-user-1','1206225751544832053',Date.now()));
+  const dashboard=new DashboardServer(store,()=>({twitchConnected:true,channel:'acyjannik',startedAt:1}),logger,async()=>Response.json({}));
+  try{assert.equal(await dashboard.start(),true);const url=`http://127.0.0.1:${port}/api/discord/v1/community/daily`,headers={authorization:'Bearer test-discord-integration-secret-that-is-long-enough','content-type':'application/json'};
+    const post=(eventId:string)=>fetch(url,{method:'POST',headers,body:JSON.stringify({eventId,discordUserId:'1206225751544832053',displayName:'Community-Mitglied'})});
+    const responses=await Promise.all([post('1206225751544832054'),post('1206225751544832055')]),results=await Promise.all(responses.map(r=>r.json() as Promise<{status:string;awarded:number}>));
+    assert.deepEqual(results.map(x=>x.status).sort(),['claimed','cooldown']);assert.equal(store.xp('twitch-user-1').xp,25);
+    const retry=await post('1206225751544832054'),replayed=await retry.json() as {status:string;awarded:number;duplicateEvent:boolean};assert.equal(replayed.status,'claimed');assert.equal(replayed.awarded,25);assert.equal(replayed.duplicateEvent,true);assert.equal(store.xp('twitch-user-1').xp,25);
+    const unlinked=await fetch(url,{method:'POST',headers,body:JSON.stringify({eventId:'1206225751544832056',discordUserId:'1206225751544832060',displayName:'unlinked'})});assert.equal(unlinked.status,403);
+  }finally{await dashboard.stop();store.close();fs.rmSync(directory,{recursive:true,force:true});for(const key of Object.keys(process.env))if(!(key in env))delete process.env[key];for(const [key,value] of Object.entries(env))process.env[key]=value;}
 });
 
 test('Moderator-OAuth öffnet nur die Prank-Oberfläche und serverseitig nur deren API',async()=>{
