@@ -25,6 +25,7 @@ export class CommunityInteractive {
   updateSettings(value:Partial<InteractiveSettings>):InteractiveSettings{
     const current=this.settings(),next={...current,...value};
     for(const key of ['battleEnabled','secretEventsEnabled','autoSecretEventsEnabled','gameNightEnabled','elio2Enabled','chaosWheel2Enabled','personalityEnabled'] as const)if(typeof next[key]!=='boolean')throw new Error('Feature-Schalter müssen Ein oder Aus sein.');
+    if(next.chaosWheel2Enabled||next.personalityEnabled)throw new Error('Diese Community-Funktion ist noch nicht verfügbar.');
     for(const [key,min,max] of [['battleDurationMs',60_000,3_600_000],['battleCooldownMs',60_000,86_400_000],['battleActionCooldownMs',5_000,600_000],['battleMaxPointsPerUser',1,100],['secretEventDurationMs',15_000,900_000]] as const)if(!Number.isInteger(next[key])||next[key]<min||next[key]>max)throw new Error('Event-Limits liegen außerhalb des erlaubten Bereichs.');
     for(const [key,min,max] of [['secretAutoMinIntervalMs',3_600_000,14*86_400_000],['secretAutoMaxPerDay',1,10],['secretAutoMinActiveChatters',1,500]] as const)if(!Number.isInteger(next[key])||next[key]<min||next[key]>max)throw new Error('Automatische Event-Limits liegen außerhalb des erlaubten Bereichs.');
     for(const key of ['battleParticipationXp','battleWinnerXp'] as const)if(!Number.isInteger(next[key])||next[key]<0||next[key]>20)throw new Error('Battle-Belohnungen müssen zwischen 0 und 20 XP liegen.');

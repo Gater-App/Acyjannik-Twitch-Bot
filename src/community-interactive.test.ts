@@ -5,6 +5,18 @@ import { CommunityInteractive, localTimeToEpoch } from './community-interactive.
 
 function setup(chooseOutcome?:(exclusiveMax:number)=>number){const store=new FeatureStore(':memory:'),interactive=new CommunityInteractive(store,chooseOutcome);return {store,interactive};}
 
+test('unfertige Chaos-Wheel-2.0- und Persönlichkeitsschalter bleiben serverseitig gesperrt',()=>{
+  const {store,interactive}=setup();
+  try{
+    assert.equal(interactive.settings().chaosWheel2Enabled,false);
+    assert.equal(interactive.settings().personalityEnabled,false);
+    assert.throws(()=>interactive.updateSettings({chaosWheel2Enabled:true}),/noch nicht verfügbar/u);
+    assert.throws(()=>interactive.updateSettings({personalityEnabled:true}),/noch nicht verfügbar/u);
+    assert.equal(interactive.settings().chaosWheel2Enabled,false);
+    assert.equal(interactive.settings().personalityEnabled,false);
+  }finally{store.close();}
+});
+
 test('Twitch-vs-Discord defaults off, assigns platform teams, deduplicates linked identity, and bounds points',()=>{
   const {store,interactive}=setup();
   try{
