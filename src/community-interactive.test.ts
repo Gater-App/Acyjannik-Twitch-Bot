@@ -91,6 +91,21 @@ test('Secret events resolve server-side once, use central XP, and preserve one s
   }finally{store.close();}
 });
 
+test('automatic secret events stay off by default, require recent activity, obey daily limits, and survive persisted event state',()=>{
+  const {store,interactive}=setup(()=>2),now=Date.UTC(2026,9,17,12);
+  try{
+    store.recordRecentChatActivity('viewer-1','Fan 1','fan1',now);store.recordRecentChatActivity('viewer-2','Fan 2','fan2',now);
+    assert.equal(interactive.tick(now),0);assert.equal(interactive.active(undefined,now).length,0);
+    interactive.updateSettings({secretEventsEnabled:true,autoSecretEventsEnabled:true,secretAutoMinIntervalMs:3_600_000,secretAutoMaxPerDay:1,secretAutoMinActiveChatters:2});
+    assert.equal(interactive.tick(now),0);
+    const event=interactive.active(undefined,now)[0];assert.ok(event);assert.ok(['mystery_case','elio_rescue','secret_portal'].includes(event.kind));assert.equal(event.status,'open');
+    assert.equal(interactive.tick(now+1000),0,'active event prevents overlapping automation');assert.equal(interactive.active(undefined,now+1000).length,1);
+    assert.equal(interactive.finish(event.id,'admin',now+2000),true);
+    assert.equal(interactive.tick(now+3_600_000),0,'daily event limit prevents another surprise');
+    assert.equal(interactive.active(undefined,now+3_600_000).length,0);
+  }finally{store.close();}
+});
+
 test('Europe/Berlin local schedule conversion handles summer time and rejects ambiguous or nonexistent DST times',()=>{
   assert.equal(localTimeToEpoch('2026-01-15T19:00','Europe/Berlin'),Date.UTC(2026,0,15,18));
   assert.equal(localTimeToEpoch('2026-07-15T19:00','Europe/Berlin'),Date.UTC(2026,6,15,17));
