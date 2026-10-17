@@ -18,7 +18,7 @@ test('Community-Pet bleibt gemeinschaftlich, begrenzt Werte und dedupliziert Eve
   assert.match(arcade.handle(message('viewer','status','!pet'),'pet',[],999)||'',/Elio 🐱 · Kätzchen/u);
   assert.match(arcade.handle(message('u1','e1','!feed'),'feed',[],1000)||'',/Katzenfutter/u);
   assert.match(arcade.handle(message('u1','e1','!feed'),'feed',[],1001)||'',/bereits verarbeitet/u);
-  assert.equal(arcade.pet().hunger,78);
+  assert.equal(arcade.pet(1000).hunger,78);
   assert.match(arcade.handle(message('u1','e2','!play'),'play',[],2000)||'',/noch/u);
   assert.equal(arcade.pet().level,1);
   store.close();
@@ -36,6 +36,36 @@ test('Elios Stimmungen folgen nachvollziehbar seinen Werten und einem zeitnahen 
     store.miniGameTransaction(db=>db.prepare("INSERT INTO community_pet_events(id,kind,message,rare,created_at) VALUES('rare-mood','rare','Ein seltenes Glitzern!',1,?)").run(1000));
     assert.equal(arcade.pet(1001).mood,'cheeky');assert.equal(arcade.pet(16*60_000).mood,'calm');
   }finally{store.close();}
+});
+
+test('Elio-Bedürfnisse verändern sich zeitbasiert ohne Chataktivität; Ruhe regeneriert und Leveldaten bleiben erhalten',()=>{
+  const {store,arcade}=setup();
+  try{
+    arcade.updateSettings({...arcade.settings(),petEnabled:true});
+    const start=10_000,period=6*60*60_000;
+    store.miniGameTransaction(db=>db.prepare("UPDATE community_pet SET level=4,xp=399,hunger=70,happiness=70,energy=70,state_updated_at=?,updated_at=? WHERE id=1").run(start,start));
+    arcade.tickMessages(start+period);
+    const decayed=arcade.pet(start+period);assert.deepEqual([decayed.hunger,decayed.happiness,decayed.energy],[69,70,69]);
+    arcade.tickMessages(start+period+period-1);
+    assert.equal(arcade.pet(start+period+period-1).hunger,69,'erneutes Tick zählt denselben Zeitraum nicht doppelt');
+    store.miniGameTransaction(db=>db.prepare('UPDATE community_pet SET state_updated_at=?,updated_at=?,hunger=70,happiness=70,energy=50 WHERE id=1').run(start,start));
+    const sleep=arcade.handle(message('viewer','sleep-event','!petsleep'),'petsleep',[],start);
+    assert.match(sleep||'',/sechs Stunden/u);assert.equal(arcade.pet(start).sleeping,true);
+    arcade.tickMessages(start+period);
+    const rested=arcade.pet(start+period);assert.deepEqual([rested.hunger,rested.happiness,rested.energy],[69,72,60]);
+    assert.equal(rested.sleeping,false);assert.deepEqual([rested.level,rested.xp,rested.outfit.id],[4,399,'classic']);
+  }finally{store.close();}
+});
+
+test('Migration 36 ergänzt Zeitstempel und Schlafstatus ohne Elio-Spielstand oder Outfit zurückzusetzen',()=>{
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'elio-needs-migration-')),file=path.join(directory,'db','state.sqlite');let store=new FeatureStore(file);
+  try{
+    store.miniGameTransaction(db=>{db.prepare("UPDATE community_pet SET level=9,xp=850,hunger=37,happiness=62,energy=48 WHERE id=1").run();db.exec("DELETE FROM schema_migrations WHERE version>=36;ALTER TABLE community_pet DROP COLUMN sleep_until;ALTER TABLE community_pet DROP COLUMN state_updated_at;");});
+  }finally{store.close();}
+  try{
+    store=new FeatureStore(file);const pet=new CommunityArcade(store,'broadcaster').pet();assert.deepEqual([pet.level,pet.xp,pet.hunger,pet.happiness,pet.energy,pet.sleeping],[9,850,37,62,48,false]);
+    assert.ok(fs.readdirSync(path.join(directory,'backups')).some(name=>name.includes('migration-v36-')),'v36-Migration erstellt ein Vorab-Backup');
+  }finally{store.close();fs.rmSync(directory,{recursive:true,force:true});}
 });
 
 test('Persönlichkeitsmigration erhält Elis Zustand und bestehende Katzenaktionen',()=>{

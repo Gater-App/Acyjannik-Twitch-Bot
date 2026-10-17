@@ -1413,12 +1413,12 @@ export class DashboardServer {
     }
     if(url.pathname==='/api/discord/v1/community/elio/action'&&req.method==='POST'){
       const body=await this.readJson(req),settings=this.store.config<typeof DISCORD_DEFAULTS>('discord_integration',DISCORD_DEFAULTS);
-      if(!body||typeof body.eventId!=='string'||!/^\d{17,20}$/u.test(body.eventId)||typeof body.discordUserId!=='string'||!/^\d{17,20}$/u.test(body.discordUserId)||typeof body.displayName!=='string'||!['feed','play','care'].includes(String(body.action))){this.json(res,400,{error:'Ungültige Elio-Aktion.'});return;}
+      if(!body||typeof body.eventId!=='string'||!/^\d{17,20}$/u.test(body.eventId)||typeof body.discordUserId!=='string'||!/^\d{17,20}$/u.test(body.discordUserId)||typeof body.displayName!=='string'||!['feed','play','care','sleep'].includes(String(body.action))){this.json(res,400,{error:'Ungültige Elio-Aktion.'});return;}
       if(!settings.enabled||!settings.elioEnabled||!this.arcade?.settings().petEnabled){this.json(res,409,{error:'Elio ist in Discord derzeit nicht verfügbar.'});return;}
       if(this.rejectRateLimit(res,this.rates.consume('discord-elio',body.discordUserId,4,60_000),'Elio-Aktion kurz gedrosselt. Bitte gleich erneut versuchen.'))return;
       const twitchUserId=this.store.communityTwitchIdForDiscord(body.discordUserId);if(!twitchUserId){this.json(res,403,{error:'Verbinde zuerst dein Twitch-Konto mit /verknuepfen.'});return;}
       const name=String(body.displayName).replace(/[\u0000-\u001f\u007f]/gu,' ').replace(/\s+/gu,' ').trim().slice(0,48)||'Community-Mitglied';
-      const kind=String(body.action) as 'feed'|'play'|'care';
+      const kind=String(body.action) as 'feed'|'play'|'care'|'sleep';
       const result=this.arcade.interactFromPortal({eventId:`discord:${body.eventId}`,broadcasterUserId:'discord-community',senderUserId:twitchUserId,senderLogin:name,senderDisplayName:name,message:`/${kind}`,sentAt:Date.now()},kind,Date.now());
       if(!result.ok){this.json(res,409,{error:result.message,remainingMs:result.remainingMs});return;}
       const snapshot=this.arcade.snapshot('pet');this.json(res,200,{ok:true,reaction:result.reaction,changes:result.changes,bonusXp:result.bonusXp||0,leveledUp:result.leveledUp===true,remainingMs:result.remainingMs,pet:snapshot.pet});return;

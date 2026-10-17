@@ -974,6 +974,17 @@ export class FeatureStore {
         INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (35, unixepoch()*1000);
       `))();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 36) {
+      if (currentVersion > 0) this.backupBeforeMigration(36);
+      this.db.transaction(() => {
+        const columns=new Set((this.db.prepare('PRAGMA table_info(community_pet)').all() as Array<{name:string}>).map(column=>column.name));
+        if(!columns.has('state_updated_at'))this.db.exec('ALTER TABLE community_pet ADD COLUMN state_updated_at INTEGER NOT NULL DEFAULT 0');
+        if(!columns.has('sleep_until'))this.db.exec('ALTER TABLE community_pet ADD COLUMN sleep_until INTEGER NOT NULL DEFAULT 0');
+        this.db.exec(`UPDATE community_pet SET state_updated_at=updated_at WHERE state_updated_at=0;
+          INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (36, unixepoch()*1000);`);
+      })();
+    }
   }
 
   private backupBeforeMigration(version: number): void {
