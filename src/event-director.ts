@@ -10,7 +10,7 @@ export interface EventDirectorSettings {
   bossAdaptiveHp:boolean; discordAnnouncements:boolean;
 }
 export interface EventCandidate { type:string; priority:number; enabled:boolean; ready:boolean; minimumActivity?:ActivityLevel; interval?:{min:number;max:number;afterCompletion?:boolean}; start:()=>string|undefined }
-export interface DirectorSnapshot { settings:EventDirectorSettings; activity:{level:ActivityLevel;uniqueChatters5m:number;messages5m:number;uniqueChatters15m:number;uniqueChatters30m:number}; lastEventAt:number|null; recentAutomaticEvents:number; leaseUntil:number; reason:string; activeEvent:{type:string;id:string;status:string;endsAt:number|null}|null; nextScheduled:{type:string;at:number}|null; recentRuns:Array<{type:string;startedAt:number;reason:string}> }
+export interface DirectorSnapshot { settings:EventDirectorSettings; activity:{level:ActivityLevel;uniqueChatters5m:number;chatSignals5m:number;uniqueChatters15m:number;uniqueChatters30m:number}; lastEventAt:number|null; recentAutomaticEvents:number; leaseUntil:number; reason:string; activeEvent:{type:string;id:string;status:string;endsAt:number|null}|null; nextScheduled:{type:string;at:number}|null; recentRuns:Array<{type:string;startedAt:number;reason:string}> }
 const DEFAULTS:EventDirectorSettings={enabled:false,paused:false,autoBosses:false,autoDrops:false,autoWheel:false,autoChaos:false,autoSecretEvents:false,autoStories:false,minimumActivity:'normal',minimumGapMs:900_000,maxEventsPerHour:2,bossMinIntervalMs:4_500_000,bossMaxIntervalMs:6_300_000,bossAdaptiveHp:true,discordAnnouncements:false};
 const LEVELS:ActivityLevel[]=['quiet','low','normal','high'];
 
@@ -64,9 +64,9 @@ export class EventDirector {
       const window=(milliseconds:number)=>db.prepare('SELECT COUNT(DISTINCT user_id) uniqueChatters,COUNT(*) messages FROM event_director_activity WHERE last_seen>? AND last_seen<=?').get(now-milliseconds,now) as {uniqueChatters:number;messages:number};
       return {five:window(5*60_000),fifteen:window(15*60_000),thirty:window(30*60_000)};
     });
-    const uniqueChatters5m=counts.five.uniqueChatters,uniqueChatters15m=counts.fifteen.uniqueChatters,uniqueChatters30m=counts.thirty.uniqueChatters,messages5m=counts.five.messages;
-    const level:ActivityLevel=uniqueChatters5m>=12&&messages5m>=30?'high':uniqueChatters5m>=5&&messages5m>=10?'normal':uniqueChatters5m>=2?'low':'quiet';
-    return {level,uniqueChatters5m,messages5m,uniqueChatters15m,uniqueChatters30m};
+    const uniqueChatters5m=counts.five.uniqueChatters,uniqueChatters15m=counts.fifteen.uniqueChatters,uniqueChatters30m=counts.thirty.uniqueChatters,chatSignals5m=counts.five.messages;
+    const level:ActivityLevel=uniqueChatters5m>=12&&chatSignals5m>=30?'high':uniqueChatters5m>=5&&chatSignals5m>=10?'normal':uniqueChatters5m>=2?'low':'quiet';
+    return {level,uniqueChatters5m,chatSignals5m,uniqueChatters15m,uniqueChatters30m};
   }
   snapshot(now=Date.now(),reason='') :DirectorSnapshot {
     const activity=this.activity(now),state=this.store.state<{lastEventAt:number|null}>('event_director_state',{lastEventAt:null});
