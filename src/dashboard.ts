@@ -544,7 +544,7 @@ export class DashboardServer {
     const now = Date.now();
     if(route==='interactive'&&req.method==='GET'){
       if(session.role!=='admin'){this.json(res,403,{error:'Nur Jannik kann Community-Events verwalten.'});return;}
-      this.json(res,200,{settings:this.interactive.settings(),active:this.interactive.active(),history:this.interactive.history()});return;
+      this.json(res,200,{settings:this.interactive.settings(),active:this.interactive.active().map(event=>({...event,...(event.kind==='game_night'?{roster:this.interactive.participants(event.id)}:{})})),history:this.interactive.history()});return;
     }
     if(route==='interactive'&&req.method==='POST'){
       if(session.role!=='admin'){this.json(res,403,{error:'Nur Jannik kann Community-Events verwalten.'});return;}
@@ -563,6 +563,18 @@ export class DashboardServer {
         }
         if(body.action==='create-game-night'){
           const result=this.interactive.createGameNight(session.userId,{title:String(body.title||''),game:String(body.game||''),description:String(body.description||''),localStart:String(body.localStart||''),capacity:Number(body.capacity),waitlist:body.waitlist===true},now);if(result.ok)this.audit(session,'community-game-night-create',result.event!.id,{capacity:Number(body.capacity)},now);this.json(res,result.ok?201:409,result);return;
+        }
+        if(body.action==='edit-game-night'){
+          const id=typeof body.eventId==='string'?body.eventId:'';if(!/^[a-f0-9-]{36}$/iu.test(id)){this.json(res,400,{error:'Event-ID ungültig.'});return;}
+          const ok=this.interactive.editGameNight(id,session.userId,{title:String(body.title||''),game:String(body.game||''),description:String(body.description||''),localStart:String(body.localStart||''),capacity:Number(body.capacity),waitlist:body.waitlist===true},now);if(ok)this.audit(session,'community-game-night-edit',id,{capacity:Number(body.capacity)},now);this.json(res,ok?200:409,{ok,...(!ok?{error:'Der Spieleabend kann nicht mehr bearbeitet werden.'}:{})});return;
+        }
+        if(body.action==='assign-game-night-teams'){
+          const id=typeof body.eventId==='string'?body.eventId:'';if(!/^[a-f0-9-]{36}$/iu.test(id)){this.json(res,400,{error:'Event-ID ungültig.'});return;}
+          const ok=this.interactive.assignGameNightTeams(id,session.userId,Number(body.teamSize??5),now);if(ok)this.audit(session,'community-game-night-teams',id,{teamSize:Number(body.teamSize??5)},now);this.json(res,ok?200:409,{ok,...(!ok?{error:'Für diesen Spieleabend können keine Teams erstellt werden.'}:{})});return;
+        }
+        if(body.action==='remove-game-night-participant'){
+          const id=typeof body.eventId==='string'?body.eventId:'',platform=String(body.platform||''),platformUserId=typeof body.platformUserId==='string'?body.platformUserId:'';if(!/^[a-f0-9-]{36}$/iu.test(id)||!['twitch','discord'].includes(platform)||!platformUserId||platformUserId.length>30){this.json(res,400,{error:'Teilnehmendenangaben ungültig.'});return;}
+          const ok=this.interactive.removeGameNightParticipant(id,platform as InteractivePlatform,platformUserId,now);if(ok)this.audit(session,'community-game-night-remove-participant',id,{platform},now);this.json(res,ok?200:409,{ok,...(!ok?{error:'Diese Anmeldung kann nicht mehr geändert werden.'}:{})});return;
         }
         if(body.action==='finish'||body.action==='cancel'){
           const id=typeof body.eventId==='string'?body.eventId:'';if(!/^[a-f0-9-]{36}$/iu.test(id)){this.json(res,400,{error:'Event-ID ungültig.'});return;}

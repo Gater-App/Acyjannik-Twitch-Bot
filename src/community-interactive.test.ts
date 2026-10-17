@@ -61,9 +61,15 @@ test('Game Night uses Berlin wall time, enforces capacity atomically, and promot
     assert.equal(interactive.join(event.id,'twitch','1001','Spielerin',undefined,now+1).status,'joined');
     assert.equal(interactive.join(event.id,'discord','12345678901234567','Spieler',undefined,now+2).status,'joined');
     assert.equal(interactive.join(event.id,'discord','12345678901234568','Warteliste',undefined,now+3).status,'waitlist');
+    assert.equal(interactive.assignGameNightTeams(event.id,'admin',2,now+3),true);
+    const roster=interactive.participants(event.id);assert.equal(roster.filter(person=>person.team).length,2);assert.deepEqual(interactive.get(event.id,now+4)?.settings.teamAssignments,undefined,'private identity assignments are not exposed through public event state');
     assert.equal(interactive.leave(event.id,'twitch','1001',now+4).status,'withdrawn');
     assert.equal(interactive.get(event.id,now+5)?.participants,2);
     assert.equal(interactive.get(event.id,now+5)?.waitlist,0);
+    assert.equal(interactive.editGameNight(event.id,'admin',{title:'ACY Spieleabend',game:'Minecraft',localStart:'2026-01-17T19:00',capacity:3,waitlist:true},now+6),true);
+    assert.equal(interactive.get(event.id,now+7)?.settings.game,'Minecraft');
+    assert.equal(interactive.removeGameNightParticipant(event.id,'discord','12345678901234567',now+8),true);
+    assert.equal(interactive.get(event.id,now+9)?.participants,1);
   }finally{store.close();}
 });
 
