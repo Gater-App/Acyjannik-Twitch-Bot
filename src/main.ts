@@ -209,7 +209,7 @@ async function runLiveMode(): Promise<void> {
         if (!chatPolicy.shouldSend({ command: command.startsWith('!') ? command : '', message: reply.message, senderUserId: chatMessage.senderUserId })) continue;
         void queue.enqueue(reply.message, reply.replyParentMessageId, reply.category, {
           id: `eventsub:${chatMessage.eventId}:${replyIndex}`, expiresAt: Date.now() + 60_000,
-        }).catch(() => { /* Persisted game results remain authoritative when delivery fails. */ });
+        }).catch(error => logger.warn('Twitch-Chatantwort konnte nicht zugestellt werden.', { eventId: chatMessage.eventId, replyIndex, category: reply.category || 'community', failureType: error instanceof Error ? error.name : 'unknown' }));
       }
     },
   );

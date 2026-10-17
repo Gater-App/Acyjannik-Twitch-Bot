@@ -195,7 +195,7 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.match(html,/Mindestzahl von/u,'Rollenverteilung bleibt gesperrt bis genug Mitspielende angemeldet sind');
     assert.match(html,/Chat-Nachrichten/u,'das Antwortverhalten ist im Dashboard auffindbar');
     for (const label of ['Übersicht','Spiele &amp; Aktionen','Community','Stream-Einrichtung','Chatbefehle','Einstellungen']) assert.match(html,new RegExp(label,'u'));
-    assert.match(html,/<nav class="main-nav" aria-label="Hauptnavigation">[\s\S]*data-view-target="overview"[\s\S]*data-view-target="games"[\s\S]*data-view-target="community"[\s\S]*data-view-target="obs"[\s\S]*data-view-target="settings"/u,'die Navigation wechselt zwischen fünf echten Ansichten');
+    assert.match(html,/<nav class="main-nav" aria-label="Hauptnavigation">[\s\S]*data-view-target="overview"[\s\S]*data-view-target="games"[\s\S]*data-view-target="elio"[\s\S]*data-view-target="chat"[\s\S]*data-view-target="community"[\s\S]*href="#obs"[\s\S]*data-view-target="settings"/u,'die Navigation ordnet die Funktionen in sechs Bereiche und erhält den direkten OBS-Zugang');
     assert.match(html,/id="dashboard-legacy-source" class="legacy-source"/u,'alte Funktionsquellen werden beim Laden verborgen und danach den Ansichten zugeordnet');
     assert.match(html,/data-game-page="imposter"[\s\S]*data-game-page="detective"[\s\S]*data-game-page="drop"[\s\S]*data-game-page="wheel"/u,'Spiele haben getrennte Ansichten');
     assert.match(html,/id="home-status"[\s\S]*id="home-current"[\s\S]*id="setup-checklist"[\s\S]*id="home-warnings"/u,'Startseite zeigt Status, aktives Spiel, Einrichtungsstatus und Warnungen');

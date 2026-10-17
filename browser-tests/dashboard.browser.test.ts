@@ -147,19 +147,25 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     await screenshot('acy-ux50-desktop-overview');
     const navigate = async (name: string) => {
       if (await page.evaluate(() => window.innerWidth <= 860)) await page.locator('.main-nav select').selectOption(name);
+      else if(name==='obs')await page.locator('.main-nav a[href="#obs"]').click();
       else await page.locator(`[data-view-target="${name}"]`).click();
       await page.waitForFunction((key) => document.querySelector(`[data-dashboard-view="${key}"]`)?.getAttribute('data-active') === 'true', name, { timeout: 2000 }).catch(async () => {
         assert.fail(`Ansicht ${name} wird nicht aktiviert; hash=${await page.evaluate(() => location.hash)}; pageErrors=${pageErrors.join(' | ')}`);
       });
-      for (const other of ['overview', 'games', 'community', 'obs', 'settings']) {
+      for (const other of ['overview', 'games', 'elio', 'chat', 'community', 'obs', 'settings']) {
         if (other !== name) assert.equal(await view(other).isVisible(), false, `${other} darf bei Ansicht ${name} nicht sichtbar sein`);
       }
     };
-    const chooseSubpage = async (kind:'community'|'settings',name:string) => {
-      if(await page.evaluate(()=>window.innerWidth<=860))await page.locator(kind==='community'?'[aria-label="Community-Bereiche"] select':'[aria-label="Einstellungen"] select').selectOption(name);
-      else await page.locator(kind==='community'?`[data-community-target="${name}"]`:`[data-setting-target="${name}"]`).click();
+    const chooseSubpage = async (kind:'community'|'settings'|'elio'|'chat',name:string) => {
+      if(kind==='community'){if(['elio','story'].includes(name)){await navigate('elio');kind='elio'}else await navigate('community')}
+      if(kind==='elio')await navigate('elio');
+      if(kind==='settings'){if(['messages','commands'].includes(name)){await navigate('chat');kind='chat'}else await navigate('settings')}
+      if(kind==='chat')await navigate('chat');
+      const mobile=await page.evaluate(()=>window.innerWidth<=860);
+      if(mobile){const selector=kind==='community'?'[aria-label="Community-Bereiche"] select':kind==='elio'?'[aria-label="Elio und Story"] select':kind==='chat'?'[aria-label="Chat & Automatik"] select':'[aria-label="Einstellungen"] select';await page.locator(selector).selectOption(name)}
+      else {const selector=kind==='community'?`[data-community-target="${name}"]`:kind==='elio'?`[data-elio-target="${name}"]`:kind==='chat'?`[data-chat-target="${name}"]`:`[data-setting-target="${name}"]`;await page.locator(selector).click()}
     };
-    for (const name of ['games', 'community', 'obs', 'settings', 'overview']) {
+    for (const name of ['games', 'community', 'elio', 'chat', 'obs', 'settings', 'overview']) {
       await navigate(name);
       await screenshot(`acy-ux50-desktop-${name}`);
     }
@@ -409,8 +415,8 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     await page.evaluate(() => { location.hash = '#einstellungen/general'; });
     await assertSubpage('[data-setting-page="diagnostics"]', true);
 
-    await navigate('community');
-    await chooseSubpage('community','spark');
+    await navigate('chat');
+    await chooseSubpage('chat','messages');
     const sparkMessagesBeforePreview=sentChatMessages.length;await page.getByRole('button',{name:'Lokale Vorschau anzeigen'}).click();await page.getByText(/Nur Vorschau, keine Nachricht/u).waitFor();assert.equal(sentChatMessages.length,sparkMessagesBeforePreview,'Gesprächs-Funken-Vorschau sendet keine öffentliche Nachricht');assert.match(await page.locator('#spark-meta').innerText(),/Chatfenster 10 Min\. · globaler Cooldown 20 Min\./u);
     assert.equal(await page.locator('#spark-settings textarea').count(), 0, 'eigene Themen werden ohne JSON-Editor verwaltet');
     await page.locator('#spark-settings').locator('xpath=..').locator('summary').click();
@@ -422,11 +428,11 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     const newTopic = page.locator('.spark-topic').last();
     await newTopic.getByLabel('Thema', { exact: true }).fill('Browser-Testthema');
     await newTopic.getByLabel('Erkennungsbegriffe, durch Kommas getrennt', { exact: true }).fill('browser test, ux prüfung');
-    await page.getByRole('button', { name: 'Einstellungen speichern' }).click();
+    await page.locator('#spark-settings').getByRole('button', { name: 'Einstellungen speichern' }).click();
     await page.getByText('Chat-Ideen gespeichert.').waitFor({ state: 'visible' });
     const savedSpark = await page.evaluate(async () => (await (await fetch('/dashboard/api/spark')).json()).customTopics);
     assert.ok(savedSpark.some((topic: { label: string }) => topic.label === 'Browser-Testthema'), 'Themenformular speichert eigene Themen dauerhaft über die API');
-    await screenshot('acy-ux50-desktop-community-spark');
+    await screenshot('acy-ux50-desktop-chat-spark');
 
     await navigate('games');
     await page.locator('#game-catalog').getByRole('button', { name: /Chaos & Pranks/u }).click();
@@ -493,12 +499,12 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     // Check the primary navigation and page width at tablet and iPhone sizes.
     for (const [label, width, height] of [['tablet', 768, 1024], ['iphone-375', 375, 812], ['iphone-390', 390, 844], ['iphone-430', 430, 932]] as const) {
       await page.setViewportSize({ width, height });
-      for (const name of ['overview', 'games', 'community', 'obs', 'settings']) {
+      for (const name of ['overview', 'games', 'elio', 'chat', 'community', 'obs', 'settings']) {
         await navigate(name);
         assert.ok(await view(name).isVisible(), `${name} bleibt bei ${label} sichtbar`);
         const widthCheck = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, content: document.documentElement.scrollWidth, overflowing: [...document.querySelectorAll('body *')].map((node) => ({ tag: node.tagName, id: (node as HTMLElement).id, className: typeof (node as HTMLElement).className === 'string' ? (node as HTMLElement).className : '', right: Math.round(node.getBoundingClientRect().right), width: Math.round(node.getBoundingClientRect().width) })).filter((node) => node.right > document.documentElement.clientWidth + 1 && node.width > 0).sort((a, b) => b.right - a.right).slice(0, 5) }));
         assert.ok(widthCheck.content <= widthCheck.viewport + 1, `${name} hat bei ${label} keinen horizontalen Seitenüberlauf: ${JSON.stringify(widthCheck)}`);
-        if(label.startsWith('iphone')){const menu=page.locator('.main-nav select');assert.equal(await menu.isVisible(),true,'mobile primary navigation uses the compact area selector');assert.ok(await menu.evaluate(el=>el.getBoundingClientRect().height>=44),'mobile selector has a touch target of at least 44 pixels');assert.equal(await menu.locator('option').count(),7,'all five dashboard areas and both direct links are reachable');const nav=await page.locator('.main-nav').evaluate(node=>[...node.querySelectorAll('button,a')].map(el=>({display:getComputedStyle(el).display,rect:el.getBoundingClientRect().toJSON()})));assert.ok(nav.every(item=>item.display==='none'),'desktop navigation controls are hidden on mobile');assert.ok(nav.every(item=>item.rect.width===0||item.rect.right<=document.documentElement.clientWidth+1),'hidden navigation controls cannot overflow the viewport')}
+        if(label.startsWith('iphone')){const menu=page.locator('.main-nav select');assert.equal(await menu.isVisible(),true,'mobile primary navigation uses the compact area selector');assert.ok(await menu.evaluate(el=>el.getBoundingClientRect().height>=44),'mobile selector has a touch target of at least 44 pixels');assert.equal(await menu.locator('option').count(),9,'six product areas plus ideas, Discord and stream setup are reachable');const nav=await page.locator('.main-nav').evaluate(node=>[...node.querySelectorAll('button,a')].map(el=>({display:getComputedStyle(el).display,rect:el.getBoundingClientRect().toJSON()})));assert.ok(nav.every(item=>item.display==='none'),'desktop navigation controls are hidden on mobile');assert.ok(nav.every(item=>item.rect.width===0||item.rect.right<=document.documentElement.clientWidth+1),'hidden navigation controls cannot overflow the viewport')}
         await screenshot(`acy-ux50-${label}-${name}`);
       }
     }

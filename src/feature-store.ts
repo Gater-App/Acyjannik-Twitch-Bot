@@ -1092,6 +1092,18 @@ export class FeatureStore {
         INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (41, unixepoch()*1000);
       `))();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 42) {
+      if (currentVersion > 0) this.backupBeforeMigration(42);
+      this.db.transaction(() => this.db.exec(`
+        CREATE TABLE IF NOT EXISTS event_director_activity (
+          user_id TEXT NOT NULL, bucket_start INTEGER NOT NULL, last_seen INTEGER NOT NULL, event_id TEXT NOT NULL UNIQUE,
+          PRIMARY KEY(user_id,bucket_start)
+        );
+        CREATE INDEX IF NOT EXISTS event_director_activity_seen ON event_director_activity(last_seen);
+        INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (42, unixepoch()*1000);
+      `))();
+    }
   }
 
   private backupBeforeMigration(version: number): void {

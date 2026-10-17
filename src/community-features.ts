@@ -11,7 +11,7 @@ import { CommunityChaos } from './community-chaos.js';
 import { ElioChronicles } from './elio-chronicles.js';
 import { CommunityVault } from './community-vault.js';
 import { CommunityHauntedHouse } from './community-haunted-house.js';
-import { EventDirector, type EventCandidate } from './event-director.js';
+import { EventDirector, adaptiveBossHp, type EventCandidate } from './event-director.js';
 import { ModeratorPranks } from './moderator-pranks.js';
 import { categoryForCommand, type ChatCategory } from './chat-message-format.js';
 import type { OutboundChatMessage } from './chat-message-format.js';
@@ -92,11 +92,11 @@ export class CommunityFeatures {
     const bossFinishedAt=this.store.miniGameQuery(db=>(db.prepare("SELECT MAX(finished_at) at FROM boss_fights WHERE status IN ('defeated','timeout','canceled')").get() as {at:number|null}).at||undefined);
     const bossDue=this.eventDirector.intervalDue('boss',now,cfg.bossMinIntervalMs,cfg.bossMaxIntervalMs,cfg.autoBosses&&modules.boss!==false,live,Boolean(activeBoss),bossFinishedAt);
     candidates.push({type:'boss',priority:3,enabled:cfg.autoBosses&&modules.boss!==false,ready:bossDue&&!activeBoss,minimumActivity:'normal',interval:{min:cfg.bossMinIntervalMs,max:cfg.bossMaxIntervalMs,afterCompletion:true},start:()=>{
-      const active=activity.uniqueChatters5m,base=active<=3?100:active<=8?240:active<=15?450:800;
-      const recent=this.store.miniGameQuery(db=>db.prepare("SELECT status,COUNT(*) count FROM boss_fights WHERE finished_at IS NOT NULL GROUP BY status").all() as Array<{status:string;count:number}>);
-      const total=recent.reduce((n,row)=>n+row.count,0),won=recent.find(row=>row.status==='defeated')?.count||0;
-      const factor=cfg.bossAdaptiveHp&&total>=3?Math.max(.9,Math.min(1.1,1+(won/total-.5)*.2)):1;
-      const hp=Math.max(60,Math.min(1200,Math.round(base*factor))),names=active<=3?['Kleiner Schattenpfoten-Späher']:active<=8?['Schattenwächter']:active<=15?['Portalwächter']:['Schattenkönig'];
+      const active=activity.uniqueChatters5m;
+      const recent=this.store.miniGameQuery(db=>db.prepare(`SELECT fight.status,COUNT(DISTINCT participant.user_id) participants FROM (
+        SELECT id,status,finished_at FROM boss_fights WHERE finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 10
+      ) fight LEFT JOIN boss_participants participant ON participant.boss_id=fight.id GROUP BY fight.id ORDER BY MAX(fight.finished_at) DESC`).all() as Array<{status:string;participants:number}>);
+      const hp=adaptiveBossHp(active,recent,cfg.bossAdaptiveHp),names=active<=3?['Kleiner Schattenpfoten-Späher']:active<=8?['Schattenwächter']:active<=15?['Portalwächter']:['Schattenkönig'];
       if(!this.store.startBoss(randomUUID(),names[this.random(0,names.length-1)]!,hp,bossSettings.bossDurationMs,now))return undefined;
       return `👹 ${names[0]} erscheint mit ${hp} HP! Besiegt ihn gemeinsam mit !attack!`;
     }});

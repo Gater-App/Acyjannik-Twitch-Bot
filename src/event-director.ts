@@ -1,23 +1,32 @@
-import { createHash, randomInt, randomUUID } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import { FeatureStore } from './feature-store.js';
 import type { ChatMessage } from './types.js';
 
 export type ActivityLevel='quiet'|'low'|'normal'|'high';
 export interface EventDirectorSettings {
-  enabled:boolean; autoBosses:boolean; autoDrops:boolean; autoWheel:boolean; autoChaos:boolean;
+  enabled:boolean; paused:boolean; autoBosses:boolean; autoDrops:boolean; autoWheel:boolean; autoChaos:boolean;
   autoSecretEvents:boolean; autoStories:boolean; minimumActivity:ActivityLevel;
   minimumGapMs:number; maxEventsPerHour:number; bossMinIntervalMs:number; bossMaxIntervalMs:number;
   bossAdaptiveHp:boolean; discordAnnouncements:boolean;
 }
 export interface EventCandidate { type:string; priority:number; enabled:boolean; ready:boolean; minimumActivity?:ActivityLevel; interval?:{min:number;max:number;afterCompletion?:boolean}; start:()=>string|undefined }
 export interface DirectorSnapshot { settings:EventDirectorSettings; activity:{level:ActivityLevel;uniqueChatters5m:number;messages5m:number;uniqueChatters15m:number;uniqueChatters30m:number}; lastEventAt:number|null; recentAutomaticEvents:number; leaseUntil:number; reason:string; activeEvent:{type:string;id:string;status:string;endsAt:number|null}|null; nextScheduled:{type:string;at:number}|null; recentRuns:Array<{type:string;startedAt:number;reason:string}> }
-const DEFAULTS:EventDirectorSettings={enabled:false,autoBosses:false,autoDrops:false,autoWheel:false,autoChaos:false,autoSecretEvents:false,autoStories:false,minimumActivity:'normal',minimumGapMs:900_000,maxEventsPerHour:2,bossMinIntervalMs:4_500_000,bossMaxIntervalMs:6_300_000,bossAdaptiveHp:true,discordAnnouncements:false};
+const DEFAULTS:EventDirectorSettings={enabled:false,paused:false,autoBosses:false,autoDrops:false,autoWheel:false,autoChaos:false,autoSecretEvents:false,autoStories:false,minimumActivity:'normal',minimumGapMs:900_000,maxEventsPerHour:2,bossMinIntervalMs:4_500_000,bossMaxIntervalMs:6_300_000,bossAdaptiveHp:true,discordAnnouncements:false};
 const LEVELS:ActivityLevel[]=['quiet','low','normal','high'];
 
-/** The single automatic-start gate. It retains only short-lived user IDs in memory; no message text is stored. */
+export function adaptiveBossHp(activeChatters:number,history:Array<{status:string;participants:number}>,enabled=true):number {
+  const active=Math.max(0,Math.floor(activeChatters));
+  const base=active<=1?60:active<=3?60+(active-1)*45:active<=8?150+(active-3)*40:active<=15?350+(active-8)*43:Math.min(1200,650+(active-15)*35);
+  if(!enabled||history.length<3)return Math.max(60,Math.min(1200,base));
+  const sample=history.slice(0,10),averageParticipants=sample.reduce((sum,row)=>sum+Math.max(0,row.participants),0)/sample.length;
+  const wins=sample.filter(row=>row.status==='defeated').length,successRate=wins/sample.length;
+  const participationFactor=Math.max(.9,Math.min(1.1,active/Math.max(1,averageParticipants)));
+  const successFactor=.9+successRate*.2;
+  return Math.max(60,Math.min(1200,Math.round(base*Math.max(.8,Math.min(1.2,participationFactor*successFactor)))));
+}
+
+/** The single automatic-start gate. Activity is shared as short-lived, message-free samples between processes. */
 export class EventDirector {
-  private readonly chatterTimes=new Map<string,number[]>();
-  private readonly fingerprints=new Map<string,number>();
   private readonly owner=randomUUID();
   constructor(private readonly store:FeatureStore,private readonly choose:(max:number)=>number=(max)=>randomInt(Math.max(1,max))){}
   settings():EventDirectorSettings {
@@ -28,8 +37,8 @@ export class EventDirector {
       minimumActivity:LEVELS.includes(raw.minimumActivity as ActivityLevel)?raw.minimumActivity as ActivityLevel:'normal'};
   }
   updateSettings(input:Partial<EventDirectorSettings>):EventDirectorSettings {
-    const next={...this.settings()};for(const key of ['enabled','autoBosses','autoDrops','autoWheel','autoChaos','autoStories','autoSecretEvents','minimumActivity','minimumGapMs','maxEventsPerHour','bossMinIntervalMs','bossMaxIntervalMs','bossAdaptiveHp','discordAnnouncements'] as const){if(input[key]!==undefined)(next as unknown as Record<string,unknown>)[key]=input[key];}
-    for(const k of ['enabled','autoBosses','autoDrops','autoWheel','autoChaos','autoSecretEvents','autoStories','bossAdaptiveHp','discordAnnouncements'] as const)if(typeof next[k]!=='boolean')throw new Error('Event-Director-Schalter müssen Ein oder Aus sein.');
+    const next={...this.settings()};for(const key of ['enabled','paused','autoBosses','autoDrops','autoWheel','autoChaos','autoStories','autoSecretEvents','minimumActivity','minimumGapMs','maxEventsPerHour','bossMinIntervalMs','bossMaxIntervalMs','bossAdaptiveHp','discordAnnouncements'] as const){if(input[key]!==undefined)(next as unknown as Record<string,unknown>)[key]=input[key];}
+    for(const k of ['enabled','paused','autoBosses','autoDrops','autoWheel','autoChaos','autoSecretEvents','autoStories','bossAdaptiveHp','discordAnnouncements'] as const)if(typeof next[k]!=='boolean')throw new Error('Event-Director-Schalter müssen Ein oder Aus sein.');
     if(!LEVELS.includes(next.minimumActivity))throw new Error('Aktivitätsschwelle ungültig.');
     if(!Number.isInteger(next.minimumGapMs)||next.minimumGapMs<900_000||next.minimumGapMs>7_200_000)throw new Error('Der globale Abstand muss 15 bis 120 Minuten betragen.');
     if(!Number.isInteger(next.maxEventsPerHour)||next.maxEventsPerHour<1||next.maxEventsPerHour>4)throw new Error('Pro Stunde sind 1 bis 4 automatische Ereignisse zulässig.');
@@ -39,18 +48,23 @@ export class EventDirector {
   observe(message:ChatMessage,now:number,excludedUserIds:string[]):void {
     const login=message.senderLogin.toLowerCase(),text=message.message.trim().replace(/\s+/gu,' ');
     if(excludedUserIds.includes(message.senderUserId)||message.senderUserId===message.broadcasterUserId||KNOWN_CHAT_BOTS.has(login)||/bot$/u.test(login)||!text||text.length>300||Array.from(text).length<3||text.startsWith('!'))return;
-    const fingerprint=`${message.senderUserId}:${createHash('sha256').update(text.toLowerCase()).digest('hex')}`;
-    const previous=this.fingerprints.get(fingerprint);if(previous!==undefined&&previous>now-20_000)return;
-    this.fingerprints.set(fingerprint,now);
-    const times=(this.chatterTimes.get(message.senderUserId)||[]).filter(at=>at>now-30*60_000);times.push(now);this.chatterTimes.set(message.senderUserId,times);
-    for(const [key,at] of this.fingerprints)if(at<=now-30_000)this.fingerprints.delete(key);
-    for(const [key,rows] of this.chatterTimes){const recent=rows.filter(at=>at>now-30*60_000);if(recent.length)this.chatterTimes.set(key,recent);else this.chatterTimes.delete(key);}
+    if(!message.senderUserId||!message.eventId)return;
+    this.store.miniGameTransaction(db=>{
+      db.prepare('DELETE FROM event_director_activity WHERE last_seen<=?').run(now-30*60_000);
+      if(db.prepare('SELECT 1 FROM event_director_activity WHERE event_id=?').get(message.eventId))return;
+      const recent=db.prepare('SELECT MAX(last_seen) at FROM event_director_activity WHERE user_id=?').get(message.senderUserId) as {at:number|null};
+      // One sample per account per ten seconds stops message floods inflating activity.
+      if(recent.at!==null&&recent.at>now-10_000)return;
+      const bucketStart=Math.floor(now/10_000)*10_000;
+      db.prepare('INSERT OR IGNORE INTO event_director_activity(user_id,bucket_start,last_seen,event_id) VALUES(?,?,?,?)').run(message.senderUserId,bucketStart,now,message.eventId);
+    });
   }
   activity(now=Date.now()) {
-    const active=[...this.chatterTimes.values()].map(rows=>rows.filter(at=>at>now-30*60_000));
-    const unique=(windowMs:number)=>active.filter(rows=>rows.some(at=>at>now-windowMs)).length;
-    const uniqueChatters5m=unique(5*60_000),uniqueChatters15m=unique(15*60_000),uniqueChatters30m=unique(30*60_000);
-    const messages5m=active.reduce((n,rows)=>n+rows.filter(at=>at>now-5*60_000).length,0);
+    const counts=this.store.miniGameQuery(db=>{
+      const window=(milliseconds:number)=>db.prepare('SELECT COUNT(DISTINCT user_id) uniqueChatters,COUNT(*) messages FROM event_director_activity WHERE last_seen>? AND last_seen<=?').get(now-milliseconds,now) as {uniqueChatters:number;messages:number};
+      return {five:window(5*60_000),fifteen:window(15*60_000),thirty:window(30*60_000)};
+    });
+    const uniqueChatters5m=counts.five.uniqueChatters,uniqueChatters15m=counts.fifteen.uniqueChatters,uniqueChatters30m=counts.thirty.uniqueChatters,messages5m=counts.five.messages;
     const level:ActivityLevel=uniqueChatters5m>=12&&messages5m>=30?'high':uniqueChatters5m>=5&&messages5m>=10?'normal':uniqueChatters5m>=2?'low':'quiet';
     return {level,uniqueChatters5m,messages5m,uniqueChatters15m,uniqueChatters30m};
   }
@@ -86,6 +100,7 @@ export class EventDirector {
   run(input:{live:boolean;busy:boolean;now:number;candidates:EventCandidate[]}):{message:string;type:string}|undefined {
     const now=input.now,cfg=this.settings();
     if(!cfg.enabled){this.setReason('Event Director ist deaktiviert.',now);return;}
+    if(cfg.paused){this.setReason('Event Director ist pausiert.',now);return;}
     if(!input.live){this.setReason('Twitch-Stream ist offline.',now);return;}
     if(input.busy){this.setReason('Ein anderes Community-Spiel oder eine Chataktion läuft.',now);return;}
     const activity=this.activity(now);if(LEVELS.indexOf(activity.level)<LEVELS.indexOf(cfg.minimumActivity)){this.setReason('Die tatsächliche Chataktivität liegt unter der eingestellten Schwelle.',now);return;}
