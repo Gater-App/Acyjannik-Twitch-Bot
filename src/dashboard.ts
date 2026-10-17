@@ -531,6 +531,7 @@ export class DashboardServer {
     const route = url.pathname.slice('/dashboard/api/'.length);
     const now = Date.now();
     if(route==='discord'&&req.method==='GET'){
+      if(session.role!=='admin'){this.json(res,403,{error:'Nur Jannik kann die Discord-Verbindung einsehen.'});return;}
       const settings=this.store.config<typeof DISCORD_DEFAULTS>('discord_integration',DISCORD_DEFAULTS);
       const lastSeen=this.store.state<{at:number}|null>('discord_integration_last_seen',null)?.at??null;
       this.json(res,200,{settings:{...DISCORD_DEFAULTS,...settings},outbox:this.store.discordOutboxStats(),failures:this.store.discordOutboxFailures(),serviceConfigured:this.discordIntegrationSecret.length>=32,connection:{connected:Boolean(lastSeen&&Date.now()-lastSeen<60_000),lastSeen}});return;

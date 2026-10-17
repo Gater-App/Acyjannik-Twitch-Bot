@@ -480,6 +480,7 @@ test('Moderator-OAuth öffnet nur die Prank-Oberfläche und serverseitig nur der
     assert.equal((await fetch(`${base}/dashboard/api/overview`,{headers:{Cookie:session}})).status,403);
     assert.equal((await fetch(`${base}/streamer`,{headers:{Cookie:session}})).status,403);
     assert.equal((await fetch(`${base}/dashboard/api/fairness`,{headers:{Cookie:session}})).status,403);
+    assert.equal((await fetch(`${base}/dashboard/api/discord`,{headers:{Cookie:session}})).status,403,'Discord-Verbindungsdetails bleiben Administratoren vorbehalten');
     assert.equal((await fetch(`${base}/dashboard/api/pranks`,{headers:{Cookie:session}})).status,200);
     assert.equal((await fetch(`${base}/dashboard/api/vip/status`,{headers:{Cookie:session}})).status,200,'Moderatoren können offene VIP-Anfragen in ihrer eingeschränkten Ansicht lesen');
     const vipApproval=await fetch(`${base}/dashboard/api/vip/chaos`,{method:'POST',headers:{Cookie:session,Origin:'https://bot.example.test','X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({id:request.id,action:'approve'})});assert.equal(vipApproval.status,200,await vipApproval.clone().text());assert.equal((pranks.snapshot().active as {kind?:string}|null)?.kind,'chief');
