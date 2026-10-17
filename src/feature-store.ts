@@ -894,6 +894,39 @@ export class FeatureStore {
         INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (33, unixepoch()*1000);
       `))();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 34) {
+      if (currentVersion > 0) this.backupBeforeMigration(34);
+      this.db.transaction(() => this.db.exec(`
+        CREATE TABLE IF NOT EXISTS community_account_links (
+          twitch_user_id TEXT PRIMARY KEY,
+          discord_user_id TEXT NOT NULL UNIQUE,
+          linked_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS community_account_link_intents (
+          token_hash TEXT PRIMARY KEY,
+          discord_user_id TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          expires_at INTEGER NOT NULL,
+          used_at INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS community_account_link_intents_expiry ON community_account_link_intents(expires_at);
+        CREATE TABLE IF NOT EXISTS community_account_link_oauth_states (
+          state_hash TEXT PRIMARY KEY,
+          token_hash TEXT NOT NULL,
+          expires_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS community_account_link_oauth_expiry ON community_account_link_oauth_states(expires_at);
+        CREATE TABLE IF NOT EXISTS community_account_link_audit (
+          id TEXT PRIMARY KEY,
+          discord_user_id TEXT NOT NULL,
+          twitch_user_id TEXT NOT NULL,
+          action TEXT NOT NULL CHECK(action IN ('linked','unlinked')),
+          created_at INTEGER NOT NULL
+        );
+        INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (34, unixepoch()*1000);
+      `))();
+    }
   }
 
   private backupBeforeMigration(version: number): void {
@@ -924,6 +957,107 @@ export class FeatureStore {
       const row=this.db.prepare('SELECT expires_at FROM community_viewer_oauth_states WHERE state_hash=?').get(stateHash) as {expires_at:number}|undefined;
       this.db.prepare('DELETE FROM community_viewer_oauth_states WHERE state_hash=?').run(stateHash);
       return Boolean(row&&row.expires_at>now);
+    })();
+  }
+
+  createCommunityAccountLinkIntent(input:{tokenHash:string;discordUserId:string;createdAt:number;expiresAt:number}):void {
+    this.db.transaction(()=>{
+      this.db.prepare('DELETE FROM community_account_link_intents WHERE expires_at<=? OR used_at IS NOT NULL').run(input.createdAt);
+      this.db.prepare('DELETE FROM community_account_link_intents WHERE discord_user_id=? AND used_at IS NULL').run(input.discordUserId);
+      this.db.prepare('INSERT INTO community_account_link_intents(token_hash,discord_user_id,created_at,expires_at) VALUES(?,?,?,?)')
+        .run(input.tokenHash,input.discordUserId,input.createdAt,input.expiresAt);
+    })();
+  }
+
+  accountLinkIntent(tokenHash:string,now:number):{discordUserId:string;expiresAt:number}|undefined {
+    const row=this.db.prepare('SELECT discord_user_id,expires_at,used_at FROM community_account_link_intents WHERE token_hash=?').get(tokenHash) as {discord_user_id:string;expires_at:number;used_at:number|null}|undefined;
+    return row&&row.expires_at>now&&row.used_at===null?{discordUserId:row.discord_user_id,expiresAt:row.expires_at}:undefined;
+  }
+
+  beginCommunityAccountLinkOAuthState(input:{stateHash:string;tokenHash:string;expiresAt:number;now:number}):boolean {
+    return this.db.transaction(()=>{
+      const intent=this.db.prepare('SELECT expires_at,used_at FROM community_account_link_intents WHERE token_hash=?').get(input.tokenHash) as {expires_at:number;used_at:number|null}|undefined;
+      if(!intent||intent.expires_at<=input.now||intent.used_at!==null)return false;
+      this.db.prepare('UPDATE community_account_link_intents SET used_at=? WHERE token_hash=? AND used_at IS NULL').run(input.now,input.tokenHash);
+      this.db.prepare('DELETE FROM community_viewer_oauth_states WHERE expires_at<=?').run(input.now);
+      this.db.prepare('DELETE FROM community_account_link_oauth_states WHERE expires_at<=?').run(input.now);
+      this.db.prepare('INSERT INTO community_viewer_oauth_states(state_hash,expires_at,created_at) VALUES(?,?,?)').run(input.stateHash,input.expiresAt,input.now);
+      this.db.prepare('INSERT INTO community_account_link_oauth_states(state_hash,token_hash,expires_at) VALUES(?,?,?)')
+        .run(input.stateHash,input.tokenHash,input.expiresAt);
+      return true;
+    })();
+  }
+
+  communityAccountLinkOAuthStateExists(stateHash:string,now:number):boolean {
+    return Boolean(this.db.prepare('SELECT 1 FROM community_account_link_oauth_states WHERE state_hash=? AND expires_at>?').get(stateHash,now));
+  }
+
+  completeCommunityAccountLink(input:{stateHash:string;twitchUserId:string;now:number}):'linked'|'already-linked'|'discord-linked'|'twitch-linked'|'expired' {
+    return this.db.transaction(()=>{
+      const state=this.db.prepare('SELECT token_hash,expires_at FROM community_account_link_oauth_states WHERE state_hash=?').get(input.stateHash) as {token_hash:string;expires_at:number}|undefined;
+      this.db.prepare('DELETE FROM community_account_link_oauth_states WHERE state_hash=?').run(input.stateHash);
+      if(!state||state.expires_at<=input.now)return 'expired';
+      const intent=this.db.prepare('SELECT discord_user_id,expires_at,used_at FROM community_account_link_intents WHERE token_hash=?').get(state.token_hash) as {discord_user_id:string;expires_at:number;used_at:number|null}|undefined;
+      if(!intent||intent.expires_at<=input.now||intent.used_at===null)return 'expired';
+      const discordLink=this.db.prepare('SELECT twitch_user_id FROM community_account_links WHERE discord_user_id=?').get(intent.discord_user_id) as {twitch_user_id:string}|undefined;
+      if(discordLink)return discordLink.twitch_user_id===input.twitchUserId?'already-linked':'discord-linked';
+      const twitchLink=this.db.prepare('SELECT discord_user_id FROM community_account_links WHERE twitch_user_id=?').get(input.twitchUserId) as {discord_user_id:string}|undefined;
+      if(twitchLink)return 'twitch-linked';
+      this.db.prepare('INSERT INTO community_account_links(twitch_user_id,discord_user_id,linked_at) VALUES(?,?,?)').run(input.twitchUserId,intent.discord_user_id,input.now);
+      this.db.prepare('INSERT INTO community_account_link_audit(id,discord_user_id,twitch_user_id,action,created_at) VALUES(?,?,? ,\'linked\',?)')
+        .run(randomUUID(),intent.discord_user_id,input.twitchUserId,input.now);
+      return 'linked';
+    })();
+  }
+
+  communityAccountLinkStatus(discordUserId:string):{linked:boolean;linkedAt?:number} {
+    const row=this.db.prepare('SELECT linked_at FROM community_account_links WHERE discord_user_id=?').get(discordUserId) as {linked_at:number}|undefined;
+    return row?{linked:true,linkedAt:row.linked_at}:{linked:false};
+  }
+
+  communityXpProfileForDiscord(discordUserId:string):{displayName:string;xp:number;rank:number;badges:Array<{id:string;unlockedAt:number}>}|undefined {
+    const row=this.db.prepare(`SELECT u.user_id,u.display_name,u.xp FROM community_account_links l
+      LEFT JOIN xp_users u ON u.user_id=l.twitch_user_id WHERE l.discord_user_id=?`).get(discordUserId) as
+      {user_id:string|null;display_name:string|null;xp:number|null}|undefined;
+    if(!row)return undefined;
+    const xp=Number(row.xp)||0;
+    const rank=row.user_id?Number((this.db.prepare('SELECT 1+COUNT(*) rank FROM xp_users WHERE xp>?').get(xp) as {rank:number}).rank):0;
+    const badges=row.user_id?this.db.prepare('SELECT badge_id id,unlocked_at unlockedAt FROM community_world_badges WHERE user_id=? ORDER BY unlocked_at DESC').all(row.user_id) as Array<{id:string;unlockedAt:number}>:[];
+    return {displayName:row.display_name||'Community-Mitglied',xp,rank,badges};
+  }
+
+  communityXpLeaderboardPage(limit:number,offset:number):{total:number;rows:Array<{displayName:string;xp:number}>} {
+    const safeLimit=Math.max(1,Math.min(10,Math.floor(limit)||10)),safeOffset=Math.max(0,Math.floor(offset)||0);
+    const total=Number((this.db.prepare('SELECT COUNT(*) count FROM xp_users').get() as {count:number}).count);
+    const rows=this.db.prepare('SELECT display_name displayName,xp FROM xp_users ORDER BY xp DESC,updated_at ASC LIMIT ? OFFSET ?')
+      .all(safeLimit,safeOffset) as Array<{displayName:string;xp:number}>;
+    return {total,rows};
+  }
+
+  communityTwitchIdForDiscord(discordUserId:string):string|undefined {
+    const row=this.db.prepare('SELECT twitch_user_id FROM community_account_links WHERE discord_user_id=?').get(discordUserId) as {twitch_user_id:string}|undefined;
+    return row?.twitch_user_id;
+  }
+
+  processDiscordEvent<T>(eventId:string,now:number,perform:()=>T):{result:T;duplicate:boolean} {
+    if(!/^\d{17,20}$/u.test(eventId))throw new Error('Ungültige Discord-Ereignis-ID.');
+    return this.db.transaction(()=>{
+      const previous=this.db.prepare('SELECT result_json FROM discord_event_inbox WHERE event_id=?').get(eventId) as {result_json:string}|undefined;
+      if(previous)return {result:JSON.parse(previous.result_json) as T,duplicate:true};
+      const result=perform();
+      this.db.prepare('INSERT INTO discord_event_inbox(event_id,result_json,created_at) VALUES(?,?,?)').run(eventId,JSON.stringify(result),now);
+      return {result,duplicate:false};
+    })();
+  }
+
+  disconnectCommunityAccountLink(input:{discordUserId:string;now:number}):boolean {
+    return this.db.transaction(()=>{
+      const row=this.db.prepare('SELECT twitch_user_id FROM community_account_links WHERE discord_user_id=?').get(input.discordUserId) as {twitch_user_id:string}|undefined;
+      if(!row)return false;
+      this.db.prepare('DELETE FROM community_account_links WHERE discord_user_id=?').run(input.discordUserId);
+      this.db.prepare('INSERT INTO community_account_link_audit(id,discord_user_id,twitch_user_id,action,created_at) VALUES(?,?,?,\'unlinked\',?)')
+        .run(randomUUID(),input.discordUserId,row.twitch_user_id,input.now);
+      return true;
     })();
   }
 
@@ -1055,7 +1189,7 @@ export class FeatureStore {
 
   private enqueueDiscordEvent(type:string,aggregateId:string,payload:unknown,now:number):string {
     const settings=this.config<Record<string,unknown>>('discord_integration',{});
-    const toggle=type.startsWith('idea.')?'notifyIdeas':type==='level.up'?'notifyLevels':type==='mystery.drop'?'notifyDrops':type==='quest.completed'?'notifyQuests':type==='seasonal.event'?'notifySeasonal':type==='twitch.live'?'notifyLive':null;
+    const toggle=type.startsWith('idea.')?'notifyIdeas':type==='level.up'?'notifyLevels':type==='mystery.drop'?'notifyDrops':type.startsWith('mystery.drop.')?'discordDropsEnabled':type==='quest.completed'?'notifyQuests':type==='seasonal.event'?'notifySeasonal':type.startsWith('twitch.live')?'notifyLive':null;
     if(settings.enabled!==true||!toggle||settings[toggle]!==true)return '';
     const id=randomUUID();this.db.prepare("INSERT INTO discord_event_outbox(id,event_type,aggregate_id,payload_json,created_at,available_at) VALUES(?,?,?,?,?,?)")
       .run(id,type,aggregateId,JSON.stringify(payload??{}),now,now);return id;
@@ -1098,9 +1232,16 @@ export class FeatureStore {
 
   recordDiscordLiveTransition(live:boolean,stream:{id:string;title?:string;game_name?:string}|undefined,now:number):void {
     this.db.transaction(()=>{
-      const previous=this.state<{live:boolean}|null>('discord_live_state',null);
-      if(previous&&previous.live!==live)this.enqueueDiscordEvent('twitch.live',stream?.id||`offline:${now}`,{active:live,title:live?stream?.title||'':undefined,gameName:live?stream?.game_name||'':undefined},now);
-      this.setState('discord_live_state',{live,streamId:live?stream?.id||null:null},now);
+      const settings=this.config<{enabled?:boolean;notifyLive?:boolean;liveUpdateEnabled?:boolean}>('discord_integration',{});
+      const previous=this.state<{live:boolean;streamId?:string|null;title?:string;gameName?:string;discordEnabled?:boolean;notifyLive?:boolean}|null>('discord_live_state',null);
+      const streamId=live?stream?.id||null:null,title=live?stream?.title||'':previous?.title||'',gameName=live?stream?.game_name||'':previous?.gameName||'';
+      const sameStream=Boolean(live&&previous?.live&&streamId&&previous.streamId===streamId);
+      if(previous?.live&&!live){this.enqueueDiscordEvent('twitch.live',`${previous.streamId||'stream'}:ended`,{active:false,streamId:previous.streamId||null,title:previous.title||'',gameName:previous.gameName||''},now);}
+      else if(live&&(!previous?.live||!sameStream||((!previous.discordEnabled||!previous.notifyLive)&&(settings.enabled===true&&settings.notifyLive===true)))){this.enqueueDiscordEvent('twitch.live',streamId||`stream:${now}`,{active:true,streamId,title,gameName},now);}
+      else if(sameStream&&(previous?.title!==title||previous?.gameName!==gameName)){
+        if(settings.liveUpdateEnabled!==false)this.enqueueDiscordEvent('twitch.live.update',`${streamId}:${now}`,{active:true,streamId,title,gameName},now);
+      }
+      this.setState('discord_live_state',{live,streamId,title,gameName,discordEnabled:settings.enabled===true,notifyLive:settings.notifyLive===true},now);
     })();
   }
 
@@ -1168,6 +1309,9 @@ export class FeatureStore {
   deleteExpiredViewerData(now:number):void {
     this.db.prepare('DELETE FROM community_viewer_sessions WHERE expires_at<=?').run(now);
     this.db.prepare('DELETE FROM community_viewer_oauth_states WHERE expires_at<=?').run(now);
+    this.db.prepare('DELETE FROM community_account_link_intents WHERE expires_at<=? OR used_at IS NOT NULL AND used_at<?').run(now,now-30*24*60*60_000);
+    this.db.prepare('DELETE FROM community_account_link_oauth_states WHERE expires_at<=?').run(now);
+    this.db.prepare('DELETE FROM community_account_link_audit WHERE created_at<?').run(now-180*24*60*60_000);
   }
 
   questsBySubmitter(userId:string,limit=20):QuestRecord[] {

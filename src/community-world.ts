@@ -6,7 +6,7 @@ export interface WorldMission {
 }
 export interface WorldBadge {id:string;name:string;description:string;rarity:'common'|'rare'|'epic';emoji:string;unlockedAt:number;}
 
-const BADGES=[
+export const COMMUNITY_WORLD_BADGES=[
   {id:'elio_friend',name:'Elios bester Freund',description:'Führe fünf Elio-Aktionen seit Start der Community-Welt aus.',rarity:'common' as const,emoji:'🐱'},
   {id:'quest_spark',name:'Quest-Funken',description:'Reiche eine Community-Quest ein, die das System angenommen hat.',rarity:'common' as const,emoji:'📜'},
   {id:'community_player',name:'Teamplayer',description:'Erhalte eine belegte Belohnung aus einem Community-Spiel.',rarity:'rare' as const,emoji:'🤝'},
@@ -51,7 +51,7 @@ export class CommunityWorld {
       this.count("SELECT COUNT(*) n FROM mini_game_awards WHERE user_id=? AND created_at>=?",userId,weeklyFrom),weekly,now));
     const earned=this.store.miniGameQuery(db=>db.prepare('SELECT badge_id,unlocked_at FROM community_world_badges WHERE user_id=? ORDER BY unlocked_at DESC').all(userId) as Array<{badge_id:string;unlocked_at:number}>);
     const owned=new Map(earned.map(x=>[x.badge_id,x.unlocked_at]));
-    return {missions,badges:BADGES.filter(b=>owned.has(b.id)).map(b=>({...b,unlockedAt:owned.get(b.id)!})).sort((a,b)=>b.unlockedAt-a.unlockedAt),newlyUnlocked:badges};
+    return {missions,badges:COMMUNITY_WORLD_BADGES.filter(b=>owned.has(b.id)).map(b=>({...b,unlockedAt:owned.get(b.id)!})).sort((a,b)=>b.unlockedAt-a.unlockedAt),newlyUnlocked:badges};
   }
 
   claim(userId:string,displayName:string,missionId:string,now:number,options:{petEnabled:boolean;questsEnabled:boolean;gamesEnabled?:boolean}):{ok:true;rewardXp:number}|{ok:false;reason:'unavailable'|'incomplete'|'claimed'} {
@@ -82,7 +82,7 @@ export class CommunityWorld {
       const xp=this.count("SELECT COALESCE(SUM(amount),0) n FROM xp_ledger WHERE user_id=? AND amount>0 AND reason<>'admin-adjust' AND created_at>=?",userId,startedAt)>=100;
       const candidates=[pet&&'elio_friend',quest&&'quest_spark',game&&'community_player',xp&&'xp_collector'].filter((x):x is string=>typeof x==='string');
       const unlocked:WorldBadge[]=[];
-      for(const id of candidates){const badge=BADGES.find(b=>b.id===id)!;if(db.prepare('INSERT OR IGNORE INTO community_world_badges(user_id,badge_id,unlocked_at) VALUES(?,?,?)').run(userId,id,now).changes){unlocked.push({...badge,unlockedAt:now});}}
+      for(const id of candidates){const badge=COMMUNITY_WORLD_BADGES.find(b=>b.id===id)!;if(db.prepare('INSERT OR IGNORE INTO community_world_badges(user_id,badge_id,unlocked_at) VALUES(?,?,?)').run(userId,id,now).changes){unlocked.push({...badge,unlockedAt:now});}}
       return unlocked;
     });
   }

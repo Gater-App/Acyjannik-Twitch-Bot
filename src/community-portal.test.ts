@@ -85,6 +85,32 @@ test('Viewer OAuth is state-bound, session-backed and shares Imposter registrati
   }finally{await dashboard.stop();try{store.close()}catch{}process.env=env;fs.rmSync(directory,{recursive:true,force:true});}
 });
 
+test('Discord account linking uses a one-time short-lived intent bound to the Twitch OAuth state',async()=>{
+  const env={...process.env},store=new FeatureStore(':memory:'),p=await port();
+  process.env.TWITCH_CLIENT_ID='portal-client';process.env.TWITCH_CLIENT_SECRET='portal-secret';process.env.DASHBOARD_REDIRECT_URI=`http://127.0.0.1:${p}/dashboard/oauth/callback`;process.env.DASHBOARD_ADMIN_IDS='admin-only';process.env.DASHBOARD_HOST='127.0.0.1';process.env.DASHBOARD_PORT=String(p);process.env.DISCORD_INTEGRATION_SECRET='synthetic-integration-secret-123456789';
+  store.setConfig('discord_integration',{enabled:true,accountLinkEnabled:true});
+  const cfg=testConfig({clientId:'portal-client',clientSecret:'portal-secret',redirectUri:`http://127.0.0.1:${p}/dashboard/oauth/callback`}),features=new CommunityFeatures(store,cfg);
+  const fetchImpl:typeof fetch=async(input,init)=>{const url=String(input);if(url.endsWith('/oauth2/token'))return Response.json({access_token:'synthetic-viewer-access'});if(url.endsWith('/oauth2/validate'))return Response.json({client_id:'portal-client',user_id:'twitch-account-1'});if(url.endsWith('/helix/users'))return Response.json({data:[{id:'twitch-account-1',login:'linked_viewer',display_name:'Linked Viewer'}]});throw new Error(`Unexpected Twitch endpoint ${url}`);};
+  const portal=new ViewerCommunityPortal(store,features,cfg,fetchImpl),dashboard=new DashboardServer(store,()=>({twitchConnected:false,channel:'acyjannik',startedAt:1}),logger,fetchImpl,undefined,undefined,undefined,features.miniGames,features.arcade,undefined,undefined,undefined,undefined,undefined,portal);
+  const auth={authorization:'Bearer synthetic-integration-secret-123456789','content-type':'application/json'};
+  try{
+    assert.equal(await dashboard.start(),true);const base=`http://127.0.0.1:${p}/api/discord/v1`;
+    const intent=await fetch(`${base}/account-links/intents`,{method:'POST',headers:auth,body:JSON.stringify({discordUserId:'1206225751544832053'})});assert.equal(intent.status,201);
+    const {authorizationUrl}=await intent.json() as {authorizationUrl:string};
+    const publicLink=new URL(authorizationUrl),token=publicLink.hash.slice('#token='.length),consent=await fetch(`http://127.0.0.1:${p}${publicLink.pathname}`);assert.equal(consent.status,200);assert.equal(consent.headers.get('referrer-policy'),'no-referrer');assert.match(await consent.text(),/XP oder Spielstände werden nicht kopiert/u);
+    const start=await fetch(`http://127.0.0.1:${p}${publicLink.pathname}`,{method:'POST',headers:{Origin:`http://127.0.0.1:${p}`,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({token}),redirect:'manual'});assert.equal(start.status,302);assert.equal(start.headers.get('referrer-policy'),'no-referrer');
+    const twitchAuth=new URL(start.headers.get('location')||''),state=twitchAuth.searchParams.get('state')||'';
+    const stateCookie=cookies(start).find(value=>value.startsWith('community_oauth_state='))?.split(';')[0]||'';assert.ok(stateCookie);
+    const callback=await fetch(`http://127.0.0.1:${p}/dashboard/oauth/callback?code=linked&state=${state}`,{headers:{cookie:stateCookie},redirect:'manual'});
+    assert.equal(callback.status,303);assert.equal(callback.headers.get('location'),'/community/link/complete');
+    const linkedRow=store.miniGameQuery(db=>db.prepare('SELECT linked_at FROM community_account_links WHERE discord_user_id=?').get('1206225751544832053') as {linked_at:number});
+    assert.deepEqual(store.communityAccountLinkStatus('1206225751544832053'),{linked:true,linkedAt:linkedRow.linked_at});
+    const replay=await fetch(`http://127.0.0.1:${p}/dashboard/oauth/callback?code=linked&state=${state}`,{headers:{cookie:stateCookie},redirect:'manual'});assert.equal(replay.status,400,'Twitch OAuth state is one-time');
+    const expired=await fetch(`http://127.0.0.1:${p}${publicLink.pathname}`,{method:'POST',headers:{Origin:`http://127.0.0.1:${p}`,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({token}),redirect:'manual'});assert.equal(expired.status,410,'link bearer is consumed after account linking');
+    const completion=await fetch(`http://127.0.0.1:${p}/community/link/complete`);assert.equal(completion.status,200);assert.match(await completion.text(),/keine Konten oder XP-Stände zusammengeführt/u);
+  }finally{await dashboard.stop();store.close();process.env=env;}
+});
+
 test('Community web actions reuse quest, Elio and Mystery Drop eligibility/cooldowns and storage',async()=>{
   const env={...process.env},directory=fs.mkdtempSync(path.join(os.tmpdir(),'community-actions-')),store=new FeatureStore(path.join(directory,'state.sqlite')),p=await port();
   process.env.TWITCH_CLIENT_ID='portal-client';process.env.TWITCH_CLIENT_SECRET='portal-secret';process.env.DASHBOARD_REDIRECT_URI='https://bot.example.test/dashboard/oauth/callback';process.env.DASHBOARD_ADMIN_IDS='admin-only';process.env.DASHBOARD_HOST='127.0.0.1';process.env.DASHBOARD_PORT=String(p);
