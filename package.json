@@ -15,7 +15,7 @@
     "demo:games": "tsx src/mini-games-demo.ts",
     "demo:arcade": "tsx src/community-arcade-demo.ts",
     "test": "node --import tsx --test src/*.test.ts",
-    "test:browser": "node --import tsx --test browser-tests/*.browser.test.ts",
+    "test:browser": "node --import tsx --test --test-concurrency=1 browser-tests/*.browser.test.ts",
     "check": "npm run build && npm test"
   },
   "dependencies": {
