@@ -68,7 +68,7 @@ Seasonal participation needs a single event ID source, time window/timezone, par
 
 ## Tests
 
-- Twitch `npm run check`: build passed; 205/205 unit/integration tests passed.
+- Twitch `npm run check`: build passed; 206/206 unit/integration tests passed, including a new Discord Phase 6 profile/leaderboard API contract test for linked identity, canonical flag, privacy and validation.
 - Twitch `npm run test:browser`: 5/5 passed, including dashboard settings save/read-back and desktop/mobile checks.
 - Discord `npm run check`: passed; `npm test`: 34/34 passed.
 - `git diff --check`: run on both repos before publication.

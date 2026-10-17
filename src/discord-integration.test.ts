@@ -57,6 +57,34 @@ test('Discord ideas use Twitch source of truth, idempotent inbox and acknowledge
   }
 });
 
+test('Discord Phase 6 profile API uses canonical feature flag and linked Twitch XP contract',async()=>{
+  const env={...process.env},store=new FeatureStore(':memory:'),port=await freePort();
+  const secret='synthetic-integration-secret-123456789',discordUserId='1206225751544832053',twitchUserId='linked-profile-user';
+  process.env.TWITCH_CLIENT_ID='test-client';process.env.TWITCH_CLIENT_SECRET='test-secret';process.env.DASHBOARD_REDIRECT_URI='https://bot.example.test/dashboard/oauth/callback';process.env.DASHBOARD_ADMIN_IDS='test-admin';process.env.DASHBOARD_HOST='127.0.0.1';process.env.DASHBOARD_PORT=String(port);process.env.DISCORD_INTEGRATION_SECRET=secret;
+  store.setConfig('discord_integration',{enabled:true,accountLinkEnabled:true,discordProfilesEnabled:true});
+  const tokenHash='f'.repeat(64),stateHash='a'.repeat(64);store.createCommunityAccountLinkIntent({tokenHash,discordUserId,createdAt:1000,expiresAt:601000});
+  assert.equal(store.beginCommunityAccountLinkOAuthState({stateHash,tokenHash,expiresAt:601000,now:1000}),true);
+  assert.equal(store.completeCommunityAccountLink({stateHash,twitchUserId,now:2000}),'linked');
+  store.awardXp('phase6-profile-event',twitchUserId,'Linked Viewer',250,'activity',3000);
+  const server=new DashboardServer(store,()=>({twitchConnected:false,channel:'acyjannik',startedAt:1}),logger,fetch);
+  const base=`http://127.0.0.1:${port}/api/discord/v1`,headers={authorization:`Bearer ${secret}`,'content-type':'application/json'};
+  try{
+    assert.equal(await server.start(),true);
+    const profile=await fetch(`${base}/community/profile`,{method:'POST',headers,body:JSON.stringify({discordUserId,view:'profile'})});assert.equal(profile.status,200);
+    assert.deepEqual(await profile.json(),{view:'profile',displayName:'Linked Viewer',rank:1,xp:250,level:2,nextLevelXp:400,progressXp:150,progressNeeded:300});
+    const leaderboard=await fetch(`${base}/community/profile`,{method:'POST',headers,body:JSON.stringify({discordUserId,view:'leaderboard'})});assert.equal(leaderboard.status,200);
+    const board=await leaderboard.json() as {entries:Array<{rank:number;displayName:string;xp:number;level:number}>};assert.deepEqual(board.entries,[{rank:1,displayName:'Linked Viewer',level:2,xp:250}]);
+    assert.equal((await fetch(`${base}/community/profile`,{method:'POST',headers,body:JSON.stringify({discordUserId:'1206225751544832054',view:'profile'})})).status,403,'unlinked Discord identity cannot query another Twitch account');
+    store.setConfig('discord_integration',{enabled:true,accountLinkEnabled:true,discordProfilesEnabled:false});
+    assert.equal((await fetch(`${base}/community/profile`,{method:'POST',headers,body:JSON.stringify({discordUserId,view:'profile'})})).status,409,'canonical profile flag is enforced');
+    assert.equal((await fetch(`${base}/community/profile`,{method:'POST',headers,body:JSON.stringify({discordUserId,view:'admin'})})).status,400,'unsupported profile view is rejected');
+  }finally{
+    await server.stop();store.close();
+    for(const key of Object.keys(process.env))if(!(key in env))delete process.env[key];
+    for(const [key,value] of Object.entries(env))process.env[key]=value;
+  }
+});
+
 test('account links are unique, transactional, reversible, and never merge Twitch data',()=>{
   const store=new FeatureStore(':memory:');
   try{
