@@ -894,6 +894,39 @@ export class FeatureStore {
         INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (33, unixepoch()*1000);
       `))();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 34) {
+      if (currentVersion > 0) this.backupBeforeMigration(34);
+      this.db.transaction(() => this.db.exec(`
+        CREATE TABLE IF NOT EXISTS community_account_links (
+          twitch_user_id TEXT PRIMARY KEY,
+          discord_user_id TEXT NOT NULL UNIQUE,
+          linked_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS community_account_link_intents (
+          token_hash TEXT PRIMARY KEY,
+          discord_user_id TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          expires_at INTEGER NOT NULL,
+          used_at INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS community_account_link_intents_expiry ON community_account_link_intents(expires_at);
+        CREATE TABLE IF NOT EXISTS community_account_link_oauth_states (
+          state_hash TEXT PRIMARY KEY,
+          token_hash TEXT NOT NULL,
+          expires_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS community_account_link_oauth_expiry ON community_account_link_oauth_states(expires_at);
+        CREATE TABLE IF NOT EXISTS community_account_link_audit (
+          id TEXT PRIMARY KEY,
+          discord_user_id TEXT NOT NULL,
+          twitch_user_id TEXT NOT NULL,
+          action TEXT NOT NULL CHECK(action IN ('linked','unlinked')),
+          created_at INTEGER NOT NULL
+        );
+        INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (34, unixepoch()*1000);
+      `))();
+    }
   }
 
   private backupBeforeMigration(version: number): void {
@@ -924,6 +957,72 @@ export class FeatureStore {
       const row=this.db.prepare('SELECT expires_at FROM community_viewer_oauth_states WHERE state_hash=?').get(stateHash) as {expires_at:number}|undefined;
       this.db.prepare('DELETE FROM community_viewer_oauth_states WHERE state_hash=?').run(stateHash);
       return Boolean(row&&row.expires_at>now);
+    })();
+  }
+
+  createCommunityAccountLinkIntent(input:{tokenHash:string;discordUserId:string;createdAt:number;expiresAt:number}):void {
+    this.db.transaction(()=>{
+      this.db.prepare('DELETE FROM community_account_link_intents WHERE expires_at<=? OR used_at IS NOT NULL').run(input.createdAt);
+      this.db.prepare('DELETE FROM community_account_link_intents WHERE discord_user_id=? AND used_at IS NULL').run(input.discordUserId);
+      this.db.prepare('INSERT INTO community_account_link_intents(token_hash,discord_user_id,created_at,expires_at) VALUES(?,?,?,?)')
+        .run(input.tokenHash,input.discordUserId,input.createdAt,input.expiresAt);
+    })();
+  }
+
+  accountLinkIntent(tokenHash:string,now:number):{discordUserId:string;expiresAt:number}|undefined {
+    const row=this.db.prepare('SELECT discord_user_id,expires_at,used_at FROM community_account_link_intents WHERE token_hash=?').get(tokenHash) as {discord_user_id:string;expires_at:number;used_at:number|null}|undefined;
+    return row&&row.expires_at>now&&row.used_at===null?{discordUserId:row.discord_user_id,expiresAt:row.expires_at}:undefined;
+  }
+
+  beginCommunityAccountLinkOAuthState(input:{stateHash:string;tokenHash:string;expiresAt:number;now:number}):boolean {
+    return this.db.transaction(()=>{
+      const intent=this.db.prepare('SELECT expires_at,used_at FROM community_account_link_intents WHERE token_hash=?').get(input.tokenHash) as {expires_at:number;used_at:number|null}|undefined;
+      if(!intent||intent.expires_at<=input.now||intent.used_at!==null)return false;
+      this.db.prepare('UPDATE community_account_link_intents SET used_at=? WHERE token_hash=? AND used_at IS NULL').run(input.now,input.tokenHash);
+      this.db.prepare('DELETE FROM community_viewer_oauth_states WHERE expires_at<=?').run(input.now);
+      this.db.prepare('DELETE FROM community_account_link_oauth_states WHERE expires_at<=?').run(input.now);
+      this.db.prepare('INSERT INTO community_viewer_oauth_states(state_hash,expires_at,created_at) VALUES(?,?,?)').run(input.stateHash,input.expiresAt,input.now);
+      this.db.prepare('INSERT INTO community_account_link_oauth_states(state_hash,token_hash,expires_at) VALUES(?,?,?)')
+        .run(input.stateHash,input.tokenHash,input.expiresAt);
+      return true;
+    })();
+  }
+
+  communityAccountLinkOAuthStateExists(stateHash:string,now:number):boolean {
+    return Boolean(this.db.prepare('SELECT 1 FROM community_account_link_oauth_states WHERE state_hash=? AND expires_at>?').get(stateHash,now));
+  }
+
+  completeCommunityAccountLink(input:{stateHash:string;twitchUserId:string;now:number}):'linked'|'already-linked'|'discord-linked'|'twitch-linked'|'expired' {
+    return this.db.transaction(()=>{
+      const state=this.db.prepare('SELECT token_hash,expires_at FROM community_account_link_oauth_states WHERE state_hash=?').get(input.stateHash) as {token_hash:string;expires_at:number}|undefined;
+      this.db.prepare('DELETE FROM community_account_link_oauth_states WHERE state_hash=?').run(input.stateHash);
+      if(!state||state.expires_at<=input.now)return 'expired';
+      const intent=this.db.prepare('SELECT discord_user_id,expires_at,used_at FROM community_account_link_intents WHERE token_hash=?').get(state.token_hash) as {discord_user_id:string;expires_at:number;used_at:number|null}|undefined;
+      if(!intent||intent.expires_at<=input.now||intent.used_at===null)return 'expired';
+      const discordLink=this.db.prepare('SELECT twitch_user_id FROM community_account_links WHERE discord_user_id=?').get(intent.discord_user_id) as {twitch_user_id:string}|undefined;
+      if(discordLink)return discordLink.twitch_user_id===input.twitchUserId?'already-linked':'discord-linked';
+      const twitchLink=this.db.prepare('SELECT discord_user_id FROM community_account_links WHERE twitch_user_id=?').get(input.twitchUserId) as {discord_user_id:string}|undefined;
+      if(twitchLink)return 'twitch-linked';
+      this.db.prepare('INSERT INTO community_account_links(twitch_user_id,discord_user_id,linked_at) VALUES(?,?,?)').run(input.twitchUserId,intent.discord_user_id,input.now);
+      this.db.prepare('INSERT INTO community_account_link_audit(id,discord_user_id,twitch_user_id,action,created_at) VALUES(?,?,? ,\'linked\',?)')
+        .run(randomUUID(),intent.discord_user_id,input.twitchUserId,input.now);
+      return 'linked';
+    })();
+  }
+
+  communityAccountLinkStatus(discordUserId:string):{linked:boolean;linkedAt?:number} {
+    const row=this.db.prepare('SELECT linked_at FROM community_account_links WHERE discord_user_id=?').get(discordUserId) as {linked_at:number}|undefined;
+    return row?{linked:true,linkedAt:row.linked_at}:{linked:false};
+  }
+
+  disconnectCommunityAccountLink(input:{discordUserId:string;now:number}):boolean {
+    return this.db.transaction(()=>{
+      const row=this.db.prepare('SELECT twitch_user_id FROM community_account_links WHERE discord_user_id=?').get(input.discordUserId) as {twitch_user_id:string}|undefined;
+      if(!row)return false;
+      this.db.prepare('DELETE FROM community_account_links WHERE discord_user_id=?').run(input.discordUserId);
+      this.db.prepare('INSERT INTO community_account_link_audit(id,discord_user_id,twitch_user_id,action,created_at) VALUES(?,?,?,\'unlinked\',?)')
+        .run(randomUUID(),input.discordUserId,row.twitch_user_id,input.now);
+      return true;
     })();
   }
 
@@ -1168,6 +1267,9 @@ export class FeatureStore {
   deleteExpiredViewerData(now:number):void {
     this.db.prepare('DELETE FROM community_viewer_sessions WHERE expires_at<=?').run(now);
     this.db.prepare('DELETE FROM community_viewer_oauth_states WHERE expires_at<=?').run(now);
+    this.db.prepare('DELETE FROM community_account_link_intents WHERE expires_at<=? OR used_at IS NOT NULL AND used_at<?').run(now,now-30*24*60*60_000);
+    this.db.prepare('DELETE FROM community_account_link_oauth_states WHERE expires_at<=?').run(now);
+    this.db.prepare('DELETE FROM community_account_link_audit WHERE created_at<?').run(now-180*24*60*60_000);
   }
 
   questsBySubmitter(userId:string,limit=20):QuestRecord[] {
