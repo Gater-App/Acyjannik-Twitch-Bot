@@ -90,11 +90,15 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     assert.equal(await discordPage.locator('[name="profilesEnabled"]').isChecked(),false,'Discord-Profile sind standardmäßig deaktiviert');
     await discordPage.locator('[name="profilesEnabled"]').check();
     await discordPage.locator('[name="ideasChannelId"]').fill('1206225751544832041');
+    await discordPage.locator('[name="liveChannelId"]').fill('1206225751544832043');
+    await discordPage.locator('[name="notifyLive"]').check();
+    await discordPage.locator('[name="liveUpdateEnabled"]').check();
+    await discordPage.locator('[name="liveCompletionEnabled"]').check();
     await discordPage.locator('[name="enabled"]').check();
     await discordPage.getByRole('button',{name:'Einstellungen speichern'}).click();
     await discordPage.getByText('Einstellungen gespeichert.',{exact:true}).waitFor();
-    const discordSaved=await (await discordPage.request.get(`${base}/dashboard/api/discord`)).json() as {settings:{enabled:boolean;ideasChannelId:string;notifyIdeas:boolean}};
-    assert.equal(discordSaved.settings.enabled,true);assert.equal(discordSaved.settings.profilesEnabled,true);assert.equal(discordSaved.settings.ideasChannelId,'1206225751544832041');assert.equal(discordSaved.settings.notifyIdeas,true);
+    const discordSaved=await (await discordPage.request.get(`${base}/dashboard/api/discord`)).json() as {settings:{enabled:boolean;ideasChannelId:string;notifyIdeas:boolean;liveChannelId:string;notifyLive:boolean;liveUpdateEnabled:boolean;liveCompletionEnabled:boolean}};
+    assert.equal(discordSaved.settings.enabled,true);assert.equal(discordSaved.settings.profilesEnabled,true);assert.equal(discordSaved.settings.ideasChannelId,'1206225751544832041');assert.equal(discordSaved.settings.notifyIdeas,true);assert.equal(discordSaved.settings.liveChannelId,'1206225751544832043');assert.equal(discordSaved.settings.notifyLive,true);assert.equal(discordSaved.settings.liveUpdateEnabled,true);assert.equal(discordSaved.settings.liveCompletionEnabled,true);
     await discordPage.setViewportSize({width:390,height:844});assert.ok(await discordPage.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth+1),'Discord-Einstellungen passen mobil ohne seitliches Scrollen');
     await discordPage.close();
     const assertSubpage = async (selector: string, active: boolean) => {

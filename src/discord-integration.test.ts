@@ -88,16 +88,40 @@ test('Discord outbox retries with bounded backoff and moves exhausted deliveries
   }finally{store.close();}
 });
 
-test('live-state polling emits only confirmed transitions and deduplicates reconnect polls',()=>{
+test('live-state outbox creates one announcement, coalesces stable polls, and updates only changed stream metadata',()=>{
   const store=new FeatureStore(':memory:');
   try{
     store.setConfig('discord_integration',{enabled:true,ideasChannelId:'1206225751544832041',rewardsChannelId:'1206225751544832042',liveChannelId:'1206225751544832043',notifyIdeas:false,notifyLevels:false,notifyDrops:false,notifyQuests:false,notifySeasonal:false,notifyLive:true});
     store.recordDiscordLiveTransition(false,undefined,1000);
     store.recordDiscordLiveTransition(false,undefined,2000);
     assert.equal(store.discordOutboxStats().pending,0,'erster Status und wiederholte Offline-Abfragen senden nichts');
-    store.recordDiscordLiveTransition(true,{id:'stream-1',title:'Teststream'},3000);
-    store.recordDiscordLiveTransition(true,{id:'stream-1',title:'Teststream'},4000);
+    store.recordDiscordLiveTransition(true,{id:'stream-1',title:'Teststream',game_name:'Spiel A'},3000);
+    store.recordDiscordLiveTransition(true,{id:'stream-1',title:'Teststream',game_name:'Spiel A'},4000);
     assert.equal(store.discordOutboxStats().pending,1,'wiederholte Online-Abfragen erzeugen keine Dopplung');
-    assert.equal(store.discordOutboxBatch(4000,5)[0]?.type,'twitch.live');
+    store.recordDiscordLiveTransition(true,{id:'stream-1',title:'Neuer Titel',game_name:'Spiel A'},5000);
+    store.recordDiscordLiveTransition(true,{id:'stream-1',title:'Neuer Titel',game_name:'Spiel B'},6000);
+    store.recordDiscordLiveTransition(true,{id:'stream-1',title:'Neuer Titel',game_name:'Spiel B'},7000);
+    store.recordDiscordLiveTransition(false,undefined,8000);
+    store.recordDiscordLiveTransition(false,undefined,9000);
+    const events=store.discordOutboxBatch(9000,5);assert.deepEqual(events.map(event=>event.type),['twitch.live','twitch.live.update','twitch.live.update','twitch.live']);
+    assert.deepEqual(events.map(event=>(event.payload as {active:boolean}).active),[true,true,true,false]);
+    assert.equal((events[1]!.payload as {title:string}).title,'Neuer Titel');
+    assert.equal((events[2]!.payload as {gameName:string}).gameName,'Spiel B');
+  }finally{store.close();}
+});
+
+test('enabling live notifications during an ongoing stream emits one current announcement',()=>{
+  const store=new FeatureStore(':memory:');
+  try{
+    store.setConfig('discord_integration',{enabled:true,notifyLive:false});
+    store.recordDiscordLiveTransition(false,undefined,1000);
+    store.recordDiscordLiveTransition(true,{id:'stream-existing',title:'Schon live',game_name:'Spiel'},2000);
+    assert.equal(store.discordOutboxStats().pending,0,'deaktivierte Hinweise erzeugen keine Zustellung');
+    store.setConfig('discord_integration',{enabled:true,notifyLive:true});
+    store.recordDiscordLiveTransition(true,{id:'stream-existing',title:'Schon live',game_name:'Spiel'},3000);
+    store.recordDiscordLiveTransition(true,{id:'stream-existing',title:'Schon live',game_name:'Spiel'},4000);
+    const events=store.discordOutboxBatch(4000,5);
+    assert.equal(events.length,1,'Aktivierung während des Streams erzeugt eine einzelne aktuelle Ankündigung');
+    assert.equal(events[0]?.type,'twitch.live');
   }finally{store.close();}
 });
