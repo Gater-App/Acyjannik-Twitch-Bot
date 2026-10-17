@@ -1039,6 +1039,11 @@ export class FeatureStore {
     return row?.twitch_user_id;
   }
 
+  communityDiscordIdForTwitch(twitchUserId:string):string|undefined {
+    const row=this.db.prepare('SELECT discord_user_id FROM community_account_links WHERE twitch_user_id=?').get(twitchUserId) as {discord_user_id:string}|undefined;
+    return row?.discord_user_id;
+  }
+
   processDiscordEvent<T>(eventId:string,now:number,perform:()=>T):{result:T;duplicate:boolean} {
     if(!/^\d{17,20}$/u.test(eventId))throw new Error('Ungültige Discord-Ereignis-ID.');
     return this.db.transaction(()=>{
@@ -1191,8 +1196,18 @@ export class FeatureStore {
     const settings=this.config<Record<string,unknown>>('discord_integration',{});
     const toggle=type.startsWith('idea.')?'notifyIdeas':type==='level.up'?'notifyLevels':type==='mystery.drop'?'notifyDrops':type.startsWith('mystery.drop.')?'discordDropsEnabled':type==='quest.completed'?'notifyQuests':type==='seasonal.event'?'notifySeasonal':type.startsWith('twitch.live')?'notifyLive':null;
     if(settings.enabled!==true||!toggle||settings[toggle]!==true)return '';
+    const category=type.startsWith('idea.')?'Ideas':type==='level.up'?'Levels':type.startsWith('mystery.drop')?'Drops':type==='quest.completed'?'Quests':type==='seasonal.event'?'Seasonal':'Live';
+    const configured=settings[`mention${category}`],mode=category==='Levels'&&configured==='user'?'user':configured==='everyone'?'everyone':'none';
+    const data=payload&&typeof payload==='object'&&!Array.isArray(payload)?payload as Record<string,unknown>:{};
+    const mention:{mode:'none'|'everyone'|'user';discordUserId?:string}={mode};
+    if(mode==='user'&&settings.accountLinkEnabled===true&&typeof data.userId==='string'){
+      const discordUserId=this.communityDiscordIdForTwitch(data.userId);
+      if(discordUserId&&/^\d{17,20}$/u.test(discordUserId))mention.discordUserId=discordUserId;
+    }
+    const publicData={...data};delete publicData.userId;
+    const eventPayload={...publicData,discordMention:mention};
     const id=randomUUID();this.db.prepare("INSERT INTO discord_event_outbox(id,event_type,aggregate_id,payload_json,created_at,available_at) VALUES(?,?,?,?,?,?)")
-      .run(id,type,aggregateId,JSON.stringify(payload??{}),now,now);return id;
+      .run(id,type,aggregateId,JSON.stringify(eventPayload),now,now);return id;
   }
 
   discordOutboxBatch(now:number,limit=25):Array<{id:string;type:string;aggregateId:string;payload:unknown;createdAt:number;attempts:number}> {
@@ -1844,7 +1859,7 @@ export class FeatureStore {
       .run(userId, displayName, amount, now);
     const after=(before?.xp||0)+amount,base=Math.max(1,Number(this.config<{levelBase?:number}>('xp_settings',{levelBase:100}).levelBase)||100);
     const oldLevel=1+Math.floor(Math.sqrt(Math.max(0,before?.xp||0)/base)),newLevel=1+Math.floor(Math.sqrt(after/base));
-    if(newLevel>oldLevel)this.enqueueDiscordEvent('level.up',eventId,{displayName:displayName.slice(0,48),level:newLevel},now);
+    if(newLevel>oldLevel)this.enqueueDiscordEvent('level.up',eventId,{userId,displayName:displayName.slice(0,48),level:newLevel},now);
     return amount;
   }
 
