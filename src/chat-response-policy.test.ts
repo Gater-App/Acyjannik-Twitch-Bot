@@ -55,3 +55,13 @@ test('gängige Bot-Accounts werden standardmäßig nicht als neue Zuschauer begr
   assert.equal(policy.isWelcomeExcluded('fossabot'), true, 'gespeicherte individuelle Listen heben bekannte Bot-Ausschlüsse nicht auf');
   assert.equal(policy.isWelcomeExcluded('eigener_bot'), true, 'individuelle Ausschlüsse bleiben erhalten');
 });
+
+test('Antworten verschiedener Zuschauer werden nicht über einen gemeinsamen Command-Cooldown unterdrückt',()=>{
+  const policy=new ChatResponsePolicy({profile:'normal',welcomeBots:[]});
+  assert.equal(policy.shouldSend({command:'!attack',senderUserId:'viewer-a',message:'Alice trifft für 20 Schaden.',now:10_000}),true);
+  assert.equal(policy.shouldSend({command:'!attack',senderUserId:'viewer-b',message:'Bob trifft für 20 Schaden.',now:10_001}),true);
+  assert.equal(policy.shouldSend({command:'!attack',senderUserId:'viewer-a',message:'Alice: dein Angriff ist noch nicht bereit.',now:10_500}),false,'häufige Rückmeldungen werden nur für denselben Account gebremst');
+  assert.equal(policy.shouldSend({command:'!attack',senderUserId:'viewer-b',message:'Bob trifft für 20 Schaden.',now:10_600}),false,'der persönliche Rückmeldeabstand greift nur beim jeweiligen Account');
+  assert.equal(policy.shouldSend({command:'!trickortreat',senderUserId:'viewer-c',message:'Ada findet 5 Kürbisse.',now:10_000}),true,'erfolgreiche Spielresultate verschwinden nicht im Normalprofil');
+  assert.equal(policy.shouldSend({command:'!trickortreat',senderUserId:'viewer-d',message:'Ben findet 2 Kürbisse.',now:10_001}),true,'ein anderer Nutzer erhält seine eigene Rückmeldung');
+});

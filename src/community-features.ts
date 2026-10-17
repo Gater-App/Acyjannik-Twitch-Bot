@@ -11,6 +11,7 @@ import { CommunityChaos } from './community-chaos.js';
 import { ElioChronicles } from './elio-chronicles.js';
 import { CommunityVault } from './community-vault.js';
 import { CommunityHauntedHouse } from './community-haunted-house.js';
+import { EventDirector, type EventCandidate } from './event-director.js';
 import { ModeratorPranks } from './moderator-pranks.js';
 import { categoryForCommand, type ChatCategory } from './chat-message-format.js';
 import type { OutboundChatMessage } from './chat-message-format.js';
@@ -32,22 +33,25 @@ export class CommunityFeatures {
   readonly vault: CommunityVault;
   readonly moderatorPranks: ModeratorPranks;
   readonly hauntedHouse: CommunityHauntedHouse;
+  readonly eventDirector: EventDirector;
 
   constructor(
     private readonly store: FeatureStore,
     private readonly config: AppConfig,
     private readonly lookupUser: UserLookup = async () => undefined,
     private readonly random: RandomInclusive = secureRandomInclusive,
-  ) { this.questPoll = new QuestPollFeatures(store, config); this.conversationSpark = new ConversationSpark(store, config.broadcasterUserId); this.miniGames = new MiniGames(store, config); this.arcade = new CommunityArcade(store,config.broadcasterUserId); this.interactive=new CommunityInteractive(store); this.chaos=new CommunityChaos(store); this.chronicles=new ElioChronicles(store,this.chaos); this.chaos.setAutoStorySelector(games=>this.chronicles.chooseAutomatic(games)); this.vault = new CommunityVault(store,config.botUserId); this.hauntedHouse=new CommunityHauntedHouse(store); this.moderatorPranks = new ModeratorPranks(store,()=>((this.vault.publicSnapshot().vault as {status?:string}|undefined)?.status==='active'),()=>this.isMajorGameBusy()); }
+  ) { this.questPoll = new QuestPollFeatures(store, config); this.conversationSpark = new ConversationSpark(store, config.broadcasterUserId); this.miniGames = new MiniGames(store, config); this.arcade = new CommunityArcade(store,config.broadcasterUserId); this.interactive=new CommunityInteractive(store); this.chaos=new CommunityChaos(store); this.chronicles=new ElioChronicles(store,this.chaos); this.chaos.setAutoStorySelector(games=>this.chronicles.chooseAutomatic(games)); this.vault = new CommunityVault(store,config.botUserId); this.hauntedHouse=new CommunityHauntedHouse(store); this.eventDirector=new EventDirector(store); this.moderatorPranks = new ModeratorPranks(store,()=>((this.vault.publicSnapshot().vault as {status?:string}|undefined)?.status==='active'),ignoreVault=>this.isMajorGameBusy(ignoreVault)); }
 
-  private isMajorGameBusy():boolean {
+  private isMajorGameBusy(ignoreVault = false):boolean {
     const now=Date.now(),mini=this.miniGames.snapshot(),drop=this.arcade.snapshot('drop'),wheel=this.arcade.wheelStatus();
     const status=(drop.drop as {status?:string}|undefined)?.status;
     return Boolean(mini.imposter||mini.detective||this.store.activeQuest()||this.store.activePoll(now)||this.store.activeBoss(now)
-      ||['announced','claiming','resolving'].includes(status||'')||wheel.active);
+      ||['announced','claiming','resolving'].includes(status||'')||wheel.active||(!ignoreVault&&this.vault.isActive(now))
+      ||this.chaos.status(now).active||this.interactive.active().some(event=>event.status==='open'&&event.kind!=='game_night'));
   }
 
   observeActivity(message: ChatMessage, now = Date.now()): string | undefined {
+    this.eventDirector.observe(message,now,[this.config.botUserId,this.config.broadcasterUserId]);
     if (message.senderUserId === this.config.botUserId || message.senderLogin.toLowerCase() === this.config.botLogin.toLowerCase()) return undefined;
     const text = message.message.trim().replace(/\s+/gu, ' ');
     if (text.startsWith('!') || Array.from(text).length < 3) return undefined;
@@ -58,6 +62,61 @@ export class CommunityFeatures {
       settings.activityXp, settings.activityCooldownMs);
     return undefined;
   }
+
+  eventDirectorStatus(now=Date.now(),reason='') { return {...this.eventDirector.snapshot(now,reason),active:this.currentInteractiveStatus(now)}; }
+  updateEventDirectorSettings(input:Record<string,unknown>) {
+    const chaos=this.chaos.settings(),story=this.chronicles.settings(),interactive=this.interactive.settings(),arcade=this.arcade.settings();
+    if(input.autoChaos===true&&!chaos.enabled)throw new Error('Community-Chaos muss zuerst im vorhandenen Modul aktiviert werden.');
+    if(input.autoStories===true&&(!story.enabled||!chaos.enabled))throw new Error('Elio Chronicles und Community-Chaos müssen zuerst freigegeben werden.');
+    if(input.autoSecretEvents===true&&!interactive.secretEventsEnabled)throw new Error('Geheime Community-Events müssen zuerst im vorhandenen Modul aktiviert werden.');
+    if(input.autoDrops===true&&!arcade.dropsEnabled)throw new Error('Mystery Drops müssen zuerst im vorhandenen Modul aktiviert werden.');
+    if(input.autoWheel===true&&!arcade.wheelEnabled)throw new Error('Das bestehende Chaos Wheel muss zuerst aktiviert werden.');
+    const next=this.eventDirector.updateSettings(input);
+    this.chaos.updateSettings({...chaos,autoEnabled:next.autoChaos||next.autoStories});
+    this.chronicles.updateSettings({...story,autoEnabled:next.autoStories});
+    this.interactive.updateSettings({...interactive,autoSecretEventsEnabled:next.autoSecretEvents});
+    this.chaos.updateSettings({...this.chaos.settings(),discordAnnouncements:next.discordAnnouncements});
+    if(next.autoDrops&&!arcade.autoDrops)this.arcade.updateSettings({...arcade,autoDrops:true});
+    return next;
+  }
+  runEventDirector(live:boolean,busy:boolean,now=Date.now()):{message:string;category:'boss'|'drop'|'wheel'|'community';chaosEventId?:string}|undefined {
+    const cfg=this.eventDirector.settings(),activity=this.eventDirector.activity(now),modules=this.store.config<Record<string,boolean>>('modules',{});
+    const candidates:EventCandidate[]=[];
+    const chaosCfg=this.chaos.settings(),storyCfg=this.chronicles.settings();
+    const chaosEnabled=(cfg.autoChaos&&chaosCfg.enabled&&chaosCfg.autoEnabled)||(cfg.autoStories&&storyCfg.enabled&&storyCfg.autoEnabled&&chaosCfg.enabled&&chaosCfg.autoEnabled);
+    candidates.push({type:'story-or-chaos',priority:cfg.autoStories&&storyCfg.enabled&&storyCfg.autoEnabled?1:4,enabled:chaosEnabled,ready:this.chaos.automaticReady(now),minimumActivity:'low',start:()=>this.chaos.startAutomatic(now,cfg.autoStories)?.message});
+    const secretSettings=this.interactive.settings();
+    candidates.push({type:'secret-event',priority:5,enabled:cfg.autoSecretEvents&&secretSettings.secretEventsEnabled&&secretSettings.autoSecretEventsEnabled,
+      ready:!this.interactive.active(undefined,now).some(event=>event.status==='open'),minimumActivity:'normal',start:()=>this.interactive.startAutomaticSecretEvent(now,activity.uniqueChatters15m)?'🎁 Ein geheimes Community-Event beginnt! Schaut auf die Community-Seite.':undefined});
+    const bossSettings=this.store.config('game_settings',{bossHp:1000,bossDurationMs:900_000}),activeBoss=this.store.activeBoss(now);
+    const bossFinishedAt=this.store.miniGameQuery(db=>(db.prepare("SELECT MAX(finished_at) at FROM boss_fights WHERE status IN ('defeated','timeout','canceled')").get() as {at:number|null}).at||undefined);
+    const bossDue=this.eventDirector.intervalDue('boss',now,cfg.bossMinIntervalMs,cfg.bossMaxIntervalMs,cfg.autoBosses&&modules.boss!==false,live,Boolean(activeBoss),bossFinishedAt);
+    candidates.push({type:'boss',priority:3,enabled:cfg.autoBosses&&modules.boss!==false,ready:bossDue&&!activeBoss,minimumActivity:'normal',interval:{min:cfg.bossMinIntervalMs,max:cfg.bossMaxIntervalMs,afterCompletion:true},start:()=>{
+      const active=activity.uniqueChatters5m,base=active<=3?100:active<=8?240:active<=15?450:800;
+      const recent=this.store.miniGameQuery(db=>db.prepare("SELECT status,COUNT(*) count FROM boss_fights WHERE finished_at IS NOT NULL GROUP BY status").all() as Array<{status:string;count:number}>);
+      const total=recent.reduce((n,row)=>n+row.count,0),won=recent.find(row=>row.status==='defeated')?.count||0;
+      const factor=cfg.bossAdaptiveHp&&total>=3?Math.max(.9,Math.min(1.1,1+(won/total-.5)*.2)):1;
+      const hp=Math.max(60,Math.min(1200,Math.round(base*factor))),names=active<=3?['Kleiner Schattenpfoten-Späher']:active<=8?['Schattenwächter']:active<=15?['Portalwächter']:['Schattenkönig'];
+      if(!this.store.startBoss(randomUUID(),names[this.random(0,names.length-1)]!,hp,bossSettings.bossDurationMs,now))return undefined;
+      return `👹 ${names[0]} erscheint mit ${hp} HP! Besiegt ihn gemeinsam mit !attack!`;
+    }});
+    const arcadeSettings=this.arcade.settings(),drop=this.arcade.snapshot('drop'),dropStatus=(drop.drop as {status?:string}|undefined)?.status;
+    const dropDue=this.eventDirector.intervalDue('drop',now,60*60_000,90*60_000,cfg.autoDrops&&arcadeSettings.dropsEnabled&&arcadeSettings.autoDrops,live);
+    candidates.push({type:'mystery-drop',priority:6,enabled:cfg.autoDrops&&arcadeSettings.dropsEnabled&&arcadeSettings.autoDrops,ready:dropDue&&!['announced','claiming','resolving'].includes(dropStatus||''),minimumActivity:'normal',interval:{min:60*60_000,max:90*60_000},start:()=>{
+      const before=(this.arcade.snapshot('drop').drop as {id?:string}|undefined)?.id;
+      const message=this.arcade.startDropAdmin('event-director','common',now);
+      const after=this.arcade.snapshot('drop').drop as {id?:string}|undefined;return after?.id&&after.id!==before?message:undefined;
+    }});
+    const wheelStatus=this.arcade.wheelStatus(now) as {enabled:boolean;autoPilotEnabled:boolean;canSpin:boolean;autoSpinDue:boolean};
+    candidates.push({type:'chaos-wheel',priority:7,enabled:cfg.autoWheel&&wheelStatus.enabled&&wheelStatus.autoPilotEnabled,ready:wheelStatus.canSpin&&wheelStatus.autoSpinDue,minimumActivity:'high',start:()=>this.arcade.autoSpinIfDue(now)});
+    const vaultReady=this.vault.autoStartReady(now,this.vault.activeViewerCount(now),busy,0);
+    candidates.push({type:'community-vault',priority:8,enabled:cfg.enabled&&this.vault.settings().enabled&&this.vault.settings().autoStart,ready:vaultReady,minimumActivity:'normal',start:()=>{const result=this.vault.startAutomatic(now);return result.ok?result.message:undefined;}});
+    const result=this.eventDirector.run({live,busy,now,candidates});
+    if(!live){this.chaos.pauseAutomatic(now);}
+    if(result){const category=result.type==='boss'?'boss':result.type==='mystery-drop'?'drop':result.type==='chaos-wheel'?'wheel':'community';if(result.type==='story-or-chaos'){const announcement=this.chaos.claimStartAnnouncement(now);return {message:announcement?.prompt||result.message,category,...(announcement?{chaosEventId:announcement.id}:{})};}return {message:result.message,category};}
+    return undefined;
+  }
+  private currentInteractiveStatus(now:number){return {chaos:this.chaos.status(now).active,secretEvents:this.interactive.active().filter(event=>event.kind==='mystery_case'||event.kind==='elio_rescue'||event.kind==='secret_portal'),boss:this.store.activeBoss(now)||null,wheel:this.arcade.wheelStatus(now).active,drop:(this.arcade.snapshot('drop').drop as {status?:string}|undefined)?.status||null};}
 
   firstChatWelcome(message:ChatMessage,now=Date.now(),excludedLogins: string[] = []):string|undefined {
     if(message.senderUserId===this.config.botUserId||message.senderUserId===message.broadcasterUserId)return undefined;
@@ -150,7 +209,7 @@ export class CommunityFeatures {
     if (modules.boss !== false && command === 'startboss') return say(this.startBoss(message, args, now));
     if (modules.boss !== false && command === 'boss') return say(this.bossStatus(now));
     if (modules.boss !== false && command === 'bosstop') return say(this.bossTop());
-    if (modules.boss !== false && command === 'attack') return say(this.attackBoss(message, now));
+    if (modules.boss !== false && command === 'attack') {const result=this.attackBoss(message,now);return result?say(result):[];}
     if (modules.boss !== false && command === 'endboss') return say(this.endBoss(message, now));
 
     if (modules.customCommands !== false) {
@@ -361,6 +420,7 @@ export class CommunityFeatures {
 
   private startBoss(message: ChatMessage, args: string[], now: number): string {
     if (!this.isModerator(message)) return '⛔ Nur Jannik oder Mods dürfen einen Bosskampf starten.';
+    if(this.isMajorGameBusy())return '⏳ Ein anderes Community-Event läuft bereits. Der Boss wartet, bis der Chat wieder frei ist.';
     const settings = this.store.config('game_settings', { bossHp: 1000, bossDurationMs: 900_000 });
     const bossName = cleanName(args.join(' ') || 'Schattenkönig');
     if (!this.store.startBoss(randomUUID(), bossName, settings.bossHp, settings.bossDurationMs, now)) return '👾 Es läuft bereits ein Bosskampf.';
@@ -377,18 +437,20 @@ export class CommunityFeatures {
     return top.length ? `👾 Größter Schaden: ${top.map((p, i) => `${i + 1}. ${cleanName(p.displayName)} ${p.damage}`).join(' · ')}` : '👾 Noch keine Angriffe im aktuellen Kampf.';
   }
 
-  private attackBoss(message: ChatMessage, now: number): string {
+  private attackBoss(message: ChatMessage, now: number): string|undefined {
     const settings = this.store.config('game_settings', { attackMin: 20, attackMax: 60, attackCooldownMs: 10_000, bossWinXp: 30, bossTopBonusXp: 10 });
-    if (!this.store.activeBoss(now)) return '👾 Kein aktiver Boss. Frag Jannik nach !startboss.';
-    const left = this.store.useCooldown('boss-attack', message.senderUserId, now, settings.attackCooldownMs);
-    if (left) return `⏳ Nächster Angriff in ${Math.ceil(left / 1000)} Sek.`;
     const critical = this.random(1, 100) <= 10;
     const rawDamage = this.random(settings.attackMin, settings.attackMax) * (critical ? 2 : 1);
     const xp = this.store.config<Record<string, number>>('xp_settings', { dailyGameCap: 100 });
     const result = this.store.attackBoss(message.senderUserId, cleanName(message.senderDisplayName), rawDamage, now,
-      message.eventId, 2, settings.bossWinXp, settings.bossTopBonusXp, xp.dailyGameCap);
+      message.eventId, 2, settings.bossWinXp, settings.bossTopBonusXp, xp.dailyGameCap, settings.attackCooldownMs);
+    if(result.status==='duplicate')return undefined;
+    if(result.status==='cooldown'){
+      if(this.store.useCooldown('boss-attack-rejection-log',message.senderUserId,now,10_000)===0)this.store.recordCommunityEvent('boss.attack.rejected',{reason:'personal-cooldown'},now);
+      return `⏳ ${cleanName(message.senderDisplayName)}, dein nächster Angriff ist in ${Math.ceil((result.remainingMs||0)/1000)} Sek. bereit.`;
+    }
     if (result.status === 'missing') return '👾 Kein aktiver Boss. Frag Jannik nach !startboss.';
-    if (result.status === 'defeated') return `💥 ${critical ? 'Kritischer Treffer! ' : ''}${cleanName(message.senderDisplayName)} verursacht ${result.damage} Schaden — ${result.name} ist besiegt! Die Gruppe erhält XP.`;
+    if (result.status === 'defeated') return `💥 ${critical ? 'Kritischer Treffer! ' : ''}${cleanName(message.senderDisplayName)} verursacht ${result.damage} Schaden — ${result.name} ist besiegt! Ergebnis und tatsächlich gebuchte XP folgen gleich.`;
     return `⚔️ ${critical ? 'Kritischer Treffer! ' : ''}${cleanName(message.senderDisplayName)} verursacht ${result.damage} Schaden. ${result.name}: ${result.hp} HP übrig.`;
   }
 

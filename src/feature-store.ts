@@ -1035,6 +1035,49 @@ export class FeatureStore {
         INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (38, unixepoch()*1000);
       `))();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 39) {
+      if (currentVersion > 0) this.backupBeforeMigration(39);
+      this.db.transaction(() => this.db.exec(`
+        CREATE TABLE IF NOT EXISTS event_director_runs (
+          id TEXT PRIMARY KEY, event_type TEXT NOT NULL, started_at INTEGER NOT NULL,
+          completed_at INTEGER, participant_count INTEGER NOT NULL DEFAULT 0,
+          xp_total INTEGER NOT NULL DEFAULT 0, outcome TEXT, reason TEXT NOT NULL DEFAULT 'automatic'
+        );
+        CREATE INDEX IF NOT EXISTS event_director_runs_started ON event_director_runs(started_at DESC);
+        CREATE TABLE IF NOT EXISTS event_director_lease (
+          id INTEGER PRIMARY KEY CHECK(id=1), owner TEXT, lease_until INTEGER NOT NULL DEFAULT 0,
+          updated_at INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT OR IGNORE INTO event_director_lease(id,owner,lease_until,updated_at) VALUES(1,NULL,0,0);
+        INSERT OR IGNORE INTO feature_config(key,value) VALUES
+          ('event_director_settings','{"enabled":false,"autoBosses":false,"autoDrops":false,"autoWheel":false,"autoChaos":false,"autoSecretEvents":false,"autoStories":false,"minimumActivity":"normal","minimumGapMs":900000,"maxEventsPerHour":2,"bossMinIntervalMs":4500000,"bossMaxIntervalMs":6300000,"bossAdaptiveHp":true,"discordAnnouncements":false}');
+        INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (39, unixepoch()*1000);
+      `))();
+    }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 40) {
+      if (currentVersion > 0) this.backupBeforeMigration(40);
+      this.db.transaction(() => {
+        const participantColumns=new Set((this.db.prepare('PRAGMA table_info(boss_participants)').all() as Array<{name:string}>).map(column=>column.name));
+        if(!participantColumns.has('xp_awarded'))this.db.exec('ALTER TABLE boss_participants ADD COLUMN xp_awarded INTEGER NOT NULL DEFAULT 0 CHECK(xp_awarded>=0)');
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS boss_attack_events (
+            event_id TEXT PRIMARY KEY, boss_id TEXT NOT NULL REFERENCES boss_fights(id), user_id TEXT NOT NULL,
+            damage INTEGER NOT NULL CHECK(damage>=0), created_at INTEGER NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS boss_attack_events_boss ON boss_attack_events(boss_id,created_at);
+          CREATE TABLE IF NOT EXISTS boss_result_outbox (
+            boss_id TEXT PRIMARY KEY REFERENCES boss_fights(id), payload_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','sending','sent','failed')),
+            attempts INTEGER NOT NULL DEFAULT 0, available_at INTEGER NOT NULL, lease_until INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL, sent_at INTEGER, last_error TEXT
+          );
+          CREATE INDEX IF NOT EXISTS boss_result_outbox_due ON boss_result_outbox(status,available_at,lease_until);
+          INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (40, unixepoch()*1000);
+        `);
+      })();
+    }
   }
 
   private backupBeforeMigration(version: number): void {
@@ -2252,13 +2295,23 @@ export class FeatureStore {
   startBoss(id: string, name: string, hp: number, durationMs: number, now: number): boolean {
     try {
       this.db.transaction(() => {
+        const conflict=this.db.prepare(`SELECT 1 FROM community_chaos_events WHERE status='active'
+          UNION ALL SELECT 1 FROM community_interactive_events WHERE status='open' AND kind!='game_night'
+          UNION ALL SELECT 1 FROM mystery_drops WHERE status IN ('announced','claiming','resolving')
+          UNION ALL SELECT 1 FROM chaos_wheel_spins WHERE status IN ('spinning','active')
+          UNION ALL SELECT 1 FROM polls WHERE status='active'
+          UNION ALL SELECT 1 FROM imposter_rounds WHERE phase IN ('registration','role_distribution','playing','voting')
+          UNION ALL SELECT 1 FROM detective_rounds WHERE phase IN ('playing','results')
+          UNION ALL SELECT 1 FROM community_vault_rounds WHERE status='active'
+          UNION ALL SELECT 1 FROM seasonal_events WHERE active=1 LIMIT 1`).get();
+        if(conflict)throw new Error('Ein anderes Community-Event läuft bereits.');
         this.db.prepare('INSERT INTO boss_fights(id,name,max_hp,hp,status,started_at,expires_at) VALUES(?,?,?,?,?,?,?)')
           .run(id, name, hp, hp, 'active', now, now + durationMs);
         this.recordCommunityEvent('boss.started', { id, name, hp, expiresAt: now + durationMs }, now);
       })();
       return true;
     } catch (error) {
-      if (error instanceof Error && error.message.includes('UNIQUE')) return false;
+      if (error instanceof Error && (error.message.includes('UNIQUE')||error.message.includes('Ein anderes Community-Event'))) return false;
       throw error;
     }
   }
@@ -2266,30 +2319,35 @@ export class FeatureStore {
   activeBoss(now: number): { id: string; name: string; maxHp: number; hp: number; expiresAt: number } | undefined {
     const expired = this.db.prepare("SELECT id,name FROM boss_fights WHERE status='active' AND expires_at<=?").get(now) as { id: string; name: string } | undefined;
     if (expired) this.db.transaction(() => {
-      this.db.prepare("UPDATE boss_fights SET status='timeout',finished_at=? WHERE id=? AND status='active'").run(now, expired.id);
-      this.recordCommunityEvent('boss.timeout', { bossId: expired.id, name: expired.name }, now);
+      const changed=this.db.prepare("UPDATE boss_fights SET status='timeout',finished_at=? WHERE id=? AND status='active'").run(now, expired.id);
+      if(changed.changes){this.queueBossResultInside(expired.id,'timeout',expired.name,now);this.recordCommunityEvent('boss.timeout', { bossId: expired.id, name: expired.name }, now);}
     })();
     const row = this.db.prepare("SELECT id,name,max_hp,hp,expires_at FROM boss_fights WHERE status='active'").get() as
       { id: string; name: string; max_hp: number; hp: number; expires_at: number } | undefined;
     return row ? { id: row.id, name: row.name, maxHp: row.max_hp, hp: row.hp, expiresAt: row.expires_at } : undefined;
   }
 
-  attackBoss(userId: string, displayName: string, damage: number, now: number, eventId: string, xpOnHit: number, winXp: number, topBonusXp: number, dailyCap = 100):
-    { status: 'missing' | 'hit' | 'defeated'; name?: string; hp?: number; damage?: number; winner?: string } {
+  attackBoss(userId: string, displayName: string, damage: number, now: number, eventId: string, xpOnHit: number, winXp: number, topBonusXp: number, dailyCap = 100, cooldownMs = 0):
+    { status: 'missing' | 'duplicate' | 'cooldown' | 'hit' | 'defeated'; name?: string; hp?: number; damage?: number; winner?: string; remainingMs?:number; participants?:Array<{userId:string;displayName:string;damage:number;attacks:number;xpAwarded:number}>; totalDamage?:number; xpAwarded?:number; top?:string } {
     return this.db.transaction(() => {
+      if(this.db.prepare('SELECT 1 FROM boss_attack_events WHERE event_id=?').get(eventId))return {status:'duplicate' as const};
       const boss = this.db.prepare("SELECT id,name,max_hp,hp,expires_at FROM boss_fights WHERE status='active'").get() as
         { id: string; name: string; max_hp: number; hp: number; expires_at: number } | undefined;
       if (!boss || boss.expires_at <= now) {
-        if (boss) this.db.prepare("UPDATE boss_fights SET status='timeout',finished_at=? WHERE id=?").run(now, boss.id);
+        if (boss) {const changed=this.db.prepare("UPDATE boss_fights SET status='timeout',finished_at=? WHERE id=? AND status='active'").run(now, boss.id);if(changed.changes){this.queueBossResultInside(boss.id,'timeout',boss.name,now);this.recordCommunityEvent('boss.timeout',{bossId:boss.id,name:boss.name},now);}}
         return { status: 'missing' as const };
       }
+      const cooldown=this.db.prepare('SELECT last_used_at FROM feature_cooldowns WHERE feature=? AND user_id=?').get('boss-attack',userId) as {last_used_at:number}|undefined;
+      if(cooldown&&cooldownMs>0&&now-cooldown.last_used_at<cooldownMs)return {status:'cooldown' as const,remainingMs:cooldownMs-(now-cooldown.last_used_at)};
+      if(cooldownMs>0)this.db.prepare(`INSERT INTO feature_cooldowns(feature,user_id,last_used_at) VALUES('boss-attack',?,?) ON CONFLICT(feature,user_id) DO UPDATE SET last_used_at=excluded.last_used_at`).run(userId,now);
       const actualDamage = Math.min(damage, boss.hp);
       const hp = boss.hp - actualDamage;
+      this.db.prepare('INSERT INTO boss_attack_events(event_id,boss_id,user_id,damage,created_at) VALUES(?,?,?,?,?)').run(eventId,boss.id,userId,actualDamage,now);
       this.db.prepare(`INSERT INTO boss_participants(boss_id,user_id,display_name,damage,attacks) VALUES(?,?,?,?,1)
         ON CONFLICT(boss_id,user_id) DO UPDATE SET display_name=excluded.display_name,damage=boss_participants.damage+excluded.damage,attacks=boss_participants.attacks+1`)
         .run(boss.id, userId, displayName, actualDamage);
-      const participant = this.db.prepare('SELECT damage FROM boss_participants WHERE boss_id=? AND user_id=?').get(boss.id, userId) as { damage: number };
-      this.awardXpInside(`bonus:${eventId}`, userId, displayName, xpOnHit, 'bonus:boss-participation', now, dailyCap);
+      const hitXp=this.awardXpInside(`bonus:boss-hit:${boss.id}:${eventId}`, userId, displayName, xpOnHit, 'bonus:boss-participation', now, dailyCap);
+      if(hitXp)this.db.prepare('UPDATE boss_participants SET xp_awarded=xp_awarded+? WHERE boss_id=? AND user_id=?').run(hitXp,boss.id,userId);
       if (hp > 0) {
         this.db.prepare("UPDATE boss_fights SET hp=? WHERE id=? AND status='active'").run(hp, boss.id);
         this.recordCommunityEvent('boss.attack', { bossId: boss.id, name: boss.name, userId, displayName, damage: actualDamage, hp }, now);
@@ -2300,13 +2358,53 @@ export class FeatureStore {
       if (defeated.changes) {
         const participants = this.db.prepare('SELECT user_id,display_name,damage FROM boss_participants WHERE boss_id=?').all(boss.id) as
           Array<{ user_id: string; display_name: string; damage: number }>;
-        for (const p of participants) this.awardXpInside(`bonus:boss-win:${boss.id}:${p.user_id}`, p.user_id, p.display_name, winXp, 'bonus:boss-win', now, dailyCap);
-        const top = participants.sort((a, b) => b.damage - a.damage)[0];
-        if (top) this.awardXpInside(`bonus:boss-top:${boss.id}:${top.user_id}`, top.user_id, top.display_name, topBonusXp, 'bonus:boss-top', now, dailyCap);
+        for (const p of participants) {const granted=this.awardXpInside(`bonus:boss-win:${boss.id}:${p.user_id}`, p.user_id, p.display_name, winXp, 'bonus:boss-win', now, dailyCap);if(granted)this.db.prepare('UPDATE boss_participants SET xp_awarded=xp_awarded+? WHERE boss_id=? AND user_id=?').run(granted,boss.id,p.user_id);}
+        const top = [...participants].sort((a, b) => b.damage-a.damage||a.user_id.localeCompare(b.user_id))[0];
+        if (top) {const granted=this.awardXpInside(`bonus:boss-top:${boss.id}:${top.user_id}`, top.user_id, top.display_name, topBonusXp, 'bonus:boss-top', now, dailyCap);if(granted)this.db.prepare('UPDATE boss_participants SET xp_awarded=xp_awarded+? WHERE boss_id=? AND user_id=?').run(granted,boss.id,top.user_id);}
+        const summary=this.bossParticipantRows(boss.id),totalDamage=summary.reduce((total,p)=>total+p.damage,0),xpAwarded=summary.reduce((total,p)=>total+p.xpAwarded,0);
+        this.queueBossResultInside(boss.id,'defeated',boss.name,now,{participants:summary,totalDamage,xpAwarded,...(top?{top:top.display_name}:{})});
         this.recordCommunityEvent('boss.defeated', { bossId: boss.id, name: boss.name, userId, displayName, damage: actualDamage, participants: participants.length }, now);
+        return { status: 'defeated' as const, name: boss.name, hp: 0, damage: actualDamage, winner: displayName,participants:summary,totalDamage,xpAwarded,...(top?{top:top.display_name}:{}) };
       }
       return { status: 'defeated' as const, name: boss.name, hp: 0, damage: actualDamage, winner: displayName };
     })();
+  }
+
+  private bossParticipantRows(bossId:string):Array<{userId:string;displayName:string;damage:number;attacks:number;xpAwarded:number}> {
+    return this.db.prepare('SELECT user_id userId,display_name displayName,damage,attacks,xp_awarded xpAwarded FROM boss_participants WHERE boss_id=? ORDER BY damage DESC,user_id').all(bossId) as Array<{userId:string;displayName:string;damage:number;attacks:number;xpAwarded:number}>;
+  }
+
+  private queueBossResultInside(bossId:string,status:'defeated'|'timeout'|'ended',name:string,now:number,stats?:{participants:Array<{userId:string;displayName:string;damage:number;attacks:number;xpAwarded:number}>;totalDamage:number;xpAwarded:number;top?:string}):void {
+    const participants=stats?.participants??this.bossParticipantRows(bossId);
+    const xpAwarded=stats?.xpAwarded??participants.reduce((sum,p)=>sum+p.xpAwarded,0);
+    const payload={bossId,status,name:name.slice(0,80),participants,totalDamage:stats?.totalDamage??participants.reduce((sum,p)=>sum+p.damage,0),xpAwarded,top:stats?.top??participants[0]?.displayName};
+    this.db.prepare("INSERT OR IGNORE INTO boss_result_outbox(boss_id,payload_json,status,attempts,available_at,created_at) VALUES(?,?,'pending',0,?,?)").run(bossId,JSON.stringify(payload),now,now);
+  }
+
+  claimBossResultMessages(now=Date.now(),limit=10):Array<{id:string;attempt:number;message:string}> {
+    return this.db.transaction(()=>{
+      const rows=this.db.prepare("SELECT boss_id,payload_json,attempts FROM boss_result_outbox WHERE attempts<10 AND ((status='pending' AND available_at<=?) OR (status='sending' AND lease_until<=?)) ORDER BY created_at LIMIT ?").all(now,now,Math.max(1,Math.min(10,limit))) as Array<{boss_id:string;payload_json:string;attempts:number}>;
+      const claim=this.db.prepare("UPDATE boss_result_outbox SET status='sending',attempts=attempts+1,lease_until=? WHERE boss_id=? AND ((status='pending' AND available_at<=?) OR (status='sending' AND lease_until<=?))");
+      const result=[] as Array<{id:string;attempt:number;message:string}>;
+      for(const row of rows){if(!claim.run(now+15*60_000,row.boss_id,now,now).changes)continue;const payload=JSON.parse(row.payload_json) as {status:string;name:string;participants:Array<{displayName:string;damage:number;xpAwarded:number}>;totalDamage:number;xpAwarded:number;top?:string};result.push({id:row.boss_id,attempt:row.attempts+1,message:formatBossResultMessage(payload)});}
+      return result;
+    })();
+  }
+
+  finishBossResultDelivery(id:string,accepted:boolean,now=Date.now(),error=''):void {
+    this.db.transaction(()=>{
+      const row=this.db.prepare('SELECT attempts FROM boss_result_outbox WHERE boss_id=?').get(id) as {attempts:number}|undefined;if(!row)return;
+      if(accepted)this.db.prepare("UPDATE boss_result_outbox SET status='sent',sent_at=?,lease_until=0,last_error=NULL WHERE boss_id=?").run(now,id);
+      else if(row.attempts>=10)this.db.prepare("UPDATE boss_result_outbox SET status='failed',lease_until=0,last_error=? WHERE boss_id=?").run(error.slice(0,180)||'Chatversand fehlgeschlagen',id);
+      else this.db.prepare("UPDATE boss_result_outbox SET status='pending',available_at=?,lease_until=0,last_error=? WHERE boss_id=?").run(now+Math.min(15*60_000,30_000*2**Math.max(0,row.attempts-1)),error.slice(0,180)||'Chatversand fehlgeschlagen',id);
+    })();
+  }
+
+  retryBossResult(id:string,now=Date.now()):boolean {return this.db.prepare("UPDATE boss_result_outbox SET status='pending',attempts=0,available_at=?,lease_until=0,last_error=NULL WHERE boss_id=? AND status='failed'").run(now,id).changes>0;}
+
+  bossHistory(limit=20):Array<Record<string,unknown>> {
+    const rows=this.db.prepare('SELECT id,name,max_hp maxHp,hp,status,started_at startedAt,finished_at finishedAt,reward_granted rewardGranted FROM boss_fights ORDER BY started_at DESC LIMIT ?').all(Math.max(1,Math.min(50,limit))) as Array<{id:string;name:string;maxHp:number;hp:number;status:string;startedAt:number;finishedAt:number|null;rewardGranted:number}>;
+    return rows.map(row=>{const participants=this.bossParticipantRows(row.id);const delivery=this.db.prepare('SELECT status,attempts,sent_at sentAt,last_error lastError FROM boss_result_outbox WHERE boss_id=?').get(row.id) as {status:string;attempts:number;sentAt:number|null;lastError:string|null}|undefined;return {...row,rewardGranted:Boolean(row.rewardGranted),participants,totalDamage:participants.reduce((sum,p)=>sum+p.damage,0),xpAwarded:participants.reduce((sum,p)=>sum+p.xpAwarded,0),top:participants[0]?.displayName??null,delivery:delivery??{status:'not-recorded',attempts:0,sentAt:null,lastError:null}};});
   }
 
   bossTop(limit = 5): Array<{ displayName: string; damage: number }> {
@@ -2322,7 +2420,7 @@ export class FeatureStore {
       const boss = this.db.prepare("SELECT id,name FROM boss_fights WHERE status='active'").get() as { id: string; name: string } | undefined;
       if (!boss) return false;
       const result = this.db.prepare("UPDATE boss_fights SET status='ended',finished_at=? WHERE id=? AND status='active'").run(now, boss.id);
-      if (result.changes) this.recordCommunityEvent('boss.ended', { bossId: boss.id, name: boss.name }, now);
+      if (result.changes) {this.queueBossResultInside(boss.id,'ended',boss.name,now);this.recordCommunityEvent('boss.ended', { bossId: boss.id, name: boss.name }, now);}
       return result.changes > 0;
     })();
   }
@@ -2369,6 +2467,15 @@ export class FeatureStore {
   recordCommunityEvent(type: string, payload: unknown, now: number): void {
     this.db.prepare('INSERT INTO community_events(type,payload_json,created_at) VALUES(?,?,?)').run(type, JSON.stringify(payload ?? {}), now);
     const data=(payload&&typeof payload==='object'?payload:{}) as Record<string,unknown>;
+    if(type==='boss.started'||type==='boss.defeated'||type==='boss.timeout'){
+      const director=this.config<Record<string,unknown>>('event_director_settings',{}),discord=this.config<Record<string,unknown>>('discord_integration',{});
+      if(director.discordAnnouncements===true&&discord.enabled===true&&typeof discord.rewardsChannelId==='string'&&discord.rewardsChannelId){
+        const status=type==='boss.started'?'active':type==='boss.defeated'?'completed':'failed',bossId=String(data.id||data.bossId||`boss:${now}`);
+        const safe={status,title:String(data.name||'Community-Boss').slice(0,100),hp:Math.max(0,Number(data.hp)||0),expiresAt:Math.max(0,Number(data.expiresAt)||0),participants:Math.max(0,Number(data.participants)||0),discordMention:{mode:'none'}};
+        const id=randomUUID();this.db.prepare("INSERT INTO discord_event_outbox(id,event_type,aggregate_id,payload_json,created_at,available_at) VALUES(?,'event.director.boss',?,?,?,?)")
+          .run(id,bossId,JSON.stringify(safe),now,now);
+      }
+    }
     if(type==='quest.status.changed'&&data.status==='active')this.enqueueDiscordEvent('quest.started',String(data.id||`quest:${now}`),{title:String(data.title||'Eine Community-Quest'),status:'active'},now);
     if(type==='quest.status.changed'&&data.status==='completed')this.enqueueDiscordEvent('quest.completed',String(data.id||`quest:${now}`),{title:String(data.title||'Eine Community-Quest'),status:'completed'},now);
     if(type==='elio.rare')this.enqueueDiscordEvent('elio.rare',String(data.id||`elio:${now}`),{message:String(data.message||'Elio hat ein seltenes Ereignis erlebt.')},now);
@@ -2500,4 +2607,13 @@ function publicPoll(poll: PollRecord): Record<string, unknown> {
   return { question: poll.question, options: poll.options.map(({ label, votes, percent }) => ({ label, votes, percent })),
     status: poll.status, startsAt: poll.startsAt, endsAt: poll.endsAt, endedAt: poll.endedAt,
     winnerOption: poll.winnerOption, tied: poll.tied, totalVotes: poll.totalVotes };
+}
+
+function formatBossResultMessage(payload:{status:string;name:string;participants:Array<{displayName:string;damage:number;xpAwarded:number}>;totalDamage:number;xpAwarded:number;top?:string}):string {
+  const participants=payload.participants||[],count=participants.length,top=payload.top?` 🏆 Meiste Treffer: ${payload.top} (${participants.find(p=>p.displayName===payload.top)?.damage||0} Schaden).`:'';
+  const payouts=participants.filter(p=>p.xpAwarded>0).sort((a,b)=>b.xpAwarded-a.xpAwarded||b.damage-a.damage).slice(0,3);
+  const payoutText=payouts.length?` ✨ Tatsächlich verbuchte XP: +${payload.xpAwarded} insgesamt${payouts.length?` · ${payouts.map(p=>`${p.displayName} +${p.xpAwarded}`).join(', ')}`:''}.`:' ✨ Für diesen Kampf wurden keine XP gutgeschrieben.';
+  const intro=payload.status==='defeated'?`👹 BOSS BESIEGT! ${payload.name} wurde gemeinsam besiegt.`:payload.status==='timeout'?`👹 BOSS-KAMPF BEENDET: ${payload.name} ist entkommen.`:`👹 BOSS-KAMPF ABGESCHLOSSEN: ${payload.name}.`;
+  const text=`${intro} ⚔️ ${count} ${count===1?'Teilnehmer':'Teilnehmer'} · ${payload.totalDamage} Gesamtschaden.${top}${payoutText}`;
+  return Array.from(text).slice(0,460).join('');
 }

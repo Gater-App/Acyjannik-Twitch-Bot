@@ -69,6 +69,15 @@ export class CommunityVault {
     const secret=generateCode(),id=randomUUID();
     const created=this.store.miniGameTransaction(db=>{
       const active=db.prepare("SELECT 1 FROM community_vault_rounds WHERE status='active'").get();if(active)return false;
+      const conflict=db.prepare(`SELECT 1 FROM community_chaos_events WHERE status='active'
+        UNION ALL SELECT 1 FROM community_interactive_events WHERE status='open' AND kind!='game_night'
+        UNION ALL SELECT 1 FROM mystery_drops WHERE status IN ('announced','claiming','resolving')
+        UNION ALL SELECT 1 FROM chaos_wheel_spins WHERE status IN ('spinning','active')
+        UNION ALL SELECT 1 FROM boss_fights WHERE status='active'
+        UNION ALL SELECT 1 FROM polls WHERE status='active'
+        UNION ALL SELECT 1 FROM imposter_rounds WHERE phase IN ('registration','role_distribution','playing','voting')
+        UNION ALL SELECT 1 FROM detective_rounds WHERE phase IN ('playing','results')
+        UNION ALL SELECT 1 FROM seasonal_events WHERE active=1 LIMIT 1`).get();if(conflict)return false;
       const previous=db.prepare("SELECT started_at FROM community_vault_rounds ORDER BY started_at DESC LIMIT 1").get() as {started_at:number}|undefined;
       if(previous&&now-previous.started_at<cfg.cooldownMinutes*60_000)return false;
       if(automatic){const lastAuto=db.prepare("SELECT started_at FROM community_vault_rounds WHERE is_auto=1 ORDER BY started_at DESC LIMIT 1").get() as {started_at:number}|undefined;
