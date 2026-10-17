@@ -251,7 +251,7 @@ export class FeatureStore {
         INSERT OR IGNORE INTO feature_config(key,value) VALUES
           ('modules','{"xp":true,"events":true,"eightBall":true,"rps":true,"guess":true,"duels":true,"boss":true,"customCommands":true}'),
           ('8ball_answers', '${JSON.stringify(DEFAULT_8BALL_ANSWERS)}'),
-          ('xp_settings', '{"activityXp":5,"activityCooldownMs":60000,"dailyGameCap":100,"rpsWinXp":10,"guessWinXp":20,"duelWinXp":15,"levelBase":100}'),
+          ('xp_settings', '{"activityXp":5,"activityCooldownMs":60000,"dailyGameCap":100,"dailyRewardXp":25,"rpsWinXp":10,"guessWinXp":20,"duelWinXp":15,"levelBase":100}'),
           ('game_settings', '{"guessMin":1,"guessMax":100,"guessTimeoutMs":120000,"guessAttempts":5,"duelTtlMs":60000,"bossHp":1000,"bossDurationMs":900000,"attackMin":20,"attackMax":60,"attackCooldownMs":10000,"bossWinXp":30,"bossTopBonusXp":10}');
         INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (1, unixepoch()*1000);
       `);

@@ -42,7 +42,7 @@ import type { TwitchVipService } from './twitch-vip.js';
 import { VipExperience } from './vip-experience.js';
 import { VIP_ADMIN_CARD, VIP_ADMIN_SCRIPT, VIP_MODERATOR_CARD, VIP_MODERATOR_SCRIPT } from './vip-experience-ui.js';
 import { levelForXp, xpAtLevel } from './community-features.js';
-import { COMMUNITY_WORLD_BADGES } from './community-world.js';
+import { COMMUNITY_WORLD_BADGES, CommunityWorld } from './community-world.js';
 
 interface Session { userId: string; login: string; csrf: string; expiresAt: number; role: 'admin'|'moderator'; }
 interface RuntimeStatus { twitchConnected: boolean; channel: string; startedAt: number; lastError?: string; queued?: number; suppressed?: number; streamLive?: boolean|undefined; streamStatusCheckedAt?: number; streamSnapshot?:{id?:string;title?:string;gameName?:string;viewerCount?:number;startedAt?:string}; lastChatReceiveAt?:number; lastBotChatSendAt?:number; lastBotChatSendErrorAt?:number; chatResponse?: { profile: string; suppressed: number; deferred: number }; }
@@ -154,6 +154,7 @@ window.addEventListener('hashchange',route);route();
 const SETTINGS_SCRIPT = `api('settings').then(s=>document.querySelector('#settings-json').value=JSON.stringify(s,null,2)).catch(e=>show(e.message));document.querySelector('#settings-form').onsubmit=async e=>{e.preventDefault();try{const value=JSON.parse(document.querySelector('#settings-json').value);await api('settings','POST',value);show('Einstellungen gespeichert.')}catch(x){show(x.message)}};document.querySelector('#boss-form').onsubmit=async e=>{e.preventDefault();const v=Object.fromEntries(new FormData(e.currentTarget));v.hp=Number(v.hp);v.durationMs=Number(v.durationMinutes)*60000;delete v.durationMinutes;try{await api('boss','POST',v);show('Bosskampf gestartet.');refresh()}catch(x){show(x.message)}};document.querySelector('#boss-end').onclick=async()=>{try{await api('boss','POST',{action:'end'});show('Bosskampf beendet.');refresh()}catch(x){show(x.message)}};async function renderCommandAdmin(){try{const c=await api('commands'),root=document.querySelector('#command-manager');root.replaceChildren();for(const command of c.commands){const row=document.createElement('div'),name=document.createElement('span');name.textContent='!'+command.name+(command.alias?' ('+command.alias+')':'')+' · '+(command.enabled?'aktiv':'inaktiv')+' ';row.append(name);const edit=document.createElement('button');edit.textContent='Bearbeiten';edit.onclick=()=>{const f=document.querySelector('#command-form');f.elements.namedItem('name').value=command.name;f.elements.namedItem('response').value=command.response;f.elements.namedItem('permission').value=command.permission;f.elements.namedItem('cooldownSeconds').value=Math.round(command.cooldownMs/1000);f.scrollIntoView({behavior:'smooth',block:'center'})};row.append(edit);const toggle=document.createElement('button');toggle.textContent=command.enabled?'Deaktivieren':'Aktivieren';toggle.onclick=async()=>{try{await api('commands','POST',{...command,enabled:!command.enabled});show('Chatbefehl geändert.');renderCommandAdmin()}catch(x){show(x.message)}};row.append(toggle);const del=document.createElement('button');del.textContent='Löschen';del.onclick=async()=>{try{await api('commands/delete','POST',{name:command.name});show('Chatbefehl gelöscht.');renderCommandAdmin()}catch(x){show(x.message)}};row.append(del);root.append(row)}}catch(x){show(x.message)}}renderCommandAdmin();setInterval(renderCommandAdmin,15000);`;
 
 export class DashboardServer {
+  private readonly communityWorld:CommunityWorld;
   private playDiscordGame:((message:ChatMessage,game:'8ball'|'rps'|'guess',args:string[],now:number)=>string)|undefined;
   private server: http.Server | undefined;
   private readonly sessions = new Map<string, Session>();
@@ -196,7 +197,7 @@ export class DashboardServer {
     private readonly vipService?:TwitchVipService,
     private readonly vipExperience?:VipExperience,
     private readonly vipAuthorizationUrl?:()=>string,
-  ) { this.adminIds = new Set((process.env.DASHBOARD_ADMIN_IDS || '').split(/[ ,]+/u).filter(Boolean)); }
+  ) { this.adminIds = new Set((process.env.DASHBOARD_ADMIN_IDS || '').split(/[ ,]+/u).filter(Boolean)); this.communityWorld=new CommunityWorld(store); }
 
   setDiscordGameHandler(handler:(message:ChatMessage,game:'8ball'|'rps'|'guess',args:string[],now:number)=>string):void { this.playDiscordGame=handler; }
 
@@ -540,7 +541,7 @@ export class DashboardServer {
       if(session.role!=='admin'){this.json(res,403,{error:'Nur Jannik kann die Discord-Verbindung einsehen.'});return;}
       const settings=this.store.config<typeof DISCORD_DEFAULTS>('discord_integration',DISCORD_DEFAULTS);
       const lastSeen=this.store.state<{at:number}|null>('discord_integration_last_seen',null)?.at??null;
-      this.json(res,200,{settings:{...DISCORD_DEFAULTS,...settings},outbox:this.store.discordOutboxStats(),failures:this.store.discordOutboxFailures(),serviceConfigured:this.discordIntegrationSecret.length>=32,connection:{connected:Boolean(lastSeen&&Date.now()-lastSeen<60_000),lastSeen}});return;
+      this.json(res,200,{settings:{...DISCORD_DEFAULTS,...settings},dailyRewardXp:this.store.config<{dailyRewardXp?:number}>('xp_settings',{}).dailyRewardXp??25,outbox:this.store.discordOutboxStats(),failures:this.store.discordOutboxFailures(),serviceConfigured:this.discordIntegrationSecret.length>=32,connection:{connected:Boolean(lastSeen&&Date.now()-lastSeen<60_000),lastSeen}});return;
     }
     if(route==='discord/channels'&&req.method==='GET'){
       if(session.role!=='admin'){this.json(res,403,{error:'Nur Jannik kann Discord-Kanäle einsehen.'});return;}
@@ -561,6 +562,7 @@ export class DashboardServer {
       const channelKeys=['ideasChannelId','rewardsChannelId','liveChannelId','dropChannelId'] as const;
       for(const key of channelKeys){const value=String(body[key]??'').trim();if(value&&!/^\d{17,20}$/u.test(value)){this.json(res,400,{error:'Eine Kanal-ID ist ungültig.'});return;}next[key]=value;}
       const oldSettings=this.store.config<typeof DISCORD_DEFAULTS>('discord_integration',DISCORD_DEFAULTS);
+      if(body.dailyRewardXp!==undefined&&(!Number.isInteger(Number(body.dailyRewardXp))||Number(body.dailyRewardXp)<0||Number(body.dailyRewardXp)>1000)){this.json(res,400,{error:'Die tägliche XP-Belohnung muss zwischen 0 und 1.000 liegen.'});return;}
       const selectedChannelChanged=channelKeys.some((key)=>next[key]!==oldSettings[key]);
       const catalog=this.store.state<{at:number;channels:Array<{id:string;usable:boolean}>}|null>('discord_channel_catalog',null);
       if(selectedChannelChanged&&channelKeys.some((key)=>next[key]!==oldSettings[key]&&next[key]!=='')){
@@ -568,7 +570,7 @@ export class DashboardServer {
       }
       const rewardEnabled=next.notifyLevels||next.notifyDrops||next.notifyQuests||next.notifySeasonal;
       if(next.enabled&&(this.discordIntegrationSecret.length<32||(next.notifyIdeas&&!next.ideasChannelId)||(rewardEnabled&&!next.rewardsChannelId)||(next.notifyLive&&!next.liveChannelId)||(next.elioEnabled&&!next.accountLinkEnabled)||(next.discordDropsEnabled&&(!next.dropChannelId||!next.accountLinkEnabled))||((next.discordEightBallEnabled||next.discordRpsEnabled||next.discordGuessEnabled||next.discordDuelsEnabled||next.discordProfilesEnabled||next.discordVipChaosEnabled)&&!next.accountLinkEnabled)||(next.discordVipChaosEnabled&&(!this.vipService||!this.vipExperience)))){this.json(res,409,{error:'Für die Aktivierung fehlen noch eine Verknüpfung, VIP-Prüfung oder ein gültiger Zielkanal.'});return;}
-      this.store.setConfig('discord_integration',next);this.audit(session,'discord-settings','integration',{enabled:next.enabled,configuredChannels:[next.ideasChannelId,next.rewardsChannelId,next.liveChannelId,next.dropChannelId].filter(Boolean).length},now);
+      this.store.setConfig('discord_integration',next);if(body.dailyRewardXp!==undefined){const xp=this.store.config<Record<string,number>>('xp_settings',{});this.store.setConfig('xp_settings',{...xp,dailyRewardXp:Number(body.dailyRewardXp)});}this.audit(session,'discord-settings','integration',{enabled:next.enabled,configuredChannels:[next.ideasChannelId,next.rewardsChannelId,next.liveChannelId,next.dropChannelId].filter(Boolean).length,dailyRewardXp:body.dailyRewardXp},now);
       this.json(res,200,{ok:true,settings:next});return;
     }
     if(route==='discord/retry'&&req.method==='POST'){
@@ -997,7 +999,7 @@ export class DashboardServer {
         const expected = new Set(['xp_settings','game_settings','8ball_answers','level_titles','events','quest_settings','poll_settings','widget_settings']);
         if (Object.keys(body).some((key) => !expected.has(key))) throw new Error('Unbekannter Einstellungsbereich.');
         const xp = normalizeNumbers(body.xp_settings, this.store.config('xp_settings', {}), {
-          activityXp: [0,100], activityCooldownMs: [10_000,3_600_000], dailyGameCap: [0,10_000],
+          activityXp: [0,100], activityCooldownMs: [10_000,3_600_000], dailyGameCap: [0,10_000], dailyRewardXp: [0,1_000],
           rpsWinXp: [0,1_000], guessWinXp: [0,1_000], duelWinXp: [0,1_000], levelBase: [1,100_000],
         });
         const game = normalizeNumbers(body.game_settings, this.store.config('game_settings', {}), {
@@ -1216,6 +1218,75 @@ export class DashboardServer {
       }
       const profile=this.store.xp(twitchUserId),rank=this.store.xpRank(twitchUserId),level=1+Math.floor(Math.sqrt(Math.max(0,profile.xp)/base)),floor=(level-1)**2*base,next=level**2*base;
       this.json(res,200,{view:'profile',displayName:profile.displayName,rank:rank||null,xp:profile.xp,level,nextLevelXp:next,progressXp:Math.max(0,profile.xp-floor),progressNeeded:Math.max(1,next-floor)});return;
+    }
+    if(url.pathname==='/api/discord/v1/community/daily'&&req.method==='POST'){
+      const body=await this.readJson(req),settings=this.store.config<typeof DISCORD_DEFAULTS>('discord_integration',DISCORD_DEFAULTS);
+      if(!body||typeof body.eventId!=='string'||!/^[0-9]{17,20}$/u.test(body.eventId)||typeof body.discordUserId!=='string'||!/^[0-9]{17,20}$/u.test(body.discordUserId)||typeof body.displayName!=='string'){this.json(res,400,{error:'Ungültige Tagesbelohnung.'});return;}
+      if(!settings.enabled||!settings.accountLinkEnabled){this.json(res,409,{error:'Tagesbelohnungen in Discord sind derzeit nicht verfügbar.'});return;}
+      if(this.rejectRateLimit(res,this.rates.consume('discord-daily',body.discordUserId,4,60_000),'Bitte warte kurz, bevor du es erneut versuchst.'))return;
+      const userId=this.store.communityTwitchIdForDiscord(body.discordUserId);if(!userId){this.json(res,403,{error:'Verbinde zuerst dein Twitch-Konto mit /verknuepfen.'});return;}
+      const now=Date.now(),name=clean(body.displayName,48)||'Community-Mitglied',xp=this.store.config<{dailyRewardXp?:number;dailyGameCap?:number}>('xp_settings',{}),configured=Math.max(0,Math.min(1000,Math.floor(Number(xp.dailyRewardXp??25)||0))),cap=Math.max(0,Math.floor(Number(xp.dailyGameCap??100)||0));
+      const result=this.store.processDiscordEvent(body.eventId,now,()=>{
+        if(configured===0)return {status:'disabled',awarded:0};
+        const start=new Date(now);start.setUTCHours(0,0,0,0);
+        const earned=this.store.miniGameQuery(db=>(db.prepare("SELECT COALESCE(SUM(amount),0) total FROM xp_ledger WHERE user_id=? AND reason LIKE 'bonus:%' AND created_at>=?").get(userId,start.getTime()) as {total:number}).total);
+        const amount=Math.min(configured,Math.max(0,cap-earned));if(!amount)return {status:'cap',awarded:0};
+        const remaining=this.store.useCooldown('discord-daily',userId,now,24*60*60_000);if(remaining)return {status:'cooldown',awarded:0,remainingMs:remaining};
+        const awarded=this.store.awardXp(`bonus:discord-daily:${body.eventId}`,userId,name,amount,'bonus:discord-daily',now,cap);
+        return {status:awarded?'claimed':'cap',awarded};
+      });
+      const next=this.store.miniGameQuery(db=>(db.prepare("SELECT last_used_at at FROM feature_cooldowns WHERE feature='discord-daily' AND user_id=?").get(userId) as {at:number}|undefined)?.at||0);
+      this.json(res,200,{...result.result,nextAvailableAt:next?next+24*60*60_000:null,duplicateEvent:result.duplicate});return;
+    }
+    if(url.pathname==='/api/discord/v1/community/quests'&&req.method==='POST'){
+      const body=await this.readJson(req),settings=this.store.config<typeof DISCORD_DEFAULTS>('discord_integration',DISCORD_DEFAULTS);
+      if(!body||typeof body.discordUserId!=='string'||!/^[0-9]{17,20}$/u.test(body.discordUserId)){this.json(res,400,{error:'Ungültige Questabfrage.'});return;}
+      if(!settings.enabled||!settings.accountLinkEnabled||!(settings.discordProfilesEnabled||settings.profilesEnabled)){this.json(res,409,{error:'Community-Fortschritt in Discord ist derzeit nicht aktiviert.'});return;}
+      if(this.rejectRateLimit(res,this.rates.consume('discord-quests',body.discordUserId,10,60_000),'Bitte warte kurz, bevor du weitere Quests abfragst.'))return;
+      const userId=this.store.communityTwitchIdForDiscord(body.discordUserId);if(!userId){this.json(res,403,{error:'Verbinde zuerst dein Twitch-Konto mit /verknuepfen.'});return;}
+      const q=this.store.config<{enabled?:boolean;chatEnabled?:boolean}>('quest_settings',{}),petEnabled=Boolean(settings.elioEnabled&&this.arcade?.settings().petEnabled),gamesEnabled=Boolean(settings.discordEightBallEnabled||settings.discordRpsEnabled||settings.discordGuessEnabled||settings.discordDuelsEnabled);
+      const state=this.communityWorld.snapshot(userId,this.store.xp(userId).displayName,Date.now(),{petEnabled,questsEnabled:q.enabled===true&&q.chatEnabled===true,gamesEnabled});
+      this.json(res,200,{missions:state.missions.filter(m=>m.cadence==='daily'||m.cadence==='weekly')});return;
+    }
+    if(url.pathname==='/api/discord/v1/community/achievements'&&req.method==='POST'){
+      const body=await this.readJson(req),settings=this.store.config<typeof DISCORD_DEFAULTS>('discord_integration',DISCORD_DEFAULTS);
+      if(!body||typeof body.discordUserId!=='string'||!/^[0-9]{17,20}$/u.test(body.discordUserId)){this.json(res,400,{error:'Ungültige Erfolgsabfrage.'});return;}
+      if(!settings.enabled||!settings.accountLinkEnabled||!(settings.discordProfilesEnabled||settings.profilesEnabled)){this.json(res,409,{error:'Community-Profile in Discord sind derzeit nicht aktiviert.'});return;}
+      if(this.rejectRateLimit(res,this.rates.consume('discord-achievements',body.discordUserId,10,60_000),'Bitte warte kurz, bevor du weitere Erfolge abfragst.'))return;
+      const userId=this.store.communityTwitchIdForDiscord(body.discordUserId);if(!userId){this.json(res,403,{error:'Verbinde zuerst dein Twitch-Konto mit /verknuepfen.'});return;}
+      const profile=this.store.communityXpProfileForDiscord(body.discordUserId);this.communityWorld.snapshot(userId,this.store.xp(userId).displayName,Date.now(),{petEnabled:Boolean(settings.elioEnabled&&this.arcade?.settings().petEnabled),questsEnabled:false});
+      const badges=this.store.communityXpProfileForDiscord(body.discordUserId)?.badges||[];
+      this.json(res,200,{badges:badges.flatMap(b=>{const definition=COMMUNITY_WORLD_BADGES.find(x=>x.id===b.id);return definition?[{...definition,unlockedAt:b.unlockedAt}]:[];}),vipAchievements:this.vipExperience?.achievements(userId)||[],displayName:profile?.displayName||'Community-Mitglied'});return;
+    }
+    if(url.pathname==='/api/discord/v1/community/elio/top'&&req.method==='POST'){
+      const body=await this.readJson(req),settings=this.store.config<typeof DISCORD_DEFAULTS>('discord_integration',DISCORD_DEFAULTS);
+      if(!body||typeof body.discordUserId!=='string'||!/^[0-9]{17,20}$/u.test(body.discordUserId)){this.json(res,400,{error:'Ungültige Elio-Ranglistenabfrage.'});return;}
+      if(!settings.enabled||!settings.accountLinkEnabled||!settings.elioEnabled||!this.arcade?.settings().petEnabled){this.json(res,409,{error:'Elio ist in Discord derzeit nicht verfügbar.'});return;}
+      if(this.rejectRateLimit(res,this.rates.consume('discord-elio-top',body.discordUserId,10,60_000),'Bitte warte kurz, bevor du weitere Elio-Ranglisten abfragst.'))return;
+      if(!this.store.communityTwitchIdForDiscord(body.discordUserId)){this.json(res,403,{error:'Verbinde zuerst dein Twitch-Konto mit /verknuepfen.'});return;}
+      const entries=this.store.miniGameQuery(db=>db.prepare("SELECT u.display_name displayName,COUNT(*) actions FROM community_pet_interactions p JOIN xp_users u ON u.user_id=p.user_id WHERE p.created_at>=? GROUP BY p.user_id ORDER BY actions DESC,p.user_id LIMIT 10").all(Date.now()-7*86_400_000) as Array<{displayName:string;actions:number}>);
+      this.json(res,200,{periodDays:7,entries});return;
+    }
+    if(url.pathname==='/api/discord/v1/community/duel-stats'&&req.method==='POST'){
+      const body=await this.readJson(req),settings=this.store.config<typeof DISCORD_DEFAULTS>('discord_integration',DISCORD_DEFAULTS);
+      if(!body||typeof body.discordUserId!=='string'||!/^[0-9]{17,20}$/u.test(body.discordUserId)){this.json(res,400,{error:'Ungültige Duellstatistik.'});return;}
+      if(!settings.enabled||!settings.accountLinkEnabled||!settings.discordDuelsEnabled){this.json(res,409,{error:'Discord-Duelle sind derzeit nicht aktiviert.'});return;}
+      if(this.rejectRateLimit(res,this.rates.consume('discord-duel-stats',body.discordUserId,10,60_000),'Bitte warte kurz, bevor du weitere Duellstatistiken abfragst.'))return;
+      const userId=this.store.communityTwitchIdForDiscord(body.discordUserId);if(!userId){this.json(res,403,{error:'Verbinde zuerst dein Twitch-Konto mit /verknuepfen.'});return;}
+      const row=this.store.miniGameQuery(db=>db.prepare("SELECT SUM(CASE WHEN status='resolved' AND winner_id=? THEN 1 ELSE 0 END) wins,SUM(CASE WHEN status='resolved' AND winner_id IS NOT NULL AND winner_id<>? AND (challenger_id=? OR challenged_id=?) THEN 1 ELSE 0 END) losses,SUM(CASE WHEN status='resolved' AND (challenger_id=? OR challenged_id=?) THEN 1 ELSE 0 END) total FROM duels").get(userId,userId,userId,userId,userId,userId) as {wins:number|null;losses:number|null;total:number|null});
+      this.json(res,200,{wins:row.wins||0,losses:row.losses||0,total:row.total||0});return;
+    }
+    if(url.pathname==='/api/discord/v1/community/top'&&req.method==='POST'){
+      const body=await this.readJson(req),settings=this.store.config<typeof DISCORD_DEFAULTS>('discord_integration',DISCORD_DEFAULTS);
+      if(!body||typeof body.discordUserId!=='string'||!/^[0-9]{17,20}$/u.test(body.discordUserId)){this.json(res,400,{error:'Ungültige Ranglistenabfrage.'});return;}
+      if(!settings.enabled||!settings.accountLinkEnabled||!(settings.discordProfilesEnabled||settings.profilesEnabled)){this.json(res,409,{error:'Community-Ranglisten in Discord sind derzeit nicht aktiviert.'});return;}
+      if(this.rejectRateLimit(res,this.rates.consume('discord-top',body.discordUserId,10,60_000),'Bitte warte kurz, bevor du weitere Ranglisten abfragst.'))return;
+      if(!this.store.communityTwitchIdForDiscord(body.discordUserId)){this.json(res,403,{error:'Verbinde zuerst dein Twitch-Konto mit /verknuepfen.'});return;}
+      const entries=this.store.xpTop(10).map((entry,index)=>({rank:index+1,displayName:entry.displayName,xp:entry.xp}));this.json(res,200,{category:'xp',entries});return;
+    }
+    if(url.pathname==='/api/discord/v1/community/live'&&req.method==='GET'){
+      const runtime=this.getStatus(),now=Date.now(),checked=runtime.streamStatusCheckedAt||0,fresh=Boolean(checked&&now-checked<120_000),status=fresh?(runtime.streamLive===true?'live':runtime.streamLive===false?'offline':'unknown'):'unknown';
+      this.json(res,200,{status,checkedAt:checked||null,details:status==='live'?{title:runtime.streamSnapshot?.title||'',gameName:runtime.streamSnapshot?.gameName||''}:null});return;
     }
     if(url.pathname==='/api/discord/v1/community/games/guess'&&req.method==='POST'){
       const body=await this.readJson(req),settings=this.store.config<typeof DISCORD_DEFAULTS>('discord_integration',DISCORD_DEFAULTS);
