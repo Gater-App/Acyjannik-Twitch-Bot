@@ -54,7 +54,7 @@ test('gleiche richtige Versuche öffnen den Tresor genau einmal und belohnen inn
   assert.equal(store.xp('viewer-winner-a').xp,5);assert.equal(store.xp('viewer-winner-b').xp,0);
   const awards=store.miniGameQuery(db=>db.prepare('SELECT award_type,xp FROM community_vault_awards ORDER BY award_type').all()) as Array<{award_type:string;xp:number}>;assert.deepEqual(awards,[{award_type:'participant',xp:5},{award_type:'solver',xp:0}],'der Verlauf speichert tatsächlich gebuchte XP statt den konfigurierten Sollwert');
   const notices=vault.tickMessages(now+3_004);assert.equal(notices.length,1);assert.equal(notices[0]?.category,'vault');
-  assert.match(notices[0]?.message||'',/1 qualifizierte Personen · 5 XP tatsächlich ausgezahlt/u);
+  assert.match(notices[0]?.message||'',/1 qualifizierte Person · 5 XP tatsächlich ausgezahlt/u);
   assert.equal(vault.tickMessages(now+3_005).length,0);assert.equal(store.miniGameQuery(db=>(db.prepare('SELECT COUNT(*) n FROM community_vault_awards').get() as {n:number}).n),2,JSON.stringify(store.miniGameQuery(db=>db.prepare('SELECT * FROM community_vault_awards').all())));
   assert.equal(vault.history()[0]?.xpAwarded,5);
   store.close();
@@ -122,7 +122,7 @@ test('isolierte vollständige Runde erklärt Tipps, gewinnt einmal und übersteh
   assert.equal(vault.guess(viewer('alice','Alice','427',now+6_004),['427'],now+6_004).privateHint,'Gerade ist kein Tresor offen.');
   store.close();store=new FeatureStore(file);vault=new CommunityVault(store,'bot-1');
   const result=vault.tickMessages(now+6_005);assert.equal(result.length,1);
-  assert.match(result[0]!.message,/Alice hat den Code geknackt.*1 qualifizierte Personen · 10 XP tatsächlich ausgezahlt/u);
+  assert.match(result[0]!.message,/Alice hat den Code geknackt.*1 qualifizierte Person · 10 XP tatsächlich ausgezahlt/u);
   assert.deepEqual(vault.tickMessages(now+6_006),[],'nach Neustart wird die Abschlussmeldung nicht doppelt gesendet');
   assert.equal(store.xp('alice').xp,10,'Neustart zahlt die Ledger-Buchung nicht erneut aus');
   assert.equal(store.miniGameQuery(db=>(db.prepare('SELECT COUNT(*) n FROM community_vault_awards').get() as {n:number}).n),2);
