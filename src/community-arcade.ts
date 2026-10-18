@@ -344,6 +344,7 @@ export class CommunityArcade {
     return result?'🎡 Janniks laufende Rad-Aufgabe wurde beendet. Das Ergebnis wurde nicht bewertet.':'🎡 Es läuft keine Rad-Aufgabe.';
   }
   startDropAdmin(actor:string,rarity:string|undefined,now=Date.now()):string { if(!this.settings().dropsEnabled)return '🎁 Mystery Drops sind deaktiviert.';return this.startDrop(actor,now,rarity); }
+  cancelDropAdmin(now=Date.now()):boolean{return this.cancelDrop(now);}
   spinAdmin(actor:string,now=Date.now()):string { if(!this.settings().wheelEnabled)return '🎡 Das Chaos Wheel ist deaktiviert.';return this.spin(actor,now,true); }
   winnerChatAnnouncementEnabled():boolean{return this.settings().wheelWinnerChatAnnouncement;}
   configureWheelField(id:string,active:boolean,weight:number):void{

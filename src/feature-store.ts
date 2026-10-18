@@ -1078,6 +1078,53 @@ export class FeatureStore {
         `);
       })();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 41) {
+      if (currentVersion > 0) this.backupBeforeMigration(41);
+      this.db.transaction(() => this.db.exec(`
+        CREATE TABLE IF NOT EXISTS chat_delivery_outbox (
+          event_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, message TEXT, reply_parent_message_id TEXT, category TEXT NOT NULL DEFAULT 'season',
+          status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','sending','sent','failed','expired')),
+          attempts INTEGER NOT NULL DEFAULT 0, available_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+          lease_until INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, sent_at INTEGER, last_error TEXT
+        );
+        CREATE INDEX IF NOT EXISTS chat_delivery_due ON chat_delivery_outbox(status,available_at,expires_at,lease_until);
+        INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (41, unixepoch()*1000);
+      `))();
+    }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 42) {
+      if (currentVersion > 0) this.backupBeforeMigration(42);
+      this.db.transaction(() => this.db.exec(`
+        CREATE TABLE IF NOT EXISTS event_director_activity (
+          user_id TEXT NOT NULL, bucket_start INTEGER NOT NULL, last_seen INTEGER NOT NULL, event_id TEXT NOT NULL UNIQUE,
+          PRIMARY KEY(user_id,bucket_start)
+        );
+        CREATE INDEX IF NOT EXISTS event_director_activity_seen ON event_director_activity(last_seen);
+        INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (42, unixepoch()*1000);
+      `))();
+    }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 43) {
+      if (currentVersion > 0) this.backupBeforeMigration(43);
+      this.db.transaction(() => {
+        const columns = new Set((this.db.prepare('PRAGMA table_info(event_director_runs)').all() as Array<{name:string}>).map(column => column.name));
+        if (!columns.has('status')) this.db.exec("ALTER TABLE event_director_runs ADD COLUMN status TEXT NOT NULL DEFAULT 'started'");
+        if (!columns.has('triggered_by')) this.db.exec("ALTER TABLE event_director_runs ADD COLUMN triggered_by TEXT NOT NULL DEFAULT 'system'");
+        if (!columns.has('source_event_id')) this.db.exec('ALTER TABLE event_director_runs ADD COLUMN source_event_id TEXT');
+        if (!columns.has('distinct_participant_count')) this.db.exec('ALTER TABLE event_director_runs ADD COLUMN distinct_participant_count INTEGER NOT NULL DEFAULT 0 CHECK(distinct_participant_count>=0)');
+        if (!columns.has('active_chatter_count')) this.db.exec('ALTER TABLE event_director_runs ADD COLUMN active_chatter_count INTEGER NOT NULL DEFAULT 0 CHECK(active_chatter_count>=0)');
+        if (!columns.has('success')) this.db.exec('ALTER TABLE event_director_runs ADD COLUMN success INTEGER CHECK(success IN (0,1))');
+        if (!columns.has('payout_status')) this.db.exec("ALTER TABLE event_director_runs ADD COLUMN payout_status TEXT NOT NULL DEFAULT 'unknown'");
+        if (!columns.has('error_status')) this.db.exec('ALTER TABLE event_director_runs ADD COLUMN error_status TEXT');
+        if (!columns.has('scheduled_for')) this.db.exec('ALTER TABLE event_director_runs ADD COLUMN scheduled_for INTEGER');
+        if (!columns.has('delivery_status')) this.db.exec("ALTER TABLE event_director_runs ADD COLUMN delivery_status TEXT NOT NULL DEFAULT 'not-configured'");
+        this.db.exec(`UPDATE event_director_runs SET status=CASE WHEN completed_at IS NULL THEN 'started' ELSE 'completed' END;
+          CREATE INDEX IF NOT EXISTS event_director_runs_status ON event_director_runs(status,started_at DESC);
+          CREATE INDEX IF NOT EXISTS event_director_runs_source ON event_director_runs(source_event_id);
+          INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (43, unixepoch()*1000);`);
+      })();
+    }
   }
 
   private backupBeforeMigration(version: number): void {
@@ -2196,9 +2243,11 @@ export class FeatureStore {
     })();
   }
 
-  playEvent(id: string, userId: string, displayName: string, delta: number, now: number):
-    { ok: true; points: number } | { ok: false; reason: 'inactive' | 'cooldown'; remainingMs?: number } {
+  playEvent(id: string, userId: string, displayName: string, delta: number, now: number,
+    delivery?: { eventId: string; replyParentMessageId?: string; format: (points: number) => string }):
+    { ok: true; points: number; deliveryId?: string } | { ok: false; reason: 'inactive' | 'cooldown' | 'duplicate'; remainingMs?: number } {
     return this.db.transaction(() => {
+      if (delivery && this.db.prepare('SELECT 1 FROM chat_delivery_outbox WHERE event_id=?').get(delivery.eventId)) return { ok: false as const, reason: 'duplicate' as const };
       const event = this.event(id);
       if (!event?.active) return { ok: false as const, reason: 'inactive' as const };
       if ((event.startAt && now < event.startAt) || (event.endAt && now >= event.endAt)) return { ok: false as const, reason: 'inactive' as const };
@@ -2219,8 +2268,40 @@ export class FeatureStore {
           ON CONFLICT(user_id) DO UPDATE SET last_played_at=excluded.last_played_at`).run(userId, now);
       }
       this.recordCommunityEvent('seasonal.score.changed', { eventId: id, userId, displayName, points, delta }, now);
-      return { ok: true as const, points };
+      if (delivery) {
+        const message=delivery.format(points).slice(0,500);
+        this.db.prepare("INSERT INTO chat_delivery_outbox(event_id,user_id,message,reply_parent_message_id,category,status,attempts,available_at,expires_at,created_at) VALUES(?,?,?,?,?,'pending',0,?,?,?)")
+          .run(delivery.eventId,userId,message,delivery.replyParentMessageId??null,'season',now,now+5*60_000,now);
+      }
+      return { ok: true as const, points,...(delivery?{deliveryId:delivery.eventId}:{}) };
     })();
+  }
+
+  claimChatDeliveryMessages(now=Date.now(),limit=25):Array<{id:string;attempt:number;message:string;replyParentMessageId?:string;category:'season'|'halloween';expiresAt:number}> {
+    return this.db.transaction(()=>{
+      this.db.prepare("UPDATE chat_delivery_outbox SET status='expired',user_id='',message=NULL,reply_parent_message_id=NULL,lease_until=0 WHERE expires_at<=? AND status IN ('pending','sending')").run(now);
+      const rows=this.db.prepare("SELECT event_id,message,reply_parent_message_id,category,attempts,expires_at FROM chat_delivery_outbox WHERE attempts<8 AND ((status='pending' AND available_at<=?) OR (status='sending' AND lease_until<=?)) AND expires_at>? ORDER BY created_at LIMIT ?")
+        .all(now,now,now,Math.max(1,Math.min(50,limit))) as Array<{event_id:string;message:string|null;reply_parent_message_id:string|null;category:string;attempts:number;expires_at:number}>;
+      const claim=this.db.prepare("UPDATE chat_delivery_outbox SET status='sending',attempts=attempts+1,lease_until=? WHERE event_id=? AND ((status='pending' AND available_at<=?) OR (status='sending' AND lease_until<=?)) AND expires_at>?");
+      const result=[] as Array<{id:string;attempt:number;message:string;replyParentMessageId?:string;category:'season'|'halloween';expiresAt:number}>;
+      for(const row of rows){if(!row.message||!claim.run(Math.min(row.expires_at,now+4*60_000),row.event_id,now,now,now).changes)continue;result.push({id:row.event_id,attempt:row.attempts+1,message:row.message,...(row.reply_parent_message_id?{replyParentMessageId:row.reply_parent_message_id}:{}),category:row.category==='halloween'?'halloween':'season',expiresAt:row.expires_at});}
+      return result;
+    })();
+  }
+
+  finishChatDelivery(id:string,accepted:boolean,now=Date.now(),error=''):void {
+    this.db.transaction(()=>{
+      const row=this.db.prepare('SELECT attempts,expires_at FROM chat_delivery_outbox WHERE event_id=?').get(id) as {attempts:number;expires_at:number}|undefined;if(!row)return;
+      if(accepted)this.db.prepare("UPDATE chat_delivery_outbox SET status='sent',user_id='',sent_at=?,message=NULL,reply_parent_message_id=NULL,lease_until=0,last_error=NULL WHERE event_id=?").run(now,id);
+      else if(row.expires_at<=now)this.db.prepare("UPDATE chat_delivery_outbox SET status='expired',user_id='',message=NULL,reply_parent_message_id=NULL,lease_until=0,last_error=? WHERE event_id=?").run(error.slice(0,180)||'Nachricht abgelaufen',id);
+      else if(row.attempts>=8)this.db.prepare("UPDATE chat_delivery_outbox SET status='failed',user_id='',message=NULL,reply_parent_message_id=NULL,lease_until=0,last_error=? WHERE event_id=?").run(error.slice(0,180)||'Chatversand fehlgeschlagen',id);
+      else this.db.prepare("UPDATE chat_delivery_outbox SET status='pending',available_at=?,lease_until=0,last_error=? WHERE event_id=?").run(Math.min(row.expires_at,now+Math.min(60_000,2_000*2**Math.max(0,row.attempts-1))),error.slice(0,180)||'Chatversand fehlgeschlagen',id);
+    })();
+  }
+
+  chatDeliverySnapshot():{pending:number;failed:number;expired:number} {
+    const rows=this.db.prepare("SELECT status,COUNT(*) AS count FROM chat_delivery_outbox WHERE status IN ('pending','sending','failed','expired') GROUP BY status").all() as Array<{status:string;count:number}>;
+    const values=Object.fromEntries(rows.map(row=>[row.status,row.count]));return {pending:(values.pending||0)+(values.sending||0),failed:values.failed||0,expired:values.expired||0};
   }
 
   eventTop(id: string, limit = 10): Player[] {
@@ -2467,7 +2548,7 @@ export class FeatureStore {
   recordCommunityEvent(type: string, payload: unknown, now: number): void {
     this.db.prepare('INSERT INTO community_events(type,payload_json,created_at) VALUES(?,?,?)').run(type, JSON.stringify(payload ?? {}), now);
     const data=(payload&&typeof payload==='object'?payload:{}) as Record<string,unknown>;
-    if(type==='boss.started'||type==='boss.defeated'||type==='boss.timeout'){
+    if(type==='boss.started'||type==='boss.defeated'||type==='boss.timeout'||type==='boss.ended'){
       const director=this.config<Record<string,unknown>>('event_director_settings',{}),discord=this.config<Record<string,unknown>>('discord_integration',{});
       if(director.discordAnnouncements===true&&discord.enabled===true&&typeof discord.rewardsChannelId==='string'&&discord.rewardsChannelId){
         const status=type==='boss.started'?'active':type==='boss.defeated'?'completed':'failed',bossId=String(data.id||data.bossId||`boss:${now}`);

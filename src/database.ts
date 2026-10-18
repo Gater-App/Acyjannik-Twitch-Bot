@@ -67,7 +67,8 @@ export class Database {
     return rows.map((row) => this.toPlayer(row));
   }
 
-  applyPlay(userId: string, displayName: string, delta: number, now: number, cooldownMs: number):
+  applyPlay(userId: string, displayName: string, delta: number, now: number, cooldownMs: number,
+    delivery?: { eventId: string; replyParentMessageId?: string; category?: 'season' | 'halloween'; format: (player: Player) => string }):
     { accepted: true; player: Player } | { accepted: false; remainingMs: number } {
     const transaction = this.db.transaction(() => {
       const last = this.db.prepare('SELECT last_played_at FROM cooldowns WHERE user_id = ?').get(userId) as
@@ -89,7 +90,13 @@ export class Database {
         INSERT INTO cooldowns (user_id, last_played_at) VALUES (?, ?)
         ON CONFLICT(user_id) DO UPDATE SET last_played_at = excluded.last_played_at
       `).run(userId, now);
-      return { accepted: true as const, player: { userId, displayName, pumpkins, updatedAt: now } };
+      const player = { userId, displayName, pumpkins, updatedAt: now };
+      if (delivery) {
+        const message = delivery.format(player);
+        this.db.prepare("INSERT INTO chat_delivery_outbox(event_id,user_id,message,reply_parent_message_id,category,status,attempts,available_at,expires_at,created_at) VALUES(?,?,?,?,?,'pending',0,?,?,?)")
+          .run(delivery.eventId, userId, message, delivery.replyParentMessageId ?? null, delivery.category ?? 'halloween', now, now + 5 * 60_000, now);
+      }
+      return { accepted: true as const, player };
     });
     return transaction() as { accepted: true; player: Player } | { accepted: false; remainingMs: number };
   }

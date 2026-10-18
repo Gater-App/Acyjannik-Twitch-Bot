@@ -72,6 +72,39 @@ test('Spukhaus zählt nur angenommene !trickortreat-Runden und bewahrt bestehend
   }finally{store.close();database.close();fs.rmSync(dir,{recursive:true,force:true});}
 });
 
+test('!trickortreat speichert Belohnung und persönliche Antwort atomar und stellt nach Neustart idempotent zu',async()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'acy-seasonal-outbox-')),file=path.join(dir,'bot.sqlite'),config=testConfig({activeOnStart:true});
+  let secondWorkerStore:FeatureStore|undefined;
+  let database=new Database(file,true),store=new FeatureStore(file),community=new CommunityFeatures(store,config),game=new GameService(database,config,()=>0),handler=new CommandHandler(database,game,config,async()=>undefined,community);
+  try{
+    const first=message(config,'!trickortreat','viewer-a',{eventId:'seasonal-chat-event-a',messageId:'seasonal-chat-message-a',senderDisplayName:'Ada'});
+    const second=message(config,'!trickortreat','viewer-b',{eventId:'seasonal-chat-event-b',messageId:'seasonal-chat-message-b',senderDisplayName:'Bela'});
+    const replies=await Promise.all([handler.handle(first,10_000),handler.handle(second,10_000)]);
+    assert.equal(replies.flat().filter(reply=>reply.durableDeliveryId).length,2,'beide persönlichen Ergebnisse werden für dauerhafte Zustellung markiert');
+    assert.equal(game.pumpkins('viewer-a'),5);assert.equal(game.pumpkins('viewer-b'),5);
+    assert.deepEqual(await handler.handle(first,10_001),[],'dieselbe Twitch-EventSub-Nachricht vergibt keine zweite Belohnung');
+    assert.equal(game.pumpkins('viewer-a'),5);
+    store.close();database.close();
+
+    database=new Database(file);store=new FeatureStore(file);community=new CommunityFeatures(store,config);game=new GameService(database,config,()=>0);handler=new CommandHandler(database,game,config,async()=>undefined,community);
+    secondWorkerStore=new FeatureStore(file);const secondWorker=new CommunityFeatures(secondWorkerStore,config);
+    const [claimed,parallelClaim]=await Promise.all([community.claimChatDeliveryMessages(11_000),secondWorker.claimChatDeliveryMessages(11_000)]);
+    assert.equal(claimed.length+parallelClaim.length,2,'beide Antworten überstehen den Prozessneustart');
+    assert.equal(new Set([...claimed,...parallelClaim].map(item=>item.id)).size,2,'konkurrierende Dispatcher beanspruchen keine Antwort doppelt');
+    secondWorkerStore.close();secondWorkerStore=undefined;
+    const allClaimed=[...claimed,...parallelClaim],ada=allClaimed.find(item=>item.id==='seasonal-chat-event-a'),bela=allClaimed.find(item=>item.id==='seasonal-chat-event-b');
+    assert.match(ada?.message||'',/TREAT Ada \+5 Gesamt: 5\./u);assert.equal(ada?.replyParentMessageId,'seasonal-chat-message-a');
+    assert.match(bela?.message||'',/TREAT Bela \+5 Gesamt: 5\./u);assert.equal(bela?.replyParentMessageId,'seasonal-chat-message-b');
+    community.finishChatDelivery('seasonal-chat-event-a',false,11_001,'simulierter Twitch-Ausfall');
+    community.finishChatDelivery('seasonal-chat-event-b',true,11_001);
+    assert.equal(community.chatDeliverySnapshot().pending,1);assert.equal(community.chatDeliverySnapshot().failed,0);
+    assert.equal(community.claimChatDeliveryMessages(13_002).some(item=>item.id==='seasonal-chat-event-a'),true,'vorübergehender Versandfehler wird erneut angeboten');
+    community.finishChatDelivery('seasonal-chat-event-a',true,13_003);
+    assert.deepEqual(community.chatDeliverySnapshot(),{pending:0,failed:0,expired:0});
+    assert.equal(game.pumpkins('viewer-a'),5,'Versandretry verändert keine Kürbisbuchung');
+  }finally{try{secondWorkerStore?.close()}catch{}try{store.close()}catch{}try{database.close()}catch{}fs.rmSync(dir,{recursive:true,force:true});}
+});
+
 test('Start/Ende und Moderationsrechte werden geprüft', async () => {
   const { config, database, handler, game } = setup({ activeOnStart: false });
   const denied = await handler.handle(message(config, '!startHalloween', 'viewer-1'), 1_000);

@@ -11,7 +11,7 @@ import { CommunityChaos } from './community-chaos.js';
 import { ElioChronicles } from './elio-chronicles.js';
 import { CommunityVault } from './community-vault.js';
 import { CommunityHauntedHouse } from './community-haunted-house.js';
-import { EventDirector, type EventCandidate } from './event-director.js';
+import { EventDirector, adaptiveBossHp, type EventCandidate } from './event-director.js';
 import { ModeratorPranks } from './moderator-pranks.js';
 import { categoryForCommand, type ChatCategory } from './chat-message-format.js';
 import type { OutboundChatMessage } from './chat-message-format.js';
@@ -93,17 +93,18 @@ export class CommunityFeatures {
     const bossFinishedAt=this.store.miniGameQuery(db=>(db.prepare("SELECT MAX(finished_at) at FROM boss_fights WHERE status IN ('defeated','timeout','canceled')").get() as {at:number|null}).at||undefined);
     const bossDue=this.eventDirector.intervalDue('boss',now,cfg.bossMinIntervalMs,cfg.bossMaxIntervalMs,cfg.autoBosses&&modules.boss!==false,live,Boolean(activeBoss),bossFinishedAt);
     candidates.push({type:'boss',priority:3,enabled:cfg.autoBosses&&modules.boss!==false,ready:bossDue&&!activeBoss,minimumActivity:'normal',interval:{min:cfg.bossMinIntervalMs,max:cfg.bossMaxIntervalMs,afterCompletion:true},start:()=>{
-      const active=activity.uniqueChatters5m,base=active<=3?100:active<=8?240:active<=15?450:800;
-      const recent=this.store.miniGameQuery(db=>db.prepare("SELECT status,COUNT(*) count FROM boss_fights WHERE finished_at IS NOT NULL GROUP BY status").all() as Array<{status:string;count:number}>);
-      const total=recent.reduce((n,row)=>n+row.count,0),won=recent.find(row=>row.status==='defeated')?.count||0;
-      const factor=cfg.bossAdaptiveHp&&total>=3?Math.max(.9,Math.min(1.1,1+(won/total-.5)*.2)):1;
-      const hp=Math.max(60,Math.min(1200,Math.round(base*factor))),names=active<=3?['Kleiner Schattenpfoten-Späher']:active<=8?['Schattenwächter']:active<=15?['Portalwächter']:['Schattenkönig'];
+      const active=activity.uniqueChatters5m;
+      const recent=this.store.miniGameQuery(db=>db.prepare(`SELECT fight.status,COUNT(DISTINCT participant.user_id) participants,
+        COALESCE(AVG(participant.damage),0) averageDamage,MAX(0,fight.finished_at-fight.started_at) durationMs FROM (
+        SELECT id,status,started_at,finished_at FROM boss_fights WHERE finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 10
+      ) fight LEFT JOIN boss_participants participant ON participant.boss_id=fight.id GROUP BY fight.id ORDER BY MAX(fight.finished_at) DESC`).all() as Array<{status:string;participants:number;averageDamage:number;durationMs:number}>);
+      const hp=adaptiveBossHp(active,recent,cfg.bossAdaptiveHp),names=active<=3?['Kleiner Schattenpfoten-Späher']:active<=8?['Schattenwächter']:active<=15?['Portalwächter']:['Schattenkönig'];
       if(!this.store.startBoss(randomUUID(),names[this.random(0,names.length-1)]!,hp,bossSettings.bossDurationMs,now))return undefined;
       return `👹 ${names[0]} erscheint mit ${hp} HP! Besiegt ihn gemeinsam mit !attack!`;
     }});
     const arcadeSettings=this.arcade.settings(),drop=this.arcade.snapshot('drop'),dropStatus=(drop.drop as {status?:string}|undefined)?.status;
-    const dropDue=this.eventDirector.intervalDue('drop',now,60*60_000,90*60_000,cfg.autoDrops&&arcadeSettings.dropsEnabled&&arcadeSettings.autoDrops,live);
-    candidates.push({type:'mystery-drop',priority:6,enabled:cfg.autoDrops&&arcadeSettings.dropsEnabled&&arcadeSettings.autoDrops,ready:dropDue&&!['announced','claiming','resolving'].includes(dropStatus||''),minimumActivity:'normal',interval:{min:60*60_000,max:90*60_000},start:()=>{
+    const dropDue=this.eventDirector.intervalDue('drop',now,60*60_000,90*60_000,cfg.autoDrops&&arcadeSettings.dropsEnabled&&arcadeSettings.autoDrops,live,false,undefined,'mystery-drop');
+    candidates.push({type:'mystery-drop',priority:6,enabled:cfg.autoDrops&&arcadeSettings.dropsEnabled&&arcadeSettings.autoDrops,ready:dropDue&&!['announced','claiming','resolving'].includes(dropStatus||''),minimumActivity:'normal',interval:{min:60*60_000,max:90*60_000},intervalKey:'drop',start:()=>{
       const before=(this.arcade.snapshot('drop').drop as {id?:string}|undefined)?.id;
       const message=this.arcade.startDropAdmin('event-director','common',now);
       const after=this.arcade.snapshot('drop').drop as {id?:string}|undefined;return after?.id&&after.id!==before?message:undefined;
@@ -133,6 +134,10 @@ export class CommunityFeatures {
   recordHauntedHouseContribution(eventId:string,userId:string,now=Date.now()):void { this.hauntedHouse.recordAcceptedPlay(eventId,userId,now); }
 
   activeEventId(): string | undefined { return this.store.activeEvent()?.id; }
+
+  claimChatDeliveryMessages(now=Date.now()){return this.store.claimChatDeliveryMessages(now);}
+  finishChatDelivery(id:string,accepted:boolean,now=Date.now(),error=''){this.store.finishChatDelivery(id,accepted,now,error);}
+  chatDeliverySnapshot(){return this.store.chatDeliverySnapshot();}
 
   helpAvailability(): HelpAvailability {
     const modules=this.store.config<Record<string,boolean>>('modules',{}),active=this.store.activeEvent();
@@ -201,7 +206,8 @@ export class CommunityFeatures {
 
     if (modules.events !== false && (['gift', 'egghunt'].includes(command) || ['eventscore', 'eventtop', 'startevent', 'endevent'].includes(command))) {
       const result = this.handleEvents(message, command, args, name, now);
-      if (result !== undefined) return say(result, 'season');
+      if (typeof result==='string') return say(result, 'season');
+      if (result) return [{message:result.message,category:'season',durableDeliveryId:result.deliveryId,...(message.messageId?{replyParentMessageId:message.messageId}:{})}];
     }
 
     if (modules.xp !== false) {
@@ -276,7 +282,7 @@ export class CommunityFeatures {
     return say(`💡💜 Deine Idee ist gespeichert, @${cleanName(message.senderDisplayName)}! Danke für deinen Vorschlag! Jannik und die Mods schauen sie sich an. 🐾 ID: #${result.idea.id.slice(0,8)}`,'ideas');
   }
 
-  private handleEvents(message: ChatMessage, command: string, args: string[], name: string, now: number): string | undefined {
+  private handleEvents(message: ChatMessage, command: string, args: string[], name: string, now: number): string | {message:string;deliveryId:string} | undefined {
     if (command === 'startevent' || command === 'endevent') {
       if (!this.isModerator(message)) return '⛔ Nur Jannik oder autorisierte Mods dürfen Events steuern.';
       const eventId = (args[0] || '').toLowerCase();
@@ -300,14 +306,17 @@ export class CommunityFeatures {
     if (cooldown > 0) return `⏳ ${name}: Warte noch ${Math.ceil(cooldown / 60_000)} Min.`;
     const outcomeKey = weightedChoice(event.weights, this.random) || (event.id === 'easter' ? 'GOLDEN_PUMPKIN' : 'TREAT');
     const delta = outcomePoints(outcomeKey, this.random);
-    const outcome = this.store.playEvent(event.id, message.senderUserId, name, delta, now);
-    if (!outcome.ok) return outcome.reason === 'inactive' ? '✨ Das Event ist gerade nicht aktiv.' : `⏳ Bitte noch ${Math.ceil((outcome.remainingMs || 0) / 60_000)} Min. warten.`;
     const defaultText = outcomeKey === 'EMPTY_HOUSE' ? `${event.emoji} {user} findet nichts.`
       : `${event.emoji} {user} sammelt {points} {currency}.`;
     const template = event.texts[outcomeKey] || event.texts.default || defaultText;
-    return template.replace(/\{(user|points|currency|total|event)\}/gu, (_all, key: string) => ({
-      user: name, points: String(delta), currency: event.currency, total: String(outcome.points), event: event.name,
+    const format=(points:number)=>template.replace(/\{(user|points|currency|total|event)\}/gu, (_all, key: string) => ({
+      user: name, points: String(delta), currency: event.currency, total: String(points), event: event.name,
     })[key] || '');
+    const outcome = this.store.playEvent(event.id, message.senderUserId, name, delta, now,
+      {eventId:message.eventId,...(message.messageId?{replyParentMessageId:message.messageId}:{}),format});
+    if (!outcome.ok&&outcome.reason==='duplicate')return undefined;
+    if (!outcome.ok) return outcome.reason === 'inactive' ? '✨ Das Event ist gerade nicht aktiv.' : `⏳ Bitte noch ${Math.ceil((outcome.remainingMs || 0) / 60_000)} Min. warten.`;
+    return {message:format(outcome.points),deliveryId:outcome.deliveryId||message.eventId};
   }
 
   private refreshScheduledEvents(now: number): void {
