@@ -17,7 +17,8 @@ test('Community-Tresor bewertet führende Nullen und doppelte Ziffern mathematis
   assert.deepEqual(scoreGuess('042','404'),{exact:0,misplaced:2});
   assert.deepEqual(scoreGuess('112','121'),{exact:1,misplaced:2});
   assert.deepEqual(scoreGuess('112','111'),{exact:2,misplaced:0});
-  assert.match(formatGuessFeedback('viewer',1,2,4,'Noch ein Tipp.'),/1 Ziffer steht an der richtigen Stelle.*2 weitere Ziffern sind im Code.*0 Ziffern kommen nicht im Code vor/u);
+  assert.match(formatGuessFeedback('viewer',1,2,4,'Noch ein Tipp.'),/1 Ziffer steht an der richtigen Stelle.*2 weitere Ziffern sind im Code.*0 Ziffern kommen nicht im Code vor.*4 Tipps insgesamt/u);
+  assert.match(formatGuessFeedback('viewer',0,0,1,'Noch ein Tipp.'),/1 Tipp insgesamt/u);
 });
 
 test('Tresorstart erklärt XXX als Platzhalter und verrät keine dreistellige Zahl',()=>{
@@ -116,6 +117,7 @@ test('isolierte vollständige Runde erklärt Tipps, gewinnt einmal und übersteh
   assert.match(first,/0 Ziffern stehen an der richtigen Stelle.*0 weitere Ziffern sind im Code.*3 Ziffern kommen nicht im Code vor/u);
   assert.match(second,/1 Ziffer steht an der richtigen Stelle.*0 weitere Ziffern sind im Code.*2 Ziffern kommen nicht im Code vor/u);
   assert.match(third,/1 Ziffer steht an der richtigen Stelle.*1 weitere Ziffer ist im Code.*1 Ziffer kommt nicht im Code vor/u);
+  assert.match(first,/1 Tipp insgesamt/u);assert.match(second,/2 Tipps insgesamt/u);assert.match(third,/3 Tipps insgesamt/u);
   assert.match(invalid,/!code XXX.*Ersetze XXX durch deine drei Ziffern/u);assert.doesNotMatch(invalid,/(?<!\d)\d{3}(?!\d)/u);
   const win=vault.guess(viewer('alice','Alice','427',now+6_003),['427'],now+6_003).privateHint||'';
   assert.match(win,/tatsächliche Auszahlung: \+10 XP/u);assert.equal(store.xp('alice').xp,10);

@@ -186,7 +186,7 @@ export function scoreGuess(secret:string,guess:string):{exact:number;misplaced:n
 /** Chat-visible feedback; each code digit is counted at most once. */
 export function formatGuessFeedback(displayName:string,exact:number,misplaced:number,total:number,eligibility:string):string {
   const absent=Math.max(0,3-exact-misplaced),name=cleanName(displayName);
-  return `🔎 ${name}: Dein Tipp wurde geprüft! ✅ ${countText(exact,'Ziffer steht','Ziffern stehen')} an der richtigen Stelle. 🔄 ${countText(misplaced,'weitere Ziffer ist','weitere Ziffern sind')} im Code, aber falsch positioniert. ❌ ${countText(absent,'Ziffer kommt','Ziffern kommen')} nicht im Code vor. ${total} Tipps insgesamt. ${eligibility}`;
+  return `🔎 ${name}: Dein Tipp wurde geprüft! ✅ ${countText(exact,'Ziffer steht','Ziffern stehen')} an der richtigen Stelle. 🔄 ${countText(misplaced,'weitere Ziffer ist','weitere Ziffern sind')} im Code, aber falsch positioniert. ❌ ${countText(absent,'Ziffer kommt','Ziffern kommen')} nicht im Code vor. ${countText(total,'Tipp insgesamt','Tipps insgesamt')}. ${eligibility}`;
 }
 function countText(count:number,singular:string,plural:string):string{return `${count} ${count===1?singular:plural}`;}
 function generateCode():string {const digits=Array.from({length:10},(_,i)=>String(i));for(let i=digits.length-1;i>0;i--){const j=randomInt(i+1);[digits[i],digits[j]]=[digits[j]!,digits[i]!];}return digits.slice(0,3).join('');}
