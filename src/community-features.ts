@@ -41,7 +41,7 @@ export class CommunityFeatures {
     private readonly config: AppConfig,
     private readonly lookupUser: UserLookup = async () => undefined,
     private readonly random: RandomInclusive = secureRandomInclusive,
-  ) { this.questPoll = new QuestPollFeatures(store, config); this.conversationSpark = new ConversationSpark(store, config.broadcasterUserId); this.miniGames = new MiniGames(store, config); this.arcade = new CommunityArcade(store,config.broadcasterUserId); this.interactive=new CommunityInteractive(store); this.chaos=new CommunityChaos(store); this.chronicles=new ElioChronicles(store,this.chaos); this.chaos.setAutoStorySelector(games=>this.chronicles.chooseAutomatic(games)); this.vault = new CommunityVault(store,config.botUserId); this.hauntedHouse=new CommunityHauntedHouse(store); this.eventDirector=new EventDirector(store); this.moderatorPranks = new ModeratorPranks(store,()=>((this.vault.publicSnapshot().vault as {status?:string}|undefined)?.status==='active'),ignoreVault=>this.isMajorGameBusy(ignoreVault)); }
+  ) { this.questPoll = new QuestPollFeatures(store, config); this.conversationSpark = new ConversationSpark(store, config.broadcasterUserId); this.miniGames = new MiniGames(store, config); this.arcade = new CommunityArcade(store,config.broadcasterUserId); this.interactive=new CommunityInteractive(store); this.chaos=new CommunityChaos(store); this.chronicles=new ElioChronicles(store,this.chaos); this.vault = new CommunityVault(store,config.botUserId); this.hauntedHouse=new CommunityHauntedHouse(store); this.eventDirector=new EventDirector(store); this.moderatorPranks = new ModeratorPranks(store,()=>((this.vault.publicSnapshot().vault as {status?:string}|undefined)?.status==='active'),ignoreVault=>this.isMajorGameBusy(ignoreVault)); }
 
   private isMajorGameBusy(ignoreVault = false):boolean {
     const now=Date.now(),mini=this.miniGames.snapshot(),drop=this.arcade.snapshot('drop'),wheel=this.arcade.wheelStatus();
@@ -68,12 +68,14 @@ export class CommunityFeatures {
   updateEventDirectorSettings(input:Record<string,unknown>) {
     const chaos=this.chaos.settings(),story=this.chronicles.settings(),interactive=this.interactive.settings(),arcade=this.arcade.settings();
     if(input.autoChaos===true&&!chaos.enabled)throw new Error('Community-Chaos muss zuerst im vorhandenen Modul aktiviert werden.');
-    if(input.autoStories===true&&(!story.enabled||!chaos.enabled))throw new Error('Elio Chronicles und Community-Chaos müssen zuerst freigegeben werden.');
+    if(input.autoStories===true&&!story.enabled)throw new Error('Elio Chronicles muss zuerst im vorhandenen Modul freigegeben werden.');
     if(input.autoSecretEvents===true&&!interactive.secretEventsEnabled)throw new Error('Geheime Community-Events müssen zuerst im vorhandenen Modul aktiviert werden.');
     if(input.autoDrops===true&&!arcade.dropsEnabled)throw new Error('Mystery Drops müssen zuerst im vorhandenen Modul aktiviert werden.');
     if(input.autoWheel===true&&!arcade.wheelEnabled)throw new Error('Das bestehende Chaos Wheel muss zuerst aktiviert werden.');
     const next=this.eventDirector.updateSettings(input);
-    this.chaos.updateSettings({...chaos,autoEnabled:next.autoChaos||next.autoStories});
+    // Before timer separation, enabling Chronicles also enabled its intervening
+    // Chaos minigames. Keep that shipped behavior while making the story timer independent.
+    this.chaos.updateSettings({...chaos,autoEnabled:chaos.enabled&&(next.autoChaos||next.autoStories)});
     this.chronicles.updateSettings({...story,autoEnabled:next.autoStories});
     this.interactive.updateSettings({...interactive,autoSecretEventsEnabled:next.autoSecretEvents});
     this.chaos.updateSettings({...this.chaos.settings(),discordAnnouncements:next.discordAnnouncements});
@@ -84,8 +86,8 @@ export class CommunityFeatures {
     const cfg=this.eventDirector.settings(),activity=this.eventDirector.activity(now),modules=this.store.config<Record<string,boolean>>('modules',{});
     const candidates:EventCandidate[]=[];
     const chaosCfg=this.chaos.settings(),storyCfg=this.chronicles.settings();
-    const chaosEnabled=(cfg.autoChaos&&chaosCfg.enabled&&chaosCfg.autoEnabled)||(cfg.autoStories&&storyCfg.enabled&&storyCfg.autoEnabled&&chaosCfg.enabled&&chaosCfg.autoEnabled);
-    candidates.push({type:'story-or-chaos',priority:cfg.autoStories&&storyCfg.enabled&&storyCfg.autoEnabled?1:4,enabled:chaosEnabled,ready:this.chaos.automaticReady(now),minimumActivity:'low',start:()=>this.chaos.startAutomatic(now,cfg.autoStories)?.message});
+    candidates.push({type:'community-chaos',priority:4,enabled:(cfg.autoChaos||cfg.autoStories)&&chaosCfg.enabled&&chaosCfg.autoEnabled,ready:this.chaos.automaticReady(now),minimumActivity:'low',start:()=>this.chaos.startAutomatic(now,false)?.message,interval:{min:chaosCfg.minIntervalMs,max:chaosCfg.minIntervalMs+chaosCfg.randomDelayMs},intervalKey:'community-chaos'});
+    candidates.push({type:'elio-chronicles',priority:1,enabled:cfg.autoStories&&storyCfg.enabled&&storyCfg.autoEnabled,ready:this.chronicles.automaticReady(now),minimumActivity:'low',start:()=>this.chronicles.startAutomatic(now).prompt,interval:{min:storyCfg.automaticIntervalMs,max:storyCfg.automaticIntervalMs},intervalKey:'elio-chronicles'});
     const secretSettings=this.interactive.settings();
     candidates.push({type:'secret-event',priority:5,enabled:cfg.autoSecretEvents&&secretSettings.secretEventsEnabled&&secretSettings.autoSecretEventsEnabled,
       ready:!this.interactive.active(undefined,now).some(event=>event.status==='open'),minimumActivity:'normal',start:()=>this.interactive.startAutomaticSecretEvent(now,activity.uniqueChatters15m)?'🎁 Ein geheimes Community-Event beginnt! Schaut auf die Community-Seite.':undefined});
@@ -115,7 +117,7 @@ export class CommunityFeatures {
     candidates.push({type:'community-vault',priority:8,enabled:cfg.enabled&&this.vault.settings().enabled&&this.vault.settings().autoStart,ready:vaultReady,minimumActivity:'normal',start:()=>{const result=this.vault.startAutomatic(now);return result.ok?result.message:undefined;}});
     const result=this.eventDirector.run({live,busy,now,candidates});
     if(!live){this.chaos.pauseAutomatic(now);}
-    if(result){const category=result.type==='boss'?'boss':result.type==='mystery-drop'?'drop':result.type==='chaos-wheel'?'wheel':'community';if(result.type==='story-or-chaos'){const announcement=this.chaos.claimStartAnnouncement(now);return {message:announcement?.prompt||result.message,category,...(announcement?{chaosEventId:announcement.id}:{})};}return {message:result.message,category};}
+    if(result){const category=result.type==='boss'?'boss':result.type==='mystery-drop'?'drop':result.type==='chaos-wheel'?'wheel':'community';if(result.type==='community-chaos'||result.type==='elio-chronicles'){const announcement=this.chaos.claimStartAnnouncement(now);return {message:announcement?.prompt||result.message,category,...(announcement?{chaosEventId:announcement.id}:{})};}return {message:result.message,category};}
     return undefined;
   }
   private currentInteractiveStatus(now:number){return {chaos:this.chaos.status(now).active,secretEvents:this.interactive.active().filter(event=>event.kind==='mystery_case'||event.kind==='elio_rescue'||event.kind==='secret_portal'),boss:this.store.activeBoss(now)||null,wheel:this.arcade.wheelStatus(now).active,drop:(this.arcade.snapshot('drop').drop as {status?:string}|undefined)?.status||null};}
