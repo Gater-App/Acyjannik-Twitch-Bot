@@ -7,6 +7,28 @@ import { logger } from './logger.js';
 
 async function freePort():Promise<number>{const server=net.createServer();await new Promise<void>((resolve,reject)=>server.once('error',reject).listen(0,'127.0.0.1',resolve));const port=(server.address() as net.AddressInfo).port;await new Promise<void>(resolve=>server.close(()=>resolve()));return port;}
 
+test('Discord config API exposes notifyLive explicitly and keeps legacy missing values disabled',async()=>{
+  const env={...process.env},store=new FeatureStore(':memory:'),port=await freePort();
+  const secret='synthetic-integration-secret-123456789';
+  process.env.TWITCH_CLIENT_ID='test-client';process.env.TWITCH_CLIENT_SECRET='test-secret';process.env.DASHBOARD_REDIRECT_URI='https://bot.example.test/dashboard/oauth/callback';process.env.DASHBOARD_ADMIN_IDS='test-admin';process.env.DASHBOARD_HOST='127.0.0.1';process.env.DASHBOARD_PORT=String(port);process.env.DISCORD_INTEGRATION_SECRET=secret;
+  const server=new DashboardServer(store,()=>({twitchConnected:false,channel:'acyjannik',startedAt:1}),logger,fetch);
+  const readConfig=async()=>{const response=await fetch(`http://127.0.0.1:${port}/api/discord/v1/config`,{headers:{authorization:`Bearer ${secret}`}});assert.equal(response.status,200);return response.json() as Promise<{liveChannelId?:string;notifications:{live?:boolean;liveUpdate?:boolean;liveCompletion?:boolean;liveUpdateIntervalSeconds?:number}}>};
+  try{
+    assert.equal(await server.start(),true);
+    store.setConfig('discord_integration',{enabled:true,notifyLive:true,liveChannelId:'1206225751544832043',liveUpdateEnabled:true,liveCompletionEnabled:true,liveUpdateIntervalSeconds:120});
+    let config=await readConfig();assert.equal(config.notifications.live,true,'aktivierter Dashboard-Schalter wird als Discord-Vertragsfeld ausgegeben');assert.equal(config.liveChannelId,'1206225751544832043');
+    assert.equal(config.notifications.liveUpdate,true);assert.equal(config.notifications.liveCompletion,true);assert.equal(config.notifications.liveUpdateIntervalSeconds,120);
+    store.setConfig('discord_integration',{enabled:true,notifyLive:false,liveChannelId:'1206225751544832043'});
+    config=await readConfig();assert.equal(config.notifications.live,false,'deaktivierter Schalter wird ausdrücklich false');
+    store.setConfig('discord_integration',{enabled:true,liveChannelId:'1206225751544832043'});
+    config=await readConfig();assert.equal(config.notifications.live,false,'fehlende Alt-Konfiguration bleibt sicher deaktiviert statt das Feld auszulassen');
+  }finally{
+    await server.stop();store.close();
+    for(const key of Object.keys(process.env))if(!(key in env))delete process.env[key];
+    for(const [key,value] of Object.entries(env))process.env[key]=value;
+  }
+});
+
 test('Discord ideas use Twitch source of truth, idempotent inbox and acknowledged outbox',async()=>{
   const env={...process.env},store=new FeatureStore(':memory:'),port=await freePort();
   process.env.TWITCH_CLIENT_ID='test-client';process.env.TWITCH_CLIENT_SECRET='test-secret';process.env.DASHBOARD_REDIRECT_URI='https://bot.example.test/dashboard/oauth/callback';process.env.DASHBOARD_ADMIN_IDS='test-admin';process.env.DASHBOARD_HOST='127.0.0.1';process.env.DASHBOARD_PORT=String(port);process.env.DISCORD_INTEGRATION_SECRET='synthetic-integration-secret-123456789';
