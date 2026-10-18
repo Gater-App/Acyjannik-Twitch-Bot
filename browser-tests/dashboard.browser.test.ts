@@ -576,9 +576,12 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     await portalPage.getByRole('link', { name: 'Mit Twitch anmelden' }).waitFor({ state: 'visible' });
     const publicVaultState=await portalPage.evaluate(async()=>await(await fetch('/community/api/state',{cache:'no-store'})).json());
     assert.equal(publicVaultState.public.vault.status,'active','Community-Portal zeigt den laufenden Tresor');
+    assert.equal(publicVaultState.public.vaultRules.participantXp,5,'öffentliches Portal liest den konfigurierten Teilnahme-XP-Wert');
+    assert.equal(publicVaultState.public.vaultRules.minimumAttemptsForXp,2,'Portal erklärt die tatsächliche Mindestteilnahme');
     assert.equal(publicVaultState.personal,null,'unangemeldete Zuschauer erhalten keine persönlichen Tipps');
     assert.equal(publicVaultState.public.vault.resultCode,null,'Community-API zeigt während einer aktiven Runde kein Ergebnis');
     assert.equal(Object.hasOwn(publicVaultState.public.vault,'secretCode'),false,'Community-API gibt kein Geheimcode-Feld aus');
+    await portalPage.getByText(/!code 123 · 3 Sek. Abstand · max. 20 Tipps/u).waitFor();
     assert.equal(await portalPage.getByRole('link', { name: /Dashboard/u }).count(), 0, 'öffentliches Portal verweist nicht auf die Admin-Verwaltung');
     for (const [label, width, height] of [['desktop', 1440, 1000], ['iphone', 390, 844]] as const) {
       await portalPage.setViewportSize({ width, height });

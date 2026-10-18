@@ -13,6 +13,7 @@ test('Pranks erlauben höchstens eine Phase, Cooldowns greifen, Ende und Neustar
   const store=new FeatureStore(':memory:');let busy=false;const p=new ModeratorPranks(store,()=>false,()=>busy);
   p.configure({enabled:{chief:true,accusation:true,'vault-alarm':true,oracle:true}});
   const chief=p.start('chief','mod',1_000);assert.equal(chief.ok,true);assert.ok(chief.announcement===undefined,'Chatankündigung ist standardmäßig aus');
+  assert.equal((p.snapshot(1_000).lastActions as Record<string,number>).chief,1_000,'Dashboard kann den letzten Start nachvollziehbar anzeigen');
   assert.equal(p.start('oracle','mod',1_001).ok,false,'keine parallelen Pranks');
   assert.equal(p.snapshot(61_001).active,null,'abgelaufene Phase wird beim Status sicher ausgeblendet');
   p.tick(61_001);assert.equal(p.snapshot(61_001).active,null);
@@ -20,6 +21,12 @@ test('Pranks erlauben höchstens eine Phase, Cooldowns greifen, Ende und Neustar
   busy=true;assert.equal(p.start('oracle','mod',1_000_000).ok,false,'laufendes Community-Spiel blockiert große Pranks');
   p.configure({enabled:{...p.settings().enabled,chief:false}});assert.equal(p.start('chief','mod',1_000_000).ok,false);
   store.close();
+});
+
+test('parallele Dashboard-Starts erzeugen höchstens eine aktive Prankphase',async()=>{
+  const store=new FeatureStore(':memory:'),p=new ModeratorPranks(store,()=>false,()=>false);p.configure({enabled:{chief:true,oracle:true}});
+  const results=await Promise.all(Array.from({length:12},(_,i)=>Promise.resolve().then(()=>p.start(i%2?'chief':'oracle','mod-'+i,50_000+i))));
+  assert.equal(results.filter(result=>result.ok).length,1);assert.ok(p.snapshot(50_100).active);store.close();
 });
 
 test('Aktive Prankphase überlebt Store-Neustart, läuft nach ihrer Frist aber automatisch aus',()=>{
