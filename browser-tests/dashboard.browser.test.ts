@@ -169,7 +169,7 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     assert.equal(await decisions.locator('[name="question"]').inputValue(),'Welche Spielstrategie soll Jannik ausprobieren?');
     await decisions.locator('[name="options"]').fill('Vorsichtig spielen\nVolles Risiko');await decisions.locator('[name="durationSeconds"]').selectOption('30');
     await decisions.getByRole('button',{name:'Abstimmung starten'}).click();
-    await decisions.getByText(/LIVE · Welche Spielstrategie/u).waitFor();assert.match(sentChatMessages.at(-1)||'',/!vote 1–2/u);
+    await decisions.getByText(/LIVE · Welche Spielstrategie/u).waitFor();const pollAnnouncement=sentChatMessages.join(' ');assert.match(pollAnnouncement,/1️⃣ Vorsichtig spielen/u);assert.match(pollAnnouncement,/2️⃣ Volles Risiko/u);assert.match(pollAnnouncement,/!vote 1/u);assert.match(pollAnnouncement,/!vote 2/u);
     assert.equal(await decisions.locator('[name="durationSeconds"] option').count(),5,'30–180 Sekunden in nachvollziehbaren Schritten');
     const pollId=await page.evaluate(async()=>((await(await fetch('/dashboard/api/polls')).json()).active.id as string));
     await page.evaluate(async(id)=>{const csrf=(document.querySelector('meta[name=csrf]') as HTMLMetaElement).content;await fetch('/dashboard/api/polls/action',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify({id,action:'cancel'})})},pollId);
