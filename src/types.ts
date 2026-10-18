@@ -105,4 +105,6 @@ export interface CommandReply {
   replyParentMessageId?: string;
   category?: import('./chat-message-format.js').ChatCategory;
   durableDeliveryId?: string;
+  /** Explicitly grouped poll announcements must not be split by ordinary reply suppression. */
+  bypassResponsePolicy?: boolean;
 }

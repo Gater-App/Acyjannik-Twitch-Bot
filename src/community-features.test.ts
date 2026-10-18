@@ -18,6 +18,31 @@ function fixture(): { file: string; directory: string; close: () => void } {
   return { file, directory, close: () => fs.rmSync(directory, { recursive: true, force: true }) };
 }
 
+test('Quest-Wahl des Glücksrads liefert alle gespeicherten Optionen als ungedrosselte, nummerierte Chatantworten', async()=>{
+  const f=fixture(),store=new FeatureStore(f.file),config={...loadConfig({testMode:true}),databasePath:f.file},community=new CommunityFeatures(store,config);
+  const policy={maxLength:180,queueLimit:20,maxOpenPerUser:2,cooldownMs:60_000,activeDurationMs:0,completionXp:25};
+  try{
+    const ids:string[]=[];
+    for(const [index,title] of ['Erste Quest','Zweite Quest','Dritte Quest'].entries()){
+      const submission=store.submitQuest({submitterUserId:`wheel-poll-${index}`,displayName:`Viewer ${index}`,title,source:'chat',sourceEventId:`wheel-poll-event-${index}`},policy,1000+index);
+      assert.equal(submission.ok,true);if(!submission.ok)throw new Error('Quest konnte nicht erstellt werden.');ids.push(submission.quest.id);
+      assert.equal(store.transitionQuest(submission.quest.id,'approved','broadcaster-1',2000+index,policy).ok,true);
+    }
+    (community.arcade as unknown as {handle:(message:ChatMessage,command:string,args:string[],now:number)=>string|undefined}).handle=(_message,_command,_args,now)=>{
+      const quests=ids.map(id=>store.quest(id)!);
+      store.createPoll({type:'quest',question:'Welche Quest?',options:quests.map(quest=>({label:quest.title,questId:quest.id})),durationMs:60_000,allowVoteChange:false,createdBy:config.broadcasterUserId,now});
+      return 'Questwahl gestartet.';
+    };
+    const replies=await community.handle({eventId:'wheel-poll-start',broadcasterUserId:config.broadcasterUserId,senderUserId:config.broadcasterUserId,senderLogin:'owner',senderDisplayName:'Owner',message:'!spin',sentAt:3000,isModerator:false},'spin',[],3000);
+    assert.deepEqual(replies.map(reply=>reply.category),['poll']);
+    assert.ok(replies.every(reply=>reply.bypassResponsePolicy===true),'alle Teile umgehen nur die gewöhnliche Antwort-Drosselung; die Sendewarteschlange bleibt aktiv');
+    const text=replies.map(reply=>reply.message).join(' ');
+    assert.ok(text.indexOf('1️⃣ Erste Quest')<text.indexOf('2️⃣ Zweite Quest'));
+    assert.ok(text.indexOf('2️⃣ Zweite Quest')<text.indexOf('3️⃣ Dritte Quest'));
+    assert.match(text,/!vote 1/u);assert.match(text,/!vote 2/u);assert.match(text,/!vote 3/u);
+  }finally{store.close();f.close()}
+});
+
 test('Versionierte Migration übernimmt Halloween-Punkte, Cooldown und aktiven Zustand ohne Reset', () => {
   const f = fixture();
   const legacy = new Database(f.file);

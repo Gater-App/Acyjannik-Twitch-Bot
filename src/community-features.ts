@@ -17,6 +17,7 @@ import { categoryForCommand, type ChatCategory } from './chat-message-format.js'
 import type { OutboundChatMessage } from './chat-message-format.js';
 import type { HelpAvailability } from './help.js';
 import { chooseEightBallAnswer, DEFAULT_EIGHT_BALL_SETTINGS, EIGHT_BALL_ANSWERS } from './eight-ball-answers.js';
+import { formatPollAnnouncement } from './poll-announcement.js';
 
 type UserLookup = (login: string) => Promise<{ id: string; login: string; displayName: string } | undefined>;
 type RandomInclusive = (min: number, max: number) => number;
@@ -165,6 +166,11 @@ export class CommunityFeatures {
     const name = cleanName(message.senderDisplayName);
     const say = (value: string, category: ChatCategory = categoryForCommand(command)): CommandReply[] => [{ message: clampChatMessage(value, this.config.appChatMessageLength), category,
       ...(message.messageId ? { replyParentMessageId: message.messageId } : {}) }];
+    const sayMany = (values: string[], category: ChatCategory): CommandReply[] => values.map(value => ({
+      message: clampChatMessage(value, this.config.appChatMessageLength), category,
+      bypassResponsePolicy: category === 'poll',
+      ...(message.messageId ? { replyParentMessageId: message.messageId } : {}),
+    }));
 
     if(command==='idee'||command==='ideen')return this.handleIdeaCommand(message,command,args,now,say);
 
@@ -186,9 +192,15 @@ export class CommunityFeatures {
     if (sparkResponse !== undefined) return say(sparkResponse);
     const miniGameResponse = this.miniGames.handle(message, command, args, now);
     if (miniGameResponse !== undefined) return say(miniGameResponse);
+    const pollBeforeArcade = command === 'spin' || command === 'startwheel' ? this.store.activePoll(now)?.id : undefined;
     const arcadeResponse = this.arcade.handle(message,command,args,now);
-    if (arcadeResponse !== undefined) return say(arcadeResponse,
-      (command==='spin'||command==='startwheel')&&this.arcade.spinActionTypeAt(now)==='boost_pet'?'pet':undefined);
+    if (arcadeResponse !== undefined) {
+      const pollStartedByWheel = pollBeforeArcade === undefined && (command === 'spin' || command === 'startwheel')
+        ? this.store.activePoll(now) : undefined;
+      if (pollStartedByWheel?.type === 'quest') return sayMany(formatPollAnnouncement(pollStartedByWheel, Math.min(430, this.config.appChatMessageLength)), 'poll');
+      return say(arcadeResponse,
+        (command==='spin'||command==='startwheel')&&this.arcade.spinActionTypeAt(now)==='boost_pet'?'pet':undefined);
+    }
     const questPollResponse = this.questPoll.handle(message, command, args, now);
     if (questPollResponse !== undefined) return questPollResponse ? say(questPollResponse) : [];
 

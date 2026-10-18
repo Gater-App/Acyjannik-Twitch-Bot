@@ -3,7 +3,7 @@ import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from 
 import { URL } from 'node:url';
 import type { AddressInfo } from 'node:net';
 import type { ChatMessage } from './types.js';
-import { FeatureStore, type CustomCommand, type QuestPolicy, type QuestStatus, type SeasonalEvent, type WidgetType } from './feature-store.js';
+import { FeatureStore, type CustomCommand, type PollRecord, type QuestPolicy, type QuestStatus, type SeasonalEvent, type WidgetType } from './feature-store.js';
 import { DISCORD_DASHBOARD_PAGE } from './discord-dashboard-page.js';
 import { communityWidgetHtml, ARCADE_CARD, ARCADE_REWARDS_CARD, ARCADE_REWARDS_SCRIPT, ARCADE_SCRIPT, QUEST_POLL_CARD, QUEST_POLL_SCRIPT, VAULT_CARD, VAULT_SCRIPT } from './dashboard-community-ui.js';
 import { SPARK_CARD, SPARK_SCRIPT } from './conversation-spark-ui.js';
@@ -52,6 +52,7 @@ import { ElioChronicles } from './elio-chronicles.js';
 import { ELIO_CHRONICLES_CARD, ELIO_CHRONICLES_SCRIPT } from './elio-chronicles-ui.js';
 import { EVENT_DIRECTOR_CARD, EVENT_DIRECTOR_SCRIPT } from './event-director-ui.js';
 import { EventDirector, adaptiveBossHp } from './event-director.js';
+import { formatPollAnnouncement } from './poll-announcement.js';
 
 interface Session { userId: string; login: string; csrf: string; expiresAt: number; role: 'admin'|'moderator'; }
 interface RuntimeStatus { twitchConnected: boolean; channel: string; channelProfileImageUrl?:string; startedAt: number; lastError?: string; queued?: number; suppressed?: number; failed?:number; rateLimited?:number; expired?:number; averageDelayMs?:number; chatDispatch?:{queued:number;sending:boolean;sent:number;failed:number;rateLimited:number;suppressed:number;expired:number;averageDelayMs:number;lastError?:string;durablePending?:number;durableFailed?:number;durableExpired?:number}; streamLive?: boolean|undefined; streamStatusCheckedAt?: number; streamSnapshot?:{id?:string;title?:string;gameName?:string;viewerCount?:number;startedAt?:string;thumbnailUrl?:string}; lastChatReceiveAt?:number; lastBotChatSendAt?:number; lastBotChatSendErrorAt?:number; chatResponse?: { profile: string; suppressed: number; deferred: number }; }
@@ -197,6 +198,11 @@ export class DashboardServer {
   private readonly redirectUri = process.env.DASHBOARD_REDIRECT_URI?.trim() || '';
   private readonly host = process.env.DASHBOARD_HOST?.trim() || '127.0.0.1';
   private readonly port = Number(process.env.DASHBOARD_PORT || '3001');
+
+  private async announcePoll(poll: PollRecord): Promise<void> {
+    if (!this.sendToChat) throw new Error('Der Twitch-Chatversand ist nicht verfügbar.');
+    for (const message of formatPollAnnouncement(poll, Math.min(430, Number(process.env.APP_CHAT_MESSAGE_LENGTH || 450)))) await this.sendToChat(message, 'poll');
+  }
 
   constructor(
     private readonly store: FeatureStore,
@@ -986,7 +992,7 @@ export class DashboardServer {
         if(!poll){this.json(res,409,{error:'Es läuft bereits eine andere Abstimmung.'});return;}
         if(!this.store.markIdeasVoting(ids,now)){this.store.endPoll(poll.id,now,true);this.json(res,409,{error:'Eine Idee hat während des Starts ihren Status geändert. Bitte erneut laden.'});return;}
         this.audit(session,'community-ideas-vote-start',poll.id,{ideaCount:ids.length},now);
-        if(this.sendToChat)try{await this.sendToChat('🗳️💜 Die Community entscheidet! Stimmt im Community-Portal ab: https://twitch.gater-app.de/community/ideen','poll');}catch{this.json(res,502,{error:'Abstimmung läuft, aber die Chat-Ankündigung konnte nicht bestätigt werden. Sie wird nicht erneut gesendet.',poll});return;}
+        try{await this.announcePoll(poll);}catch{this.json(res,502,{error:'Abstimmung läuft, aber die vollständige Chat-Ankündigung konnte nicht bestätigt werden. Sie wird nicht automatisch erneut gesendet.',poll});return;}
         this.json(res,201,{ok:true,poll});return;
       }
       const allowed=new Set(['review','approve','reject','accept','plan','implement','archive','categorize']);
@@ -1104,7 +1110,9 @@ export class DashboardServer {
         const question=normalizeCommunityText(String(body.question||''),3,180),options=Array.isArray(body.options)?body.options.map(v=>normalizeCommunityText(String(v),1,100)):[],duration=Number(body.durationSeconds);
         if(!question||options.length<2||options.length>5||options.some(v=>!v)||!Number.isInteger(duration)||duration<10||duration>3600){this.json(res,400,{error:'Umfrage-Eingaben sind ungültig.'});return;}
         const pollSettings=this.store.config('poll_settings',defaultPollSettings()),poll=this.store.createPoll({type:'chat',question,options:options.map(label=>({label:label!})),durationMs:duration*1000,allowVoteChange:pollSettings.allowVoteChange,createdBy:session.userId,now});
-        if(!poll){this.json(res,409,{error:'Eine Umfrage läuft bereits.'});return;}this.store.decideSparkProposal(id,'executed',session.userId,now);this.audit(session,'spark-create-poll',id,{pollId:poll.id},now);this.json(res,201,{poll});return;
+        if(!poll){this.json(res,409,{error:'Eine Umfrage läuft bereits.'});return;}this.store.decideSparkProposal(id,'executed',session.userId,now);this.audit(session,'spark-create-poll',id,{pollId:poll.id},now);
+        try{await this.announcePoll(poll);}catch{this.json(res,502,{error:'Umfrage läuft, aber die vollständige Chat-Ankündigung konnte nicht bestätigt werden. Sie wird nicht automatisch erneut gesendet.',poll});return;}
+        this.json(res,201,{poll});return;
       }
       if(action==='create-quest'){
         const title=normalizeCommunityText(String(body.title||''),3,this.questPolicy().maxLength);if(!title){this.json(res,400,{error:'Quest-Titel ungültig.'});return;}
@@ -1277,7 +1285,7 @@ export class DashboardServer {
         durationMs: durationSeconds * 1000, allowVoteChange: false, createdBy: session.userId, now });
       if (!poll) { this.json(res, 409, { error: 'Eine Umfrage läuft bereits oder die Optionen sind ungültig.' }); return; }
       this.audit(session, 'poll-start', poll.id, { optionCount: options.length }, now);
-      if(this.sendToChat)try{await this.sendToChat(`🗳️ Neue Live-Abstimmung: ${poll.question} · Im Chat mit !vote 1–${options.length} oder im Community-Portal abstimmen.`,'poll');}catch{this.json(res,502,{error:'Abstimmung wurde gespeichert, aber die Chat-Ankündigung konnte nicht bestätigt werden. Sie wird nicht automatisch erneut gesendet.',poll});return;}
+      try{await this.announcePoll(poll);}catch{this.json(res,502,{error:'Abstimmung wurde gespeichert, aber die vollständige Chat-Ankündigung konnte nicht bestätigt werden. Sie wird nicht automatisch erneut gesendet.',poll});return;}
       this.json(res, 201, { poll }); return;
     }
     if (route === 'polls/quest-vote') {
@@ -1294,7 +1302,9 @@ export class DashboardServer {
         options: quests.map((quest) => ({ label: quest!.title, questId: quest!.id })), durationMs: durationSeconds * 1000,
         allowVoteChange: settings.allowVoteChange, createdBy: session.userId, now });
       if (!poll) { this.json(res, 409, { error: 'Es läuft bereits eine Umfrage oder eine Quest ist nicht mehr freigegeben.' }); return; }
-      this.audit(session, 'quest-poll-start', poll.id, { questIds: ids }, now); this.json(res, 201, { poll }); return;
+      this.audit(session, 'quest-poll-start', poll.id, { questIds: ids }, now);
+      try{await this.announcePoll(poll);}catch{this.json(res,502,{error:'Quest-Abstimmung läuft, aber die vollständige Chat-Ankündigung konnte nicht bestätigt werden. Sie wird nicht automatisch erneut gesendet.',poll});return;}
+      this.json(res, 201, { poll }); return;
     }
     if (route === 'polls/action') {
       const id = String(body.id || ''), action = String(body.action || '');
