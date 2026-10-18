@@ -38,16 +38,16 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
   const port = await freePort();
   process.env.TWITCH_CLIENT_ID = 'test-client'; process.env.TWITCH_CLIENT_SECRET = 'test-secret';
   process.env.DASHBOARD_REDIRECT_URI = 'https://bot.example.test/dashboard/oauth/callback';
-  process.env.DASHBOARD_ADMIN_IDS = 'admin-id'; process.env.DASHBOARD_HOST = '127.0.0.1'; process.env.DASHBOARD_PORT = String(port);
+  process.env.DASHBOARD_ADMIN_IDS = 'admin-id other-admin-id'; process.env.DASHBOARD_HOST = '127.0.0.1'; process.env.DASHBOARD_PORT = String(port);
   let verifiedUserId = 'admin-id';
   const fetchImpl: typeof fetch = async (input, init) => {
     const url = String(input);
     if (url.endsWith('/oauth2/token')) return Response.json({ access_token: 'ephemeral-token' });
     if (url.endsWith('/oauth2/validate')) {
       assert.equal(new Headers(init?.headers).get('Authorization'), 'OAuth ephemeral-token');
-      return Response.json({ client_id: 'test-client', user_id: verifiedUserId, login: 'admin' });
+      return Response.json({ client_id: 'test-client', user_id: verifiedUserId, login: verifiedUserId==='admin-id'?'iobestie':'admin' });
     }
-    if (url.endsWith('/helix/users')) return Response.json({ data: [{ id: verifiedUserId, login: 'admin', display_name: 'Admin' }] });
+    if (url.endsWith('/helix/users')) return Response.json({ data: [{ id: verifiedUserId, login: verifiedUserId==='admin-id'?'iobestie':'admin', display_name: 'Admin' }] });
     throw new Error(`Unerwarteter externer Aufruf: ${url}`);
   };
   const arcade = new CommunityArcade(store,'admin-id',()=>0);
@@ -130,8 +130,20 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.match(html,/data-dashboard-view="overview" data-active="true"/u,'Übersicht bleibt bei einem Frontend-Startfehler sichtbar');
     assert.match(html,/dashboardPollVisible/u);assert.match(html,/Retry-After/u);assert.doesNotMatch(html,/setInterval\(refreshMini,3000\)|setInterval\(update,3000\)/u,'veraltete aggressive Minispiel-/Streamer-Polls sind nicht mehr aktiv');
     assert.match(html,/data-community-chaos/u);for(const game of ['elio_rescue','potion','treasure','wake_elio','portal','bodyguard'])assert.match(html,new RegExp(`data-chaos-game="${game}"`,'u'));
+    assert.match(html,/<option value="15">15 Minuten<\/option>/u,'15 Minuten sind als Intervall direkt auswählbar');
+    assert.match(html,/seasonal-items-card/u,'Saison-Währungsverwaltung ist im Community-Bereich vorhanden');
     const csrf = html.match(/name="csrf" content="([a-f0-9]+)"/u)?.[1] || '';
     assert.ok(csrf);
+    store.miniGameTransaction(db=>db.prepare('INSERT INTO xp_users(user_id,display_name,xp,updated_at) VALUES(?,?,?,?)').run('123456','Saisonfan',50,1));
+    const seasonalHeaders={Cookie:sessionCookie,Origin:base,'X-CSRF-Token':csrf,'Content-Type':'application/json'},seasonalUrl=`${base}/dashboard/api/seasonal-grants`;
+    const seasonalPage=await fetch(seasonalUrl,{headers:{Cookie:sessionCookie}});assert.equal(seasonalPage.status,200);assert.deepEqual(((await seasonalPage.json()) as {events:Array<{id:string}>}).events.map(item=>item.id),['christmas','easter','halloween']);
+    const seasonalPayload={requestId:'94c3b3bb-b57e-44a7-95f6-44abec97409b',eventId:'easter',userId:'123456',amount:4};
+    const seasonalConcurrent=await Promise.all([fetch(seasonalUrl,{method:'POST',headers:seasonalHeaders,body:JSON.stringify(seasonalPayload)}),fetch(seasonalUrl,{method:'POST',headers:seasonalHeaders,body:JSON.stringify(seasonalPayload)})]);
+    assert.ok(seasonalConcurrent.every(response=>response.status===200));assert.equal(store.score('easter','123456'),4,'wiederholte parallele Anfragen vergeben die Währung nur einmal');
+    const halloweenGrant=await fetch(seasonalUrl,{method:'POST',headers:seasonalHeaders,body:JSON.stringify({...seasonalPayload,requestId:'616a35dc-71e9-4aca-b570-a7421b258090',eventId:'halloween',amount:2})});assert.equal(halloweenGrant.status,200);assert.equal((store.miniGameQuery(db=>db.prepare('SELECT pumpkins FROM players WHERE user_id=?').get('123456')) as {pumpkins:number}).pumpkins,2,'Halloween-Punkte bleiben mit dem vorhandenen Kürbisstand synchron');
+    verifiedUserId='other-admin-id';const otherLogin=await fetch(`${base}/dashboard/login`,{redirect:'manual'}),otherState=new URL(otherLogin.headers.get('location')||'').searchParams.get('state')||'',otherStateCookie=otherLogin.headers.get('set-cookie')?.split(';')[0]||'';
+    const otherCallback=await fetch(`${base}/dashboard/oauth/callback?code=x&state=${otherState}`,{headers:{Cookie:otherStateCookie},redirect:'manual'}),otherSession=otherCallback.headers.getSetCookie().find(value=>value.startsWith('community_admin='))?.split(';')[0]||'';
+    assert.equal(otherCallback.status,303);assert.equal((await fetch(seasonalUrl,{headers:{Cookie:otherSession}})).status,403,'andere Administratoren erhalten trotz Admin-Rolle keinen Zugriff auf Saisonvergaben');verifiedUserId='admin-id';
     const chaosUrl=`${base}/dashboard/api/community-chaos`,chaosHeaders={Cookie:sessionCookie,Origin:base,'X-CSRF-Token':csrf,'Content-Type':'application/json'};
     const chaosDefault=await fetch(chaosUrl,{headers:{Cookie:sessionCookie}}),chaosDefaultBody=await chaosDefault.json() as {settings:{enabled:boolean;autoEnabled:boolean};active:unknown};
     assert.equal(chaosDefaultBody.settings.enabled,false);assert.equal(chaosDefaultBody.settings.autoEnabled,false);assert.equal(chaosDefaultBody.active,null);
@@ -290,10 +302,10 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     const autoHeaders={Cookie:sessionCookie,Origin:`http://localhost:${port}`,'X-CSRF-Token':csrf,'Content-Type':'application/json'};
     const automaticNoCsrf=await fetch(`${base}/dashboard/api/automatic-messages`,{method:'POST',headers:{Cookie:sessionCookie,'Content-Type':'application/json'},body:JSON.stringify({action:'save',title:'Test',message:'Testmeldung',intervalMinutes:30})});
     assert.equal(automaticNoCsrf.status,403,'Änderungen benötigen CSRF-Schutz');
-    const automaticSave=await fetch(`${base}/dashboard/api/automatic-messages`,{method:'POST',headers:autoHeaders,body:JSON.stringify({action:'save',title:'Discord-Hinweis',message:'Kommt zu uns auf Discord!',intervalMinutes:45,enabled:true,activeChatOnly:true})});
+    const automaticSave=await fetch(`${base}/dashboard/api/automatic-messages`,{method:'POST',headers:autoHeaders,body:JSON.stringify({action:'save',title:'Discord-Hinweis',message:'Kommt zu uns auf Discord!',intervalMinutes:15,enabled:true,activeChatOnly:true})});
     assert.equal(automaticSave.status,200,await automaticSave.clone().text());
     const savedAutomatic=await automaticSave.json() as {message:{id:string;preview:string;intervalMinutes:number}};
-    assert.equal(savedAutomatic.message.intervalMinutes,45);assert.match(savedAutomatic.message.preview,/【📢 INFO】/u);
+    assert.equal(savedAutomatic.message.intervalMinutes,15);assert.match(savedAutomatic.message.preview,/【📢 INFO】/u);
     assert.equal(((await (await fetch(`${base}/dashboard/api/automatic-messages`,{headers:{Cookie:sessionCookie}})).json()) as {messages:Array<unknown>}).messages.length,1);
     const automaticPaused=await fetch(`${base}/dashboard/api/automatic-messages`,{method:'POST',headers:autoHeaders,body:JSON.stringify({action:'toggle',id:savedAutomatic.message.id,enabled:false})});
     assert.equal(automaticPaused.status,200);assert.equal(automaticMessages.list()[0]?.enabled,false);

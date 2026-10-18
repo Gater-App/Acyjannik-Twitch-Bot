@@ -1125,6 +1125,19 @@ export class FeatureStore {
           INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (43, unixepoch()*1000);`);
       })();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 44) {
+      if (currentVersion > 0) this.backupBeforeMigration(44);
+      this.db.transaction(() => this.db.exec(`
+        CREATE TABLE IF NOT EXISTS seasonal_admin_grants (
+          request_id TEXT PRIMARY KEY, event_id TEXT NOT NULL REFERENCES seasonal_events(id),
+          user_id TEXT NOT NULL, display_name TEXT NOT NULL, amount INTEGER NOT NULL CHECK(amount BETWEEN 1 AND 100),
+          points_after INTEGER NOT NULL CHECK(points_after>=0), actor_id TEXT NOT NULL, created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS seasonal_admin_grants_created ON seasonal_admin_grants(created_at DESC);
+        INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (44, unixepoch()*1000);
+      `))();
+    }
   }
 
   private backupBeforeMigration(version: number): void {
@@ -2313,6 +2326,50 @@ export class FeatureStore {
   score(id: string, userId: string): number {
     const row = this.db.prepare('SELECT points FROM seasonal_scores WHERE event_id=? AND user_id=?').get(id, userId) as { points: number } | undefined;
     return row?.points ?? 0;
+  }
+
+  grantSeasonalCurrency(input:{requestId:string;eventId:string;userId:string;amount:number;actorId:string;now:number}):
+    {duplicate:boolean;eventId:string;eventName:string;currency:string;userId:string;displayName:string;amount:number;pointsBefore:number;pointsAfter:number} {
+    if(!/^[0-9a-f-]{36}$/iu.test(input.requestId)||!['halloween','christmas','easter'].includes(input.eventId)
+      ||!/^\d{1,30}$/u.test(input.userId)||!Number.isInteger(input.amount)||input.amount<1||input.amount>100
+      ||!/^[a-z0-9_-]{1,64}$/iu.test(input.actorId)||!Number.isSafeInteger(input.now)||input.now<1)throw new Error('Bitte gültige Saison, Person und Menge angeben (1–100).');
+    return this.db.transaction(()=>{
+      const prior=this.db.prepare('SELECT g.event_id,e.name AS event_name,e.currency,g.user_id,g.display_name,g.amount,g.points_after FROM seasonal_admin_grants g JOIN seasonal_events e ON e.id=g.event_id WHERE g.request_id=?').get(input.requestId) as
+        {event_id:string;event_name:string;currency:string;user_id:string;display_name:string;amount:number;points_after:number}|undefined;
+      if(prior)return {duplicate:true,eventId:prior.event_id,eventName:prior.event_name,currency:prior.currency,userId:prior.user_id,displayName:prior.display_name,amount:prior.amount,pointsBefore:prior.points_after-prior.amount,pointsAfter:prior.points_after};
+      const event=this.db.prepare('SELECT id,name,currency FROM seasonal_events WHERE id=?').get(input.eventId) as {id:string;name:string;currency:string}|undefined;
+      if(!event)throw new Error('Diese Saison-Währung ist nicht verfügbar.');
+      const user=this.db.prepare(`SELECT display_name FROM (
+        SELECT user_id,display_name FROM xp_users UNION ALL SELECT user_id,display_name FROM seasonal_scores UNION ALL SELECT user_id,display_name FROM players
+      ) WHERE user_id=? LIMIT 1`).get(input.userId) as {display_name:string}|undefined;
+      if(!user)throw new Error('Dieses Twitch-Konto wurde in der Community noch nicht gefunden.');
+      const seasonal=this.db.prepare('SELECT points FROM seasonal_scores WHERE event_id=? AND user_id=?').get(event.id,input.userId) as {points:number}|undefined;
+      const legacy=event.id==='halloween'?this.db.prepare('SELECT pumpkins AS points FROM players WHERE user_id=?').get(input.userId) as {points:number}|undefined:undefined;
+      const pointsBefore=Math.max(seasonal?.points??0,legacy?.points??0),pointsAfter=pointsBefore+input.amount;
+      if(!Number.isSafeInteger(pointsAfter)||pointsAfter>1_000_000_000)throw new Error('Der Saison-Stand würde den zulässigen Höchstwert überschreiten.');
+      this.db.prepare(`INSERT INTO seasonal_scores(event_id,user_id,display_name,points,updated_at) VALUES(?,?,?,?,?)
+        ON CONFLICT(event_id,user_id) DO UPDATE SET display_name=excluded.display_name,points=excluded.points,updated_at=excluded.updated_at`).run(event.id,input.userId,user.display_name,pointsAfter,input.now);
+      if(event.id==='halloween')this.db.prepare(`INSERT INTO players(user_id,display_name,pumpkins,updated_at) VALUES(?,?,?,?)
+        ON CONFLICT(user_id) DO UPDATE SET display_name=excluded.display_name,pumpkins=excluded.pumpkins,updated_at=excluded.updated_at`).run(input.userId,user.display_name,pointsAfter,input.now);
+      this.db.prepare('INSERT INTO seasonal_admin_grants(request_id,event_id,user_id,display_name,amount,points_after,actor_id,created_at) VALUES(?,?,?,?,?,?,?,?)')
+        .run(input.requestId,event.id,input.userId,user.display_name,input.amount,pointsAfter,input.actorId,input.now);
+      this.db.prepare('INSERT INTO admin_audit(actor_id,action,target,details_json,created_at) VALUES(?,?,?,?,?)')
+        .run(input.actorId,'seasonal-currency-grant',input.userId,JSON.stringify({eventId:event.id,currency:event.currency,amount:input.amount,pointsAfter}),input.now);
+      return {duplicate:false,eventId:event.id,eventName:event.name,currency:event.currency,userId:input.userId,displayName:user.display_name,amount:input.amount,pointsBefore,pointsAfter};
+    })();
+  }
+
+  seasonalGrantHistory(limit=10):Array<{eventId:string;displayName:string;currency:string;amount:number;pointsAfter:number;actorId:string;createdAt:number}> {
+    return (this.db.prepare('SELECT g.event_id,e.currency,g.display_name,g.amount,g.points_after,g.actor_id,g.created_at FROM seasonal_admin_grants g JOIN seasonal_events e ON e.id=g.event_id ORDER BY g.created_at DESC LIMIT ?').all(Math.max(1,Math.min(50,limit))) as Array<{event_id:string;currency:string;display_name:string;amount:number;points_after:number;actor_id:string;created_at:number}>).map(row=>({eventId:row.event_id,currency:row.currency,displayName:row.display_name,amount:row.amount,pointsAfter:row.points_after,actorId:row.actor_id,createdAt:row.created_at}));
+  }
+
+  seasonalGrantCandidates(search:string,limit=25):Array<{userId:string;displayName:string}> {
+    const query=search.trim().slice(0,80),pattern=`%${query}%`;
+    return (this.db.prepare(`WITH candidates AS (
+      SELECT user_id,display_name FROM xp_users UNION ALL SELECT user_id,display_name FROM seasonal_scores UNION ALL SELECT user_id,display_name FROM players
+    ), resolved AS (SELECT user_id,MAX(display_name) AS display_name FROM candidates GROUP BY user_id)
+    SELECT user_id,display_name FROM resolved WHERE ?='' OR lower(user_id) LIKE lower(?) OR lower(display_name) LIKE lower(?) ORDER BY lower(display_name),user_id LIMIT ?`)
+      .all(query,pattern,pattern,Math.max(1,Math.min(50,limit))) as Array<{user_id:string;display_name:string}>).map(row=>({userId:row.user_id,displayName:row.display_name}));
   }
 
   state<T>(key: string, fallback: T): T {
