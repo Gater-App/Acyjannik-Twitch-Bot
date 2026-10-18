@@ -238,6 +238,11 @@ async function runLiveMode(): Promise<void> {
             .then(accepted=>features.finishBossResultDelivery(result.id,accepted,Date.now(),accepted?'':'Chatwarteschlange hat die Ergebnisnachricht nicht übernommen.'))
             .catch(()=>features.finishBossResultDelivery(result.id,false,Date.now(),'Twitch hat die Ergebnisnachricht nicht bestätigt.'));
         }
+        for(const result of features.claimPollResultMessages(tickNow)){
+          void queue.enqueue(result.message,undefined,'poll',{id:`poll-result:${result.id}:${result.attempt}`,priority:90,expiresAt:Date.now()+15*60_000})
+            .then(accepted=>features.finishPollResultDelivery(result.id,accepted,Date.now(),accepted?'':'Chatwarteschlange hat die Ergebnisnachricht nicht übernommen.'))
+            .catch(()=>features.finishPollResultDelivery(result.id,false,Date.now(),'Twitch hat die Ergebnisnachricht nicht bestätigt.'));
+        }
         for(const result of features.claimChatDeliveryMessages(tickNow)){
           void queue.enqueue(result.message,result.replyParentMessageId,result.category,{
             id:`seasonal-result:${result.id}:${result.attempt}`,priority:85,expiresAt:result.expiresAt,

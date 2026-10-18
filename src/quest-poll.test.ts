@@ -107,6 +107,18 @@ test('Chat-Umfragen deduplizieren Events, erlauben konfigurierte Stimmenänderun
     assert.equal(store.poll(poll.id)?.winnerOption, 1);
     assert.equal(store.poll(poll.id)?.options[1]?.votes, 2);
     assert.equal(store.poll(poll.id)?.status, 'ended');
+    const claimed = store.claimPollResultMessages(20_000);
+    assert.equal(claimed.length, 1, 'ein abgeschlossenes Poll-Ergebnis wird dauerhaft zur Chat-Zustellung eingeplant');
+    assert.match(claimed[0]!.message, /ABSTIMMUNG BEENDET/u);
+    assert.match(claimed[0]!.message, /Gewinner: Ohne Schild/u);
+    assert.match(claimed[0]!.message, /2 Stimmen/u);
+    assert.deepEqual(store.claimPollResultMessages(20_001), [], 'parallele Ticks beanspruchen dasselbe Ergebnis nicht doppelt');
+    store.finishPollResultDelivery(poll.id, false, 20_002, 'simulierter Versandfehler');
+    assert.deepEqual(store.claimPollResultMessages(20_003), [], 'Retry wird nicht vor seiner Backoff-Zeit versendet');
+    const retried = store.claimPollResultMessages(50_002);
+    assert.equal(retried.length, 1, 'fehlgeschlagene Zustellung ist nach Backoff wieder aufnehmbar');
+    store.finishPollResultDelivery(poll.id, true, 50_003);
+    assert.deepEqual(store.claimPollResultMessages(50_004), [], 'bestätigte Ergebnisnachricht wird nicht erneut versendet');
     const tie = store.createPoll({ type: 'chat', question: 'Gleichstandstest?', options: [{ label: 'A' }, { label: 'B' }],
       durationMs: 10_000, allowVoteChange: false, createdBy: 'broadcaster-1', now: 30_000 });
     assert.ok(tie);
@@ -172,7 +184,7 @@ test('SQLite-Migration sichert die vorherige Datenbank und erhält Halloween-Pun
     assert.equal(store.score('halloween', 'viewer-1'), 7);
     store.close();
     const backups = fs.readdirSync(path.join(directory, 'backups'));
-    assert.equal(backups.length, before + 40, 'v4–v43 werden jeweils vor der Schemaänderung gesichert');
+    assert.equal(backups.length, before + 42, 'v4–v45 werden jeweils vor der Schemaänderung gesichert');
     const migrationV4 = backups.find((name) => name.includes('migration-v4-'))!;
     const newest = path.join(directory, 'backups', migrationV4);
     assert.equal(fs.statSync(newest).mode & 0o777, 0o600);
