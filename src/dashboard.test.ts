@@ -135,6 +135,13 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     const chaosUrl=`${base}/dashboard/api/community-chaos`,chaosHeaders={Cookie:sessionCookie,Origin:base,'X-CSRF-Token':csrf,'Content-Type':'application/json'};
     const chaosDefault=await fetch(chaosUrl,{headers:{Cookie:sessionCookie}}),chaosDefaultBody=await chaosDefault.json() as {settings:{enabled:boolean;autoEnabled:boolean};active:unknown};
     assert.equal(chaosDefaultBody.settings.enabled,false);assert.equal(chaosDefaultBody.settings.autoEnabled,false);assert.equal(chaosDefaultBody.active,null);
+    const storyUrl=`${base}/dashboard/api/elio-chronicles`,storyHeaders={Cookie:sessionCookie,Origin:base,'X-CSRF-Token':csrf,'Content-Type':'application/json'};
+    const enableStory=await fetch(storyUrl,{method:'POST',headers:storyHeaders,body:JSON.stringify({action:'settings',settings:{enabled:true,autoEnabled:false,diaryEnabled:false,diaryChannelId:'',eventsBetweenStory:2}})});
+    assert.equal(enableStory.status,200,await enableStory.clone().text());
+    assert.equal((await enableStory.json() as {settings:{enabled:boolean;autoEnabled:boolean;diaryEnabled:boolean}}).settings.enabled,true);
+    assert.equal(store.config<{enabled?:boolean;autoEnabled?:boolean}>('community_chaos_settings',{}).enabled,false,'Story-Freigabe darf das allgemeine Community-Chaos nicht einschalten');
+    assert.equal(store.config<{enabled?:boolean;autoEnabled?:boolean}>('community_chaos_settings',{}).autoEnabled,false);
+    assert.equal(store.config<{autoEnabled?:boolean}>('elio_chronicles_settings',{}).autoEnabled,false,'Story-Automatik bleibt separat ausgeschaltet');
     const invalidChaosAuto=await fetch(chaosUrl,{method:'POST',headers:chaosHeaders,body:JSON.stringify({action:'settings',settings:{autoEnabled:true}})});assert.equal(invalidChaosAuto.status,409);
     const enableChaos=await fetch(chaosUrl,{method:'POST',headers:chaosHeaders,body:JSON.stringify({action:'settings',settings:{enabled:true}})});assert.equal(enableChaos.status,200);
     const startChaos=await fetch(chaosUrl,{method:'POST',headers:chaosHeaders,body:JSON.stringify({action:'start',game:'elio_rescue'})});assert.equal(startChaos.status,201);assert.equal((await startChaos.json() as {event:{testMode:boolean}}).event.testMode,false);
