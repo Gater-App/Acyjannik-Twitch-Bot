@@ -173,10 +173,12 @@ test('First-chat welcome is opt-in, personalized, deduplicated and stores no cha
 test('Community-Chat gibt Tresorhinweise zurück und bestätigt die tatsächliche Ledger-Auszahlung',async()=>{
   const f=fixture(),store=new FeatureStore(f.file),config={...loadConfig({testMode:true}),databasePath:f.file},community=new CommunityFeatures(store,config);
   try{
-    community.vault.updateSettings({enabled:true,participantXp:5,solverBonusXp:0});assert.equal(community.vault.startManual(10_000).ok,true);
+    community.vault.updateSettings({enabled:true,participantXp:5,solverBonusXp:0});const started=community.vault.startManual(10_000);assert.equal(started.ok,true);
+    assert.match(started.message,/!code XXX.*XXX ist ein Platzhalter.*drei selbst gewählte Ziffern/u);assert.doesNotMatch(started.message,/(?<!\d)\d{3}(?!\d)/u);
     store.miniGameQuery(db=>db.prepare("UPDATE community_vault_rounds SET secret_code='042' WHERE status='active'").run());
     const make=(eventId:string,text:string,sentAt:number):ChatMessage=>({eventId,broadcasterUserId:config.broadcasterUserId,senderUserId:'vault-viewer',senderLogin:'vaultviewer',senderDisplayName:'VaultViewer',message:text,sentAt});
-    const first=await community.handle(make('vault-wrong','!code 404',10_001),'code',['404'],10_001);assert.equal(first.length,1);assert.match(first[0]?.message||'',/Tipp gespeichert/u);assert.match(first[0]?.message||'',/Noch ein Tipp/u);
+    const first=await community.handle(make('vault-wrong','!code 404',10_001),'code',['404'],10_001);assert.equal(first.length,1);assert.match(first[0]?.message||'',/VaultViewer: Dein Tipp wurde geprüft/u);assert.match(first[0]?.message||'',/0 Ziffern stehen an der richtigen Stelle.*2 weitere Ziffern sind im Code.*1 Ziffer kommt nicht im Code vor/u);assert.match(first[0]?.message||'',/Noch ein gültiger Tipp/u);
+    const invalid=await community.handle(make('vault-invalid','!code 12',10_002),'code',['12'],10_002);assert.equal(invalid.length,1);assert.match(invalid[0]?.message||'',/!code XXX.*Ersetze XXX durch deine drei Ziffern/u);assert.doesNotMatch(invalid[0]?.message||'',/(?<!\d)\d{3}(?!\d)/u);
     const opened=await community.handle(make('vault-correct','!code 042',13_002),'code',['042'],13_002);assert.equal(opened.length,1);assert.match(opened[0]?.message||'',/tatsächliche Auszahlung: \+5 XP/u);assert.equal(store.xp('vault-viewer').xp,5);
   }finally{store.close();f.close();}
 });

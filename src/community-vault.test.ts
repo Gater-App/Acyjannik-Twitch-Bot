@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
-import { CommunityVault, scoreGuess } from './community-vault.js';
+import { CommunityVault, formatGuessFeedback, scoreGuess } from './community-vault.js';
 import { FeatureStore } from './feature-store.js';
 import { testConfig } from './test-config.js';
 import type { ChatMessage } from './types.js';
@@ -12,11 +15,16 @@ test('Community-Tresor bewertet führende Nullen und doppelte Ziffern mathematis
   assert.deepEqual(scoreGuess('042','427'),{exact:0,misplaced:2});
   assert.deepEqual(scoreGuess('042','440'),{exact:1,misplaced:1});
   assert.deepEqual(scoreGuess('042','404'),{exact:0,misplaced:2});
+  assert.deepEqual(scoreGuess('112','121'),{exact:1,misplaced:2});
+  assert.deepEqual(scoreGuess('112','111'),{exact:2,misplaced:0});
+  assert.match(formatGuessFeedback('viewer',1,2,4,'Noch ein Tipp.'),/1 Ziffer steht an der richtigen Stelle.*2 weitere Ziffern sind im Code.*0 Ziffern kommen nicht im Code vor/u);
 });
 
-test('Tresorstart erklärt Befehl, Zeitlimit und die tatsächlich eingestellte Teilnahmebelohnung',()=>{
+test('Tresorstart erklärt XXX als Platzhalter und verrät keine dreistellige Zahl',()=>{
   const {store,vault}=setup(),result=vault.startManual(50_000);
-  assert.equal(result.ok,true);assert.match(result.message,/!code 042/u);assert.match(result.message,/3 Sekunden/u);assert.match(result.message,/20 Tipps/u);assert.match(result.message,/bis zu 5 XP/u);assert.match(result.message,/3 Minuten/u);
+  assert.equal(result.ok,true);assert.match(result.message,/🔐 COMMUNITY-TRESOR GEÖFFNET!/u);assert.match(result.message,/!code XXX/u);
+  assert.match(result.message,/XXX ist ein Platzhalter.*durch drei selbst gewählte Ziffern/u);assert.match(result.message,/3 Minuten/u);assert.match(result.message,/bis zu 5 XP/u);
+  assert.doesNotMatch(result.message,/(?<!\d)\d{3}(?!\d)/u);assert.doesNotMatch(result.message,/zum Beispiel/u);
   store.close();
 });
 
@@ -31,7 +39,7 @@ test('Tresor speichert keine Ratestrings, schützt den Geheimcode und begrenzt V
   assert.deepEqual(rows,[{exact_count:0,misplaced_count:2},{exact_count:0,misplaced_count:2}]);
   const attemptColumns=store.miniGameQuery(db=>db.prepare('PRAGMA table_info(community_vault_attempts)').all()) as Array<{name:string}>;
   assert.equal(attemptColumns.some(({name})=>/guess|code/iu.test(name)),false,'persisted attempts contain feedback only, never the submitted guess');
-  const repeatedMessage=chat('repeat','000',now+1_000);repeatedMessage.senderUserId='viewer-first';const repeated=vault.guess(repeatedMessage,['000'],now+1_000);assert.match(repeated.privateHint||'',/Warte kurz/u);
+  const repeatedMessage=chat('repeat','000',now+1_000);repeatedMessage.senderUserId='viewer-first';const repeated=vault.guess(repeatedMessage,['000'],now+1_000);assert.match(repeated.privateHint||'',/Warte noch/u);
   store.close();
 });
 
@@ -90,4 +98,46 @@ test('Tresor läuft nach Zeitablauf aus, löst den Code auf und versteckt ihn da
   assert.equal(JSON.stringify(vault.publicSnapshot(now+2)).includes('042'),false);
   const messages=vault.tickMessages(now+2);assert.match(messages[0]?.message||'',/042/u);
   const snapshot=vault.publicSnapshot(now+3);assert.equal((snapshot.vault as {resultCode:string}).resultCode,'042');store.close();
+});
+
+test('isolierte vollständige Runde erklärt Tipps, gewinnt einmal und übersteht Neustart ohne doppelte XP oder Meldung',()=>{
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'vault-simulation-')),file=path.join(directory,'vault.sqlite'),now=900_000;
+  let store=new FeatureStore(file),vault=new CommunityVault(store,'bot-1');vault.updateSettings({enabled:true,participantXp:5,solverBonusXp:5});
+  const started=vault.startManual(now);assert.equal(started.ok,true);
+  store.miniGameQuery(db=>db.prepare("UPDATE community_vault_rounds SET secret_code='427' WHERE status='active'").run());
+  const opening=started.message;
+  const hiddenCode=store.miniGameQuery(db=>(db.prepare("SELECT secret_code FROM community_vault_rounds WHERE status='active'").get() as {secret_code:string}).secret_code);
+  assert.equal(hiddenCode,'427');assert.doesNotMatch(opening,/(?<!\d)\d{3}(?!\d)/u);assert.match(opening,/XXX ist ein Platzhalter/u);
+  const viewer=(id:string,name:string,guess:string,at:number)=>{const message=chat(id+'-'+at,guess,at);message.senderUserId=id;message.senderDisplayName=name;return message;};
+  const first=vault.guess(viewer('alice','Alice','111',now+1),['111'],now+1).privateHint||'';
+  const second=vault.guess(viewer('alice','Alice','400',now+3_002),['400'],now+3_002).privateHint||'';
+  const third=vault.guess(viewer('bob','Bob','729',now+3_003),['729'],now+3_003).privateHint||'';
+  const invalid=vault.guess(viewer('cara','Cara','12',now+3_004),['12'],now+3_004).privateHint||'';
+  assert.match(first,/0 Ziffern stehen an der richtigen Stelle.*0 weitere Ziffern sind im Code.*3 Ziffern kommen nicht im Code vor/u);
+  assert.match(second,/1 Ziffer steht an der richtigen Stelle.*0 weitere Ziffern sind im Code.*2 Ziffern kommen nicht im Code vor/u);
+  assert.match(third,/1 Ziffer steht an der richtigen Stelle.*1 weitere Ziffer ist im Code.*1 Ziffer kommt nicht im Code vor/u);
+  assert.match(invalid,/!code XXX.*Ersetze XXX durch deine drei Ziffern/u);assert.doesNotMatch(invalid,/(?<!\d)\d{3}(?!\d)/u);
+  const win=vault.guess(viewer('alice','Alice','427',now+6_003),['427'],now+6_003).privateHint||'';
+  assert.match(win,/tatsächliche Auszahlung: \+10 XP/u);assert.equal(store.xp('alice').xp,10);
+  assert.equal(vault.guess(viewer('alice','Alice','427',now+6_004),['427'],now+6_004).privateHint,'Gerade ist kein Tresor offen.');
+  store.close();store=new FeatureStore(file);vault=new CommunityVault(store,'bot-1');
+  const result=vault.tickMessages(now+6_005);assert.equal(result.length,1);
+  assert.match(result[0]!.message,/Alice hat den Code geknackt.*1 qualifizierte Personen · 10 XP tatsächlich ausgezahlt/u);
+  assert.deepEqual(vault.tickMessages(now+6_006),[],'nach Neustart wird die Abschlussmeldung nicht doppelt gesendet');
+  assert.equal(store.xp('alice').xp,10,'Neustart zahlt die Ledger-Buchung nicht erneut aus');
+  assert.equal(store.miniGameQuery(db=>(db.prepare('SELECT COUNT(*) n FROM community_vault_awards').get() as {n:number}).n),2);
+  store.close();fs.rmSync(directory,{recursive:true,force:true});
+});
+
+test('isolierter Zeitablauf löst den Code nach Neustart genau einmal auf und zahlt keine XP',()=>{
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'vault-timeout-')),file=path.join(directory,'vault.sqlite'),now=1_200_000;
+  let store=new FeatureStore(file),vault=new CommunityVault(store,'bot-1');vault.updateSettings({enabled:true});
+  assert.equal(vault.startManual(now).ok,true);
+  store.miniGameQuery(db=>db.prepare("UPDATE community_vault_rounds SET secret_code='427',ends_at=? WHERE status='active'").run(now+100));
+  vault.guess(chat('bad','111',now+10),['111'],now+10);store.close();
+  store=new FeatureStore(file);vault=new CommunityVault(store,'bot-1');
+  const output=vault.tickMessages(now+101);assert.equal(output.length,1);
+  assert.equal(output[0]!.message,'⏰ Die Tresor-Zeit ist abgelaufen. Der Code war 427. Es wurden keine XP vergeben.');
+  assert.deepEqual(vault.tickMessages(now+102),[]);assert.equal(store.xp('viewer-bad').xp,0);
+  store.close();fs.rmSync(directory,{recursive:true,force:true});
 });

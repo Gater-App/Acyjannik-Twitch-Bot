@@ -24,3 +24,9 @@ test('öffentliche Hilfe zeigt aktivierte Befehle, funktioniert als Suchergebnis
   assert.match(escaped,/&lt;img src=x&gt;/u);
   assert.doesNotMatch(escaped,/<img src=x>/u);
 });
+
+test('Tresor-Hilfe erklärt den Platzhalter und zeigt keine Beispielkombination',()=>{
+  const html=renderPublicHelpPage({...DEFAULT_HELP_AVAILABILITY,vault:true},'','nonce-test');
+  assert.match(html,/!code XXX/u);assert.match(html,/Platzhalter: Ersetze ihn durch drei selbst gewählte Ziffern/u);
+  assert.doesNotMatch(html,/!code \d{3}/u);assert.doesNotMatch(html,/Schreibe !code \d{3}/u);
+});

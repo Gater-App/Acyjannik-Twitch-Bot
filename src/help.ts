@@ -74,7 +74,7 @@ export function helpReply(args: string[], message: ChatMessage, availability: He
     case 'pet': return availability.pet ? '🐱 Elio ist die Community-Katze: !pet zeigt den Zustand, !feed gibt Katzenfutter, !play startet Spielangel- oder Wollknäuel-Spiel, !petcare kümmert sich um ihn und !petstats zeigt Werte.' : '🐱 Elio macht Pause und ist derzeit nicht verfügbar.';
     case 'drop': return availability.drops ? '🎁 Jannik startet eine Belohnungsrunde. Während des Drops schreibe !claim; das Ergebnis wird automatisch bekannt gegeben.' : '🎁 Mystery Drops sind derzeit deaktiviert.';
     case 'gluecksrad': return availability.wheel ? '🎡 Jannik dreht das Glücksrad. Das Ergebnis startet automatisch; bei einer Challenge spielt Jannik die Aufgabe. Status: !wheel.' : '🎡 Das Chaos Wheel ist derzeit deaktiviert.';
-    case 'tresor': return availability.vault ? '🔐 Knackt gemeinsam den dreistelligen Code mit !code 427. Der geheime Hinweis zu deinem letzten Tipp erscheint angemeldet im Community-Portal: https://twitch.gater-app.de/community' : '🔐 Der Community-Tresor ist derzeit deaktiviert.';
+    case 'tresor': return availability.vault ? '🔐 Rate den geheimen dreistelligen Code mit !code XXX. XXX ist ein Platzhalter: Ersetze ihn durch deine drei selbst gewählten Ziffern. Nach falschen Tipps erhältst du Hinweise. Dein letzter Tipp erscheint angemeldet im Community-Portal: https://twitch.gater-app.de/community' : '🔐 Der Community-Tresor ist derzeit deaktiviert.';
     case 'community-portal': return '💜 XP, Elio 🐱, Community-Ideen und Spiele: https://twitch.gater-app.de/community';
     case 'chaos': return availability.chaos ? '🎉 Community-Chaos läuft zeitweise im Chat: !retten, !rot / !blau / !gruen, !schatz, !aufwachen, !portal oder !bodyguard. Teilnahme zählt nur beim passenden aktiven Spiel.' : '🎉 Community-Chaos ist derzeit ausgeschaltet.';
     case 'story': return availability.chronicles ? '📖 Elio Chronicles entwickelt sich während echter Streams. Wenn eine Story-Abstimmung läuft, nutze nur die angezeigten Antworten. In Discord zeigen /elio-story status, /elio-story kapitel, /elio-story hinweise und /elio-story zusammenfassung den freigeschalteten Fortschritt.' : '📖 Elio Chronicles ist derzeit nicht freigegeben.';
@@ -85,7 +85,7 @@ export function helpReply(args: string[], message: ChatMessage, availability: He
 function gameHelp(a: HelpAvailability): string {
   const games = [
     a.eightBall && '!8ball FRAGE (40 % Ja · 40 % Nein · 20 % Vielleicht)', a.rps && '!rps stein (Schere-Stein-Papier)',
-    a.guess && '!startguess (Jannik/Mods/VIPs) · !guess ZAHL (mitraten)', a.duels && '!duel @Name (Duell)', a.vault && '!code 427 (Community-Tresor)',
+    a.guess && '!startguess (Jannik/Mods/VIPs) · !guess ZAHL (mitraten)', a.duels && '!duel @Name (Duell)', a.vault && '!code XXX (XXX ist Platzhalter: durch drei eigene Ziffern ersetzen)',
   ].filter(Boolean);
   if(a.chaos)games.push('!help chaos (zeitweise Community-Chaos-Runden)');
   return games.length ? `🎮 Weitere Chatspiele: ${games.join(' · ')}.` : '🎮 Weitere Chatspiele sind derzeit deaktiviert. Für Community-Runden: !help imposter oder !help detective.';
