@@ -1138,6 +1138,20 @@ export class FeatureStore {
         INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (44, unixepoch()*1000);
       `))();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 45) {
+      if (currentVersion > 0) this.backupBeforeMigration(45);
+      this.db.transaction(() => this.db.exec(`
+        CREATE TABLE IF NOT EXISTS poll_result_outbox (
+          poll_id TEXT PRIMARY KEY REFERENCES polls(id), payload_json TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','sending','sent','failed')),
+          attempts INTEGER NOT NULL DEFAULT 0, available_at INTEGER NOT NULL, lease_until INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL, sent_at INTEGER, last_error TEXT
+        );
+        CREATE INDEX IF NOT EXISTS poll_result_outbox_due ON poll_result_outbox(status,available_at,lease_until);
+        INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (45, unixepoch()*1000);
+      `))();
+    }
   }
 
   private backupBeforeMigration(version: number): void {
@@ -1954,6 +1968,31 @@ export class FeatureStore {
     })();
   }
 
+  claimPollResultMessages(now=Date.now(),limit=10):Array<{id:string;attempt:number;message:string}> {
+    return this.db.transaction(()=>{
+      const rows=this.db.prepare("SELECT poll_id,payload_json,attempts FROM poll_result_outbox WHERE attempts<8 AND ((status='pending' AND available_at<=?) OR (status='sending' AND lease_until<=?)) ORDER BY created_at LIMIT ?")
+        .all(now,now,Math.max(1,Math.min(10,limit))) as Array<{poll_id:string;payload_json:string;attempts:number}>;
+      const claim=this.db.prepare("UPDATE poll_result_outbox SET status='sending',attempts=attempts+1,lease_until=? WHERE poll_id=? AND ((status='pending' AND available_at<=?) OR (status='sending' AND lease_until<=?))");
+      const result:Array<{id:string;attempt:number;message:string}>=[];
+      for(const row of rows){if(!claim.run(now+15*60_000,row.poll_id,now,now).changes)continue;
+        const payload=JSON.parse(row.payload_json) as {question:string;options:Array<{label:string;votes:number}>;winnerOption:number|null;tied:boolean;totalVotes:number};
+        const outcome=payload.tied?'Gleichstand – Jannik entscheidet im Dashboard.':payload.winnerOption===null?'Keine Stimmen abgegeben.':`Gewinner: ${payload.options[payload.winnerOption]?.label||'–'}.`;
+        const question=payload.question.replace(/[\u0000-\u001f\u007f]/gu,' ').replace(/\s+/gu,' ').slice(0,180);
+        result.push({id:row.poll_id,attempt:row.attempts+1,message:`🗳️ ABSTIMMUNG BEENDET: ${question} · ${outcome} · ${payload.totalVotes} Stimmen. Details: !pollresults`});
+      }
+      return result;
+    })();
+  }
+
+  finishPollResultDelivery(id:string,accepted:boolean,now=Date.now(),error=''):void {
+    this.db.transaction(()=>{
+      const row=this.db.prepare('SELECT attempts FROM poll_result_outbox WHERE poll_id=?').get(id) as {attempts:number}|undefined;if(!row)return;
+      if(accepted)this.db.prepare("UPDATE poll_result_outbox SET status='sent',sent_at=?,lease_until=0,last_error=NULL WHERE poll_id=?").run(now,id);
+      else if(row.attempts>=8)this.db.prepare("UPDATE poll_result_outbox SET status='failed',lease_until=0,last_error=? WHERE poll_id=?").run(error.slice(0,180)||'Chatversand fehlgeschlagen',id);
+      else this.db.prepare("UPDATE poll_result_outbox SET status='pending',available_at=?,lease_until=0,last_error=? WHERE poll_id=?").run(now+Math.min(15*60_000,30_000*2**Math.max(0,row.attempts-1)),error.slice(0,180)||'Chatversand fehlgeschlagen',id);
+    })();
+  }
+
   choosePollWinner(id: string, optionNumber: number, actorId: string, now: number): boolean {
     return this.db.transaction(() => {
       const poll = this.db.prepare("SELECT * FROM polls WHERE id=? AND status='ended'").get(id) as PollRow | undefined;
@@ -2064,6 +2103,8 @@ export class FeatureStore {
       }
     }
     this.recordCommunityEvent('poll.ended', { id, totalVotes: total, winnerOption: winner, tied }, now);
+    this.db.prepare("INSERT OR IGNORE INTO poll_result_outbox(poll_id,payload_json,status,attempts,available_at,created_at) VALUES(?,?,'pending',0,?,?)")
+      .run(id,JSON.stringify({question:row.question,options:options.map((option,index)=>({label:option.label,votes:counts.find(entry=>entry.option_index===index)?.count??0})),winnerOption:winner,tied,totalVotes:total}),now,now);
   }
 
   awardXp(eventId: string, userId: string, displayName: string, amount: number, reason: string, now: number, dailyCap?: number): number {
