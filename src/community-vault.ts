@@ -89,9 +89,9 @@ export class CommunityVault {
       db.prepare(`INSERT INTO community_vault_rounds(id,secret_code,status,started_at,ends_at,is_auto,updated_at)
         VALUES(?,?,'active',?,?,?,?)`).run(id,secret,now,now+cfg.durationMinutes*60_000,automatic?1:0,now);return true;
     });
-    const participantReward=cfg.participantXp>0?` Ab mindestens zwei gültigen Tipps gibt es bis zu ${cfg.participantXp} XP Teilnehmerbelohnung pro Person; das tägliche XP-Limit gilt.`:' Für diese Runde sind keine Teilnehmer-XP eingestellt.';
-    const solverReward=cfg.solverBonusXp>0?` Der Finder-Bonus beträgt zusätzlich bis zu ${cfg.solverBonusXp} XP, ebenfalls vorbehaltlich des Tageslimits.`:'';
-    return created?{ok:true,message:`🔐 ELIO-TRESOR: Knackt den dreistelligen Code mit !code 042 (nur ein Beispiel). Ihr habt ${cfg.durationMinutes} Minuten. Pro Person gelten 3 Sekunden Abstand und höchstens 20 Tipps.${participantReward}${solverReward} Der erste richtige Code öffnet den Tresor.`}:{ok:false,message:'Der Tresor kann gerade nicht starten: Es läuft bereits eine Runde oder die Wartezeit gilt noch.'};
+    const participantReward=cfg.participantXp>0?` Bei geknacktem Code: ab zwei eigenen Tipps bis zu ${cfg.participantXp} XP Teilnahmebelohnung; das Tageslimit gilt.`:' Für diese Runde gibt es keine Teilnahme-XP.';
+    const solverReward=cfg.solverBonusXp>0?` Finder-Bonus: bis zu ${cfg.solverBonusXp} XP ab zwei eigenen Tipps; das Tageslimit gilt.`:'';
+    return created?{ok:true,message:`🔐 COMMUNITY-TRESOR GEÖFFNET! Ein geheimer dreistelliger Code wartet. Rate mit !code XXX. XXX ist ein Platzhalter: Ersetze ihn durch drei selbst gewählte Ziffern. ⏱️ ${cfg.durationMinutes} Minuten. Pro Person: 3 Sekunden Abstand, höchstens 20 Tipps. Der erste richtige Tipp öffnet den Tresor.${participantReward}${solverReward}`}:{ok:false,message:'Der Tresor kann gerade nicht starten: Es läuft bereits eine Runde oder die Wartezeit gilt noch.'};
   }
   cancel(now=Date.now()):boolean {
     return this.store.miniGameTransaction(db=>{const row=db.prepare("SELECT id FROM community_vault_rounds WHERE status='active'").get() as {id:string}|undefined;if(!row)return false;
@@ -99,7 +99,7 @@ export class CommunityVault {
       if(changed)db.prepare('DELETE FROM community_vault_attempts WHERE round_id=?').run(row.id);return Boolean(changed);});
   }
   guess(message:ChatMessage,args:string[],now=Date.now()):{recognized:boolean;privateHint?:string} {
-    if(args.length!==1||!/^\d{3}$/u.test(args[0]||''))return {recognized:true,privateHint:'Bitte gib genau drei Ziffern an, zum Beispiel !code 042.'};
+    if(args.length!==1||!/^\d{3}$/u.test(args[0]||''))return {recognized:true,privateHint:'🔐 Bitte rate genau drei Ziffern: !code XXX. Ersetze XXX durch deine drei Ziffern.'};
     if(message.senderUserId===this.botUserId||message.senderUserId===message.broadcasterUserId)return {recognized:true};
     return this.store.miniGameTransaction(db=>{
       const round=db.prepare("SELECT * FROM community_vault_rounds WHERE status='active' ORDER BY started_at DESC LIMIT 1").get() as RoundRow|undefined;
@@ -108,7 +108,7 @@ export class CommunityVault {
         db.prepare('DELETE FROM community_vault_attempts WHERE round_id=?').run(round.id);
         return {recognized:true,privateHint:'Die Zeit ist abgelaufen. Diese Runde zählt nicht mehr; der Bot veröffentlicht gleich die Auflösung.'};}
       const last=db.prepare('SELECT MAX(submitted_at) at FROM community_vault_attempts WHERE round_id=? AND user_id=?').get(round.id,message.senderUserId) as {at:number|null};
-      if(last.at!==null&&now-last.at<3_000)return {recognized:true,privateHint:'Warte kurz, bevor du wieder rätst.'};
+      if(last.at!==null&&now-last.at<3_000){const seconds=Math.max(1,Math.ceil((3_000-(now-last.at))/1_000));return {recognized:true,privateHint:`⏱️ Warte noch ${seconds} ${seconds===1?'Sekunde':'Sekunden'}, bevor du wieder rätst.`};}
       const attempts=db.prepare('SELECT COUNT(*) n FROM community_vault_attempts WHERE round_id=? AND user_id=?').get(round.id,message.senderUserId) as {n:number};
       if(attempts.n>=20)return {recognized:true,privateHint:'Du hast das Rundenlimit von 20 Versuchen erreicht.'};
       const clue=scoreGuess(round.secret_code,args[0]!);
@@ -124,8 +124,8 @@ export class CommunityVault {
       }
       const total=(db.prepare('SELECT attempts_count FROM community_vault_rounds WHERE id=?').get(round.id) as {attempts_count:number}).attempts_count;
       const personal=(db.prepare('SELECT COUNT(*) n FROM community_vault_attempts WHERE round_id=? AND user_id=?').get(round.id,message.senderUserId) as {n:number}).n;
-      const eligibility=personal>=2?'Du erfüllst die Mindestteilnahme für die eingestellten Teilnehmer-XP (Tageslimit gilt).':'Noch ein Tipp nach Ablauf des 3-Sekunden-Abstands qualifiziert dich für die eingestellten Teilnehmer-XP.';
-      return {recognized:true,privateHint:`🔐 Tipp gespeichert · ${clue.exact} richtige Stelle(n), ${clue.misplaced} Ziffer(n) an falscher Stelle · ${total} Tipps insgesamt. ${eligibility}`};
+      const eligibility=personal>=2?'Du erfüllst die Mindestteilnahme für Teilnahme-XP, falls jemand den Code knackt; das Tageslimit gilt.':'Noch ein gültiger Tipp nach dem Cooldown erfüllt die Mindestteilnahme für Teilnahme-XP, falls jemand den Code knackt.';
+      return {recognized:true,privateHint:formatGuessFeedback(message.senderDisplayName,clue.exact,clue.misplaced,total,eligibility)};
     });
   }
   private awardRound(db:import('better-sqlite3').Database,roundId:string,code:string,winnerId:string,winnerName:string,now:number):{participantXp:number;solverXp:number} {
@@ -183,6 +183,12 @@ export function scoreGuess(secret:string,guess:string):{exact:number;misplaced:n
   for(const digit of guess){const n=counts.get(digit)||0;if(n>0){contained++;counts.set(digit,n-1);}}
   return {exact,misplaced:contained-exact};
 }
+/** Chat-visible feedback; each code digit is counted at most once. */
+export function formatGuessFeedback(displayName:string,exact:number,misplaced:number,total:number,eligibility:string):string {
+  const absent=Math.max(0,3-exact-misplaced),name=cleanName(displayName);
+  return `🔎 ${name}: Dein Tipp wurde geprüft! ✅ ${countText(exact,'Ziffer steht','Ziffern stehen')} an der richtigen Stelle. 🔄 ${countText(misplaced,'weitere Ziffer ist','weitere Ziffern sind')} im Code, aber falsch positioniert. ❌ ${countText(absent,'Ziffer kommt','Ziffern kommen')} nicht im Code vor. ${total} Tipps insgesamt. ${eligibility}`;
+}
+function countText(count:number,singular:string,plural:string):string{return `${count} ${count===1?singular:plural}`;}
 function generateCode():string {const digits=Array.from({length:10},(_,i)=>String(i));for(let i=digits.length-1;i>0;i--){const j=randomInt(i+1);[digits[i],digits[j]]=[digits[j]!,digits[i]!];}return digits.slice(0,3).join('');}
 function cleanName(name:string):string{return name.replace(/[^\p{L}\p{N}_-]/gu,'').slice(0,32)||'Zuschauer';}
 const KNOWN_BOT_LOGINS=new Set(['nightbot','streamelements','streamlabs','moobot','fossabot','wizebot','commanderroot','sery_bot','serybot']);

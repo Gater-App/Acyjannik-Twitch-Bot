@@ -205,7 +205,7 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     await hintPanel.getByText(/Geplanter Neustart ist vorbereitet/u).waitFor();
     assert.equal(await hintPanel.getByRole('button',{name:'Geplanten Neustart vorbereiten'}).isDisabled(),true);
     assert.match(await hintPanel.innerText(),/Ruhig[\s\S]*Normal[\s\S]*Lebhaft/u,'Profile und tatsächliche Grenzen werden angezeigt');
-    assert.match(await hintPanel.innerText(),/Community-Tresor[\s\S]*!code 427/u,'aktiviertes Spiel zeigt den belegten Zuschauerbefehl');
+    assert.match(await hintPanel.innerText(),/Community-Tresor[\s\S]*!code XXX[\s\S]*Platzhalter[\s\S]*eigenen drei Ziffern/u,'aktiviertes Spiel zeigt den belegten Zuschauerbefehl');
     assert.match(await hintPanel.innerText(),/Vorschau · kein Versand/u,'Vorschau versendet keine Twitch-Nachricht');
     assert.match(await hintPanel.innerText(),/Event nicht aktiv; Hinweise pausieren automatisch/u,'inaktives Saison-Event wird klar gekennzeichnet');
     assert.equal(await hintPanel.locator('[data-category]').count(),15,'alle implementierten Hinweis-Kategorien werden angezeigt');
@@ -581,7 +581,7 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     assert.equal(publicVaultState.personal,null,'unangemeldete Zuschauer erhalten keine persönlichen Tipps');
     assert.equal(publicVaultState.public.vault.resultCode,null,'Community-API zeigt während einer aktiven Runde kein Ergebnis');
     assert.equal(Object.hasOwn(publicVaultState.public.vault,'secretCode'),false,'Community-API gibt kein Geheimcode-Feld aus');
-    await portalPage.getByText(/!code 123 · 3 Sek. Abstand · max. 20 Tipps/u).waitFor();
+    await portalPage.getByText(/!code XXX.*durch drei selbst gewählte Ziffern ersetzen/u).waitFor();
     assert.equal(await portalPage.getByRole('link', { name: /Dashboard/u }).count(), 0, 'öffentliches Portal verweist nicht auf die Admin-Verwaltung');
     for (const [label, width, height] of [['desktop', 1440, 1000], ['iphone', 390, 844]] as const) {
       await portalPage.setViewportSize({ width, height });

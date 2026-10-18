@@ -63,7 +63,7 @@ const TIPS: CommunityTip[] = [
   { id: 'drop', category: 'drop', text: 'Wenn Jannik einen Mystery Drop startet, mach während des Countdowns mit !claim mit.' },
   { id: 'imposter', category: 'imposter', text: 'Wenn die Imposter-Anmeldung offen ist, kannst du mit !joinimposter mitspielen.' },
   { id: 'wheel', category: 'wheel', text: 'Beim Chaos Wheel startet Jannik eine Community-Aktion. Mit !wheel kannst du den Rad-Status ansehen.' },
-  { id: 'vault', category: 'vault', text: 'Wenn der Community-Tresor offen ist, knackt ihr gemeinsam den dreistelligen Code: !code 427.' },
+  { id: 'vault', category: 'vault', text: 'Wenn der Community-Tresor offen ist: Rate drei Ziffern mit !code XXX. XXX ist ein Platzhalter – ersetze ihn durch deine eigenen drei Ziffern.' },
   { id: 'community-portal', category: 'communityPortal', text: 'Kennst du schon unser Community-Portal? Schau deine XP an, besuche Elio 🐱 und entdecke die Community-Spiele: https://twitch.gater-app.de/community' },
 ];
 const FEATURE_COMMANDS: Record<string, string> = {

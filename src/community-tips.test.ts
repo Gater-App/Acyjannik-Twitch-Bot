@@ -89,7 +89,7 @@ test('Community Discovery previews only enabled functions and uses the implement
     assert.match(byId.get('quest')||'',/!quest IDEE/u);assert.match(byId.get('quest')||'',/Moderationsfreigabe/u);
     assert.match(byId.get('quest-vote')||'',/Jannik oder ein Mod startet/u);
     assert.match(byId.get('drop')||'',/!claim/u);assert.match(byId.get('imposter')||'',/!joinimposter/u);
-    assert.match(byId.get('wheel')||'',/!wheel/u);assert.match(byId.get('vault')||'',/!code 427/u);
+    assert.match(byId.get('wheel')||'',/!wheel/u);assert.match(byId.get('vault')||'',/!code XXX.*Platzhalter/u);
     const disabled=tips.preview({});assert.equal(disabled.length,0,'disabled/unknown modules are never advertised');
     tips.configurePortal(true);
     assert.equal(tips.preview({...available,communityPortal:false}).some(t=>t.id==='community-portal'),false);
