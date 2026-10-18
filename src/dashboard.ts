@@ -51,7 +51,7 @@ import { COMMUNITY_CHAOS_CARD, COMMUNITY_CHAOS_SCRIPT } from './community-chaos-
 import { ElioChronicles } from './elio-chronicles.js';
 import { ELIO_CHRONICLES_CARD, ELIO_CHRONICLES_SCRIPT } from './elio-chronicles-ui.js';
 import { EVENT_DIRECTOR_CARD, EVENT_DIRECTOR_SCRIPT } from './event-director-ui.js';
-import { EventDirector } from './event-director.js';
+import { EventDirector, adaptiveBossHp } from './event-director.js';
 
 interface Session { userId: string; login: string; csrf: string; expiresAt: number; role: 'admin'|'moderator'; }
 interface RuntimeStatus { twitchConnected: boolean; channel: string; channelProfileImageUrl?:string; startedAt: number; lastError?: string; queued?: number; suppressed?: number; failed?:number; rateLimited?:number; expired?:number; averageDelayMs?:number; chatDispatch?:{queued:number;sending:boolean;sent:number;failed:number;rateLimited:number;suppressed:number;expired:number;averageDelayMs:number;lastError?:string;durablePending?:number;durableFailed?:number;durableExpired?:number}; streamLive?: boolean|undefined; streamStatusCheckedAt?: number; streamSnapshot?:{id?:string;title?:string;gameName?:string;viewerCount?:number;startedAt?:string;thumbnailUrl?:string}; lastChatReceiveAt?:number; lastBotChatSendAt?:number; lastBotChatSendErrorAt?:number; chatResponse?: { profile: string; suppressed: number; deferred: number }; }
@@ -573,9 +573,60 @@ export class DashboardServer {
       this.json(res,200,this.eventDirector.snapshot(now));return;
     }
     if(route==='event-director'&&req.method==='POST'){
-      if(session.role!=='admin'){this.json(res,403,{error:'Nur Jannik kann die Event-Director-Automatik konfigurieren.'});return;}
-      const body=await this.readJson(req);if(!body||body.action!=='settings'||!isRecord(body.settings)){this.json(res,400,{error:'Ungültige Event-Director-Aktion.'});return;}
+      if(session.role!=='admin'&&session.role!=='moderator'){this.json(res,403,{error:'Diese Event-Director-Aktion ist nur für Jannik und berechtigte Moderatoren verfügbar.'});return;}
+      const body=await this.readJson(req);if(!body||typeof body.action!=='string'){this.json(res,400,{error:'Ungültige Event-Director-Aktion.'});return;}
       try{
+        if(body.action==='pause'||body.action==='resume'){
+          const settings=this.eventDirector.updateSettings({paused:body.action==='pause'});this.audit(session,'event-director-pause','event-director',{paused:settings.paused},now);this.json(res,200,{ok:true,settings});return;
+        }
+        if(body.action==='disable-type'){
+          if(session.role!=='admin'){this.json(res,403,{error:'Nur Jannik kann Eventtypen dauerhaft deaktivieren.'});return;}
+          const keys:Record<string,keyof import('./event-director.js').EventDirectorSettings>={'boss':'autoBosses','mystery-drop':'autoDrops','chaos-wheel':'autoWheel','community-chaos':'autoChaos','story':'autoStories','secret-event':'autoSecretEvents'};
+          const key=typeof body.type==='string'?keys[body.type]:undefined;if(!key){this.json(res,400,{error:'Dieser Eventtyp kann nicht über den Director deaktiviert werden.'});return;}
+          const settings=this.eventDirector.updateSettings({[key]:false});this.audit(session,'event-director-disable-type','event-director',{type:body.type},now);this.json(res,200,{ok:true,settings});return;
+        }
+        if(body.action==='abort'){
+          const active=this.eventDirector.snapshot(now).activeEvent;if(!active){this.json(res,409,{error:'Es läuft kein Event, das beendet werden kann.'});return;}
+          let stopped=false;
+          if(active.type==='boss')stopped=this.store.endBoss(now);
+          else if(active.type==='community-chaos')stopped=this.chaos.cancel(session.userId,now);
+          else if(active.type==='mystery-drop')stopped=this.arcade?.cancelDropAdmin(now)??false;
+          else if(active.type==='chaos-wheel'){this.arcade?.emergencyStop(now);stopped=true;}
+          else if(active.type==='community-vault')stopped=this.vault?.cancel(now)??false;
+          else stopped=this.interactive.cancel(active.id,session.userId,now);
+          if(!stopped){this.json(res,409,{error:'Die Event-Engine konnte den Abbruch nicht bestätigen.'});return;}
+          this.eventDirector.finishSource(active.id,'aborted',now,'none');this.chronicles.reconcile(now);this.audit(session,'event-director-abort','event-director',{type:active.type,eventId:active.id},now);this.json(res,200,{ok:true,message:'Event abgebrochen. Bereits gebuchte Belohnungen bleiben bestehen.',snapshot:this.eventDirector.snapshot(now)});return;
+        }
+        if(body.action==='start'){
+          if(session.role!=='admin'&&session.role!=='moderator'){this.json(res,403,{error:'Nur berechtigte Teammitglieder können Events manuell starten.'});return;}
+          if(typeof body.type!=='string'){this.json(res,400,{error:'Bitte einen unterstützten Eventtyp auswählen.'});return;}
+          const type=body.type,modules=this.store.config<Record<string,boolean>>('modules',{}),cfg=this.eventDirector.settings(),activity=this.eventDirector.activity(now);
+          const started=this.eventDirector.manualStart(type,session.userId,now,()=>{
+            if(type==='boss'){
+              if(modules.boss===false)throw new Error('Community-Bosse sind im vorhandenen Funktionsmodul ausgeschaltet.');
+              const settings=this.store.config('game_settings',{bossHp:1000,bossDurationMs:900_000}),history=this.store.miniGameQuery(db=>db.prepare(`SELECT fight.status,COUNT(DISTINCT participant.user_id) participants,COALESCE(AVG(participant.damage),0) averageDamage,MAX(0,fight.finished_at-fight.started_at) durationMs FROM (SELECT id,status,started_at,finished_at FROM boss_fights WHERE finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 10) fight LEFT JOIN boss_participants participant ON participant.boss_id=fight.id GROUP BY fight.id`).all() as Array<{status:string;participants:number;averageDamage:number;durationMs:number}>);
+              const bossHp=cfg.bossAdaptiveHp?adaptiveBossHp(activity.uniqueChatters5m,history,true):Math.max(60,Math.min(1200,Number(settings.bossHp)||1000));
+              const id=randomUUID(),name='Schattenwächter';if(!this.store.startBoss(id,name,bossHp,settings.bossDurationMs,now))return undefined;return `👹 ${name} erscheint mit ${bossHp} HP! Besiegt ihn gemeinsam mit !attack!`;
+            }
+            if(type==='community-chaos'){
+              const chaosSettings=this.chaos.settings();if(!chaosSettings.enabled)throw new Error('Community-Chaos muss zuerst im vorhandenen Modul aktiviert werden.');
+              const game=typeof body.game==='string'&&CHAOS_GAMES.includes(body.game as ChaosGame)?body.game as ChaosGame:undefined;if(!game)throw new Error('Bitte eines der sechs aktivierten Chaos-Minispiele auswählen.');const event=this.chaos.start(game,session.userId,now,false);this.chaos.pauseAutomatic(now);return event.prompt;
+            }
+            if(type==='mystery-drop'){
+              if(!this.arcade?.settings().dropsEnabled)throw new Error('Mystery Drops müssen zuerst im vorhandenen Modul aktiviert werden.');return this.arcade.startDropAdmin(session.userId,'common',now);
+            }
+            if(type==='chaos-wheel'){
+              if(!this.arcade?.settings().wheelEnabled)throw new Error('Das vorhandene Chaos Wheel muss zuerst aktiviert werden.');return this.arcade.spinAdmin(session.userId,now);
+            }
+            if(type==='secret-event'){
+              if(!this.interactive.settings().secretEventsEnabled)throw new Error('Geheime Events müssen zuerst im vorhandenen Modul aktiviert werden.');const result=this.interactive.createSecretEvent('mystery_case',session.userId,{title:'Ein mysteriöser Koffer ist aufgetaucht'},now);return result.ok?result.message:undefined;
+            }
+            throw new Error('Dieser Eventtyp hat keine unterstützte manuelle Startaktion.');
+          });
+          this.audit(session,'event-director-manual-start','event-director',{type,runId:started.id},now);this.json(res,200,{ok:true,message:started.message,snapshot:this.eventDirector.snapshot(now)});return;
+        }
+        if(session.role!=='admin'){this.json(res,403,{error:'Nur Jannik kann Event-Director-Einstellungen konfigurieren.'});return;}
+        if(body.action!=='settings'||!isRecord(body.settings)){this.json(res,400,{error:'Ungültige Event-Director-Aktion.'});return;}
         const chaos=this.chaos.settings(),story=this.chronicles.settings(),interactive=this.interactive.settings(),arcade=this.arcade?.settings();
         if(body.settings.autoChaos===true&&!chaos.enabled)throw new Error('Community-Chaos muss zuerst im vorhandenen Modul aktiviert werden.');
         if(body.settings.autoStories===true&&(!story.enabled||!chaos.enabled))throw new Error('Elio Chronicles und Community-Chaos müssen zuerst freigegeben werden.');

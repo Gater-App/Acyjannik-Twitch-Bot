@@ -1104,6 +1104,27 @@ export class FeatureStore {
         INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (42, unixepoch()*1000);
       `))();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 43) {
+      if (currentVersion > 0) this.backupBeforeMigration(43);
+      this.db.transaction(() => {
+        const columns = new Set((this.db.prepare('PRAGMA table_info(event_director_runs)').all() as Array<{name:string}>).map(column => column.name));
+        if (!columns.has('status')) this.db.exec("ALTER TABLE event_director_runs ADD COLUMN status TEXT NOT NULL DEFAULT 'started'");
+        if (!columns.has('triggered_by')) this.db.exec("ALTER TABLE event_director_runs ADD COLUMN triggered_by TEXT NOT NULL DEFAULT 'system'");
+        if (!columns.has('source_event_id')) this.db.exec('ALTER TABLE event_director_runs ADD COLUMN source_event_id TEXT');
+        if (!columns.has('distinct_participant_count')) this.db.exec('ALTER TABLE event_director_runs ADD COLUMN distinct_participant_count INTEGER NOT NULL DEFAULT 0 CHECK(distinct_participant_count>=0)');
+        if (!columns.has('active_chatter_count')) this.db.exec('ALTER TABLE event_director_runs ADD COLUMN active_chatter_count INTEGER NOT NULL DEFAULT 0 CHECK(active_chatter_count>=0)');
+        if (!columns.has('success')) this.db.exec('ALTER TABLE event_director_runs ADD COLUMN success INTEGER CHECK(success IN (0,1))');
+        if (!columns.has('payout_status')) this.db.exec("ALTER TABLE event_director_runs ADD COLUMN payout_status TEXT NOT NULL DEFAULT 'unknown'");
+        if (!columns.has('error_status')) this.db.exec('ALTER TABLE event_director_runs ADD COLUMN error_status TEXT');
+        if (!columns.has('scheduled_for')) this.db.exec('ALTER TABLE event_director_runs ADD COLUMN scheduled_for INTEGER');
+        if (!columns.has('delivery_status')) this.db.exec("ALTER TABLE event_director_runs ADD COLUMN delivery_status TEXT NOT NULL DEFAULT 'not-configured'");
+        this.db.exec(`UPDATE event_director_runs SET status=CASE WHEN completed_at IS NULL THEN 'started' ELSE 'completed' END;
+          CREATE INDEX IF NOT EXISTS event_director_runs_status ON event_director_runs(status,started_at DESC);
+          CREATE INDEX IF NOT EXISTS event_director_runs_source ON event_director_runs(source_event_id);
+          INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (43, unixepoch()*1000);`);
+      })();
+    }
   }
 
   private backupBeforeMigration(version: number): void {
@@ -2527,7 +2548,7 @@ export class FeatureStore {
   recordCommunityEvent(type: string, payload: unknown, now: number): void {
     this.db.prepare('INSERT INTO community_events(type,payload_json,created_at) VALUES(?,?,?)').run(type, JSON.stringify(payload ?? {}), now);
     const data=(payload&&typeof payload==='object'?payload:{}) as Record<string,unknown>;
-    if(type==='boss.started'||type==='boss.defeated'||type==='boss.timeout'){
+    if(type==='boss.started'||type==='boss.defeated'||type==='boss.timeout'||type==='boss.ended'){
       const director=this.config<Record<string,unknown>>('event_director_settings',{}),discord=this.config<Record<string,unknown>>('discord_integration',{});
       if(director.discordAnnouncements===true&&discord.enabled===true&&typeof discord.rewardsChannelId==='string'&&discord.rewardsChannelId){
         const status=type==='boss.started'?'active':type==='boss.defeated'?'completed':'failed',bossId=String(data.id||data.bossId||`boss:${now}`);

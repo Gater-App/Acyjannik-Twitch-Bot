@@ -93,16 +93,17 @@ export class CommunityFeatures {
     const bossDue=this.eventDirector.intervalDue('boss',now,cfg.bossMinIntervalMs,cfg.bossMaxIntervalMs,cfg.autoBosses&&modules.boss!==false,live,Boolean(activeBoss),bossFinishedAt);
     candidates.push({type:'boss',priority:3,enabled:cfg.autoBosses&&modules.boss!==false,ready:bossDue&&!activeBoss,minimumActivity:'normal',interval:{min:cfg.bossMinIntervalMs,max:cfg.bossMaxIntervalMs,afterCompletion:true},start:()=>{
       const active=activity.uniqueChatters5m;
-      const recent=this.store.miniGameQuery(db=>db.prepare(`SELECT fight.status,COUNT(DISTINCT participant.user_id) participants FROM (
-        SELECT id,status,finished_at FROM boss_fights WHERE finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 10
-      ) fight LEFT JOIN boss_participants participant ON participant.boss_id=fight.id GROUP BY fight.id ORDER BY MAX(fight.finished_at) DESC`).all() as Array<{status:string;participants:number}>);
+      const recent=this.store.miniGameQuery(db=>db.prepare(`SELECT fight.status,COUNT(DISTINCT participant.user_id) participants,
+        COALESCE(AVG(participant.damage),0) averageDamage,MAX(0,fight.finished_at-fight.started_at) durationMs FROM (
+        SELECT id,status,started_at,finished_at FROM boss_fights WHERE finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 10
+      ) fight LEFT JOIN boss_participants participant ON participant.boss_id=fight.id GROUP BY fight.id ORDER BY MAX(fight.finished_at) DESC`).all() as Array<{status:string;participants:number;averageDamage:number;durationMs:number}>);
       const hp=adaptiveBossHp(active,recent,cfg.bossAdaptiveHp),names=active<=3?['Kleiner Schattenpfoten-Späher']:active<=8?['Schattenwächter']:active<=15?['Portalwächter']:['Schattenkönig'];
       if(!this.store.startBoss(randomUUID(),names[this.random(0,names.length-1)]!,hp,bossSettings.bossDurationMs,now))return undefined;
       return `👹 ${names[0]} erscheint mit ${hp} HP! Besiegt ihn gemeinsam mit !attack!`;
     }});
     const arcadeSettings=this.arcade.settings(),drop=this.arcade.snapshot('drop'),dropStatus=(drop.drop as {status?:string}|undefined)?.status;
-    const dropDue=this.eventDirector.intervalDue('drop',now,60*60_000,90*60_000,cfg.autoDrops&&arcadeSettings.dropsEnabled&&arcadeSettings.autoDrops,live);
-    candidates.push({type:'mystery-drop',priority:6,enabled:cfg.autoDrops&&arcadeSettings.dropsEnabled&&arcadeSettings.autoDrops,ready:dropDue&&!['announced','claiming','resolving'].includes(dropStatus||''),minimumActivity:'normal',interval:{min:60*60_000,max:90*60_000},start:()=>{
+    const dropDue=this.eventDirector.intervalDue('drop',now,60*60_000,90*60_000,cfg.autoDrops&&arcadeSettings.dropsEnabled&&arcadeSettings.autoDrops,live,false,undefined,'mystery-drop');
+    candidates.push({type:'mystery-drop',priority:6,enabled:cfg.autoDrops&&arcadeSettings.dropsEnabled&&arcadeSettings.autoDrops,ready:dropDue&&!['announced','claiming','resolving'].includes(dropStatus||''),minimumActivity:'normal',interval:{min:60*60_000,max:90*60_000},intervalKey:'drop',start:()=>{
       const before=(this.arcade.snapshot('drop').drop as {id?:string}|undefined)?.id;
       const message=this.arcade.startDropAdmin('event-director','common',now);
       const after=this.arcade.snapshot('drop').drop as {id?:string}|undefined;return after?.id&&after.id!==before?message:undefined;
