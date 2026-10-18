@@ -169,6 +169,11 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
       await navigate(name);
       await screenshot(`acy-ux50-desktop-${name}`);
     }
+    await chooseSubpage('elio','story');
+    await page.locator('#story-preview').click();
+    await page.locator('#story-preview-content article').first().waitFor({state:'visible'});
+    assert.equal(await page.locator('#story-preview-content article').count(),32,'geschützte Vorschau zeigt jede Mission');
+    assert.match(await page.locator('#story-preview-content article').first().innerText(),/Handlung:.*Aufgabe:.*Zuschauerbefehl:.*Erfolgsbedingung:.*XP:/su);
     await navigate('community');await page.getByRole('button',{name:'Abstimmungen'}).click();
     const decisions=page.locator('[data-community-page="live-votes"]');await decisions.waitFor({state:'visible'});
     await decisions.locator('#poll-template').selectOption('strategy');
