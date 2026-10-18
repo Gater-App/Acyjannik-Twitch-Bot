@@ -1031,7 +1031,7 @@ export class FeatureStore {
           user_id TEXT NOT NULL, option_id TEXT NOT NULL, created_at INTEGER NOT NULL,
           PRIMARY KEY(event_id,user_id)
         );
-        INSERT OR IGNORE INTO feature_config(key,value) VALUES ('elio_chronicles_settings','{"enabled":false,"autoEnabled":false,"diaryEnabled":false,"diaryChannelId":"","eventsBetweenStory":2}');
+        INSERT OR IGNORE INTO feature_config(key,value) VALUES ('elio_chronicles_settings','{"enabled":false,"autoEnabled":false,"diaryEnabled":false,"diaryChannelId":"","automaticIntervalMs":2400000,"eventsBetweenStory":2}');
         INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (38, unixepoch()*1000);
       `))();
     }
@@ -1051,7 +1051,7 @@ export class FeatureStore {
         );
         INSERT OR IGNORE INTO event_director_lease(id,owner,lease_until,updated_at) VALUES(1,NULL,0,0);
         INSERT OR IGNORE INTO feature_config(key,value) VALUES
-          ('event_director_settings','{"enabled":false,"autoBosses":false,"autoDrops":false,"autoWheel":false,"autoChaos":false,"autoSecretEvents":false,"autoStories":false,"minimumActivity":"normal","minimumGapMs":900000,"maxEventsPerHour":2,"bossMinIntervalMs":4500000,"bossMaxIntervalMs":6300000,"bossAdaptiveHp":true,"discordAnnouncements":false}');
+          ('event_director_settings','{"enabled":false,"autoBosses":false,"autoDrops":false,"autoWheel":false,"autoChaos":false,"autoSecretEvents":false,"autoStories":false,"minimumActivity":"normal","minimumGapMs":120000,"maxEventsPerHour":6,"bossMinIntervalMs":4500000,"bossMaxIntervalMs":6300000,"bossAdaptiveHp":true,"discordAnnouncements":false}');
         INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (39, unixepoch()*1000);
       `))();
     }

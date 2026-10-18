@@ -12,7 +12,7 @@ export interface EventDirectorSettings {
 export interface EventCandidate { type:string; priority:number; enabled:boolean; ready:boolean; minimumActivity?:ActivityLevel; interval?:{min:number;max:number;afterCompletion?:boolean}; intervalKey?:string; start:()=>string|undefined }
 export interface DirectorRun {id:string;type:string;startedAt:number;scheduledFor:number|null;endedAt:number|null;status:string;triggeredBy:string;sourceEventId:string|null;participants:number;distinctParticipants:number;xp:number;activeChatters:number;success:boolean|null;payoutStatus:string;deliveryStatus:string;outcome:string|null;error:string|null;reason:string}
 export interface DirectorSnapshot { settings:EventDirectorSettings; activity:{level:ActivityLevel;uniqueChatters5m:number;chatSignals5m:number;uniqueChatters15m:number;uniqueChatters30m:number}; lastEventAt:number|null; recentAutomaticEvents:number; leaseUntil:number; reason:string; activeEvent:{type:string;id:string;status:string;endsAt:number|null}|null; nextScheduled:{type:string;at:number}|null; recentRuns:DirectorRun[] }
-const DEFAULTS:EventDirectorSettings={enabled:false,paused:false,autoBosses:false,autoDrops:false,autoWheel:false,autoChaos:false,adaptiveEventWeighting:true,autoSecretEvents:false,autoStories:false,minimumActivity:'normal',minimumGapMs:900_000,maxEventsPerHour:2,bossMinIntervalMs:4_500_000,bossMaxIntervalMs:6_300_000,bossAdaptiveHp:true,discordAnnouncements:false};
+const DEFAULTS:EventDirectorSettings={enabled:false,paused:false,autoBosses:false,autoDrops:false,autoWheel:false,autoChaos:false,adaptiveEventWeighting:true,autoSecretEvents:false,autoStories:false,minimumActivity:'normal',minimumGapMs:120_000,maxEventsPerHour:6,bossMinIntervalMs:4_500_000,bossMaxIntervalMs:6_300_000,bossAdaptiveHp:true,discordAnnouncements:false};
 const LEVELS:ActivityLevel[]=['quiet','low','normal','high'];
 
 export function adaptiveBossHp(activeChatters:number,history:Array<{status:string;participants:number;averageDamage?:number;durationMs?:number}>,enabled=true):number {
@@ -35,8 +35,11 @@ export class EventDirector {
   constructor(private readonly store:FeatureStore,private readonly choose:(max:number)=>number=(max)=>randomInt(Math.max(1,max))){}
   settings():EventDirectorSettings {
     const raw=this.store.config<Partial<EventDirectorSettings>>('event_director_settings',{});
-    return {...DEFAULTS,...raw,minimumGapMs:bounded(raw.minimumGapMs,DEFAULTS.minimumGapMs,900_000,7_200_000),
-      maxEventsPerHour:bounded(raw.maxEventsPerHour,2,1,4),bossMinIntervalMs:bounded(raw.bossMinIntervalMs,DEFAULTS.bossMinIntervalMs,4_500_000,6_300_000),
+    // Migrate only the former shipped defaults; explicitly customized values stay untouched.
+    const legacyGap=raw.minimumGapMs===900_000?DEFAULTS.minimumGapMs:raw.minimumGapMs;
+    const legacyHourlyCap=raw.maxEventsPerHour===2?DEFAULTS.maxEventsPerHour:raw.maxEventsPerHour;
+    return {...DEFAULTS,...raw,minimumGapMs:bounded(legacyGap,DEFAULTS.minimumGapMs,120_000,7_200_000),
+      maxEventsPerHour:bounded(legacyHourlyCap,DEFAULTS.maxEventsPerHour,1,8),bossMinIntervalMs:bounded(raw.bossMinIntervalMs,DEFAULTS.bossMinIntervalMs,4_500_000,6_300_000),
       bossMaxIntervalMs:bounded(raw.bossMaxIntervalMs,DEFAULTS.bossMaxIntervalMs,4_500_000,6_300_000),
       minimumActivity:LEVELS.includes(raw.minimumActivity as ActivityLevel)?raw.minimumActivity as ActivityLevel:'normal'};
   }
@@ -44,8 +47,8 @@ export class EventDirector {
     const next={...this.settings()};for(const key of ['enabled','paused','autoBosses','autoDrops','autoWheel','autoChaos','adaptiveEventWeighting','autoStories','autoSecretEvents','minimumActivity','minimumGapMs','maxEventsPerHour','bossMinIntervalMs','bossMaxIntervalMs','bossAdaptiveHp','discordAnnouncements'] as const){if(input[key]!==undefined)(next as unknown as Record<string,unknown>)[key]=input[key];}
     for(const k of ['enabled','paused','autoBosses','autoDrops','autoWheel','autoChaos','adaptiveEventWeighting','autoSecretEvents','autoStories','bossAdaptiveHp','discordAnnouncements'] as const)if(typeof next[k]!=='boolean')throw new Error('Event-Director-Schalter müssen Ein oder Aus sein.');
     if(!LEVELS.includes(next.minimumActivity))throw new Error('Aktivitätsschwelle ungültig.');
-    if(!Number.isInteger(next.minimumGapMs)||next.minimumGapMs<900_000||next.minimumGapMs>7_200_000)throw new Error('Der globale Abstand muss 15 bis 120 Minuten betragen.');
-    if(!Number.isInteger(next.maxEventsPerHour)||next.maxEventsPerHour<1||next.maxEventsPerHour>4)throw new Error('Pro Stunde sind 1 bis 4 automatische Ereignisse zulässig.');
+    if(!Number.isInteger(next.minimumGapMs)||next.minimumGapMs<120_000||next.minimumGapMs>7_200_000)throw new Error('Der gemeinsame Sicherheitsabstand muss 2 bis 120 Minuten betragen.');
+    if(!Number.isInteger(next.maxEventsPerHour)||next.maxEventsPerHour<1||next.maxEventsPerHour>8)throw new Error('Pro Stunde sind 1 bis 8 automatische Ereignisse zulässig.');
     if(!Number.isInteger(next.bossMinIntervalMs)||!Number.isInteger(next.bossMaxIntervalMs)||next.bossMinIntervalMs<4_500_000||next.bossMaxIntervalMs>6_300_000||next.bossMinIntervalMs>next.bossMaxIntervalMs)throw new Error('Boss-Intervalle müssen innerhalb 75 bis 105 Minuten liegen.');
     this.store.setConfig('event_director_settings',next);return next;
   }
@@ -87,7 +90,7 @@ export class EventDirector {
     ) LIMIT 1`).get() as DirectorSnapshot['activeEvent']);
     const timers=this.store.state<Record<string,number|null>>('event_director_timers',{}),scheduled=Object.entries(timers).filter((row):row is [string,number]=>typeof row[1]==='number'&&row[1]>now).map(([key,at])=>({type:key==='drop'?'mystery-drop':key,at}));
     const chaosSettings=this.store.config<{enabled?:boolean;autoEnabled?:boolean}>('community_chaos_settings',{}),chaosNext=this.store.miniGameQuery(db=>(db.prepare('SELECT next_at at FROM community_chaos_scheduler WHERE id=1').get() as {at:number|null}|undefined)?.at||null);
-    if((cfg.autoChaos||cfg.autoStories)&&chaosSettings.enabled===true&&chaosSettings.autoEnabled===true&&chaosNext&&chaosNext>now)scheduled.push({type:'story-or-chaos',at:chaosNext});
+    if((cfg.autoChaos||cfg.autoStories)&&chaosSettings.enabled===true&&chaosSettings.autoEnabled===true&&chaosNext&&chaosNext>now)scheduled.push({type:'community-chaos',at:chaosNext});
     const arcade=this.store.config<{wheelAutoPilotEnabled?:boolean}>('arcade_settings',{}),lastWheel=this.store.miniGameQuery(db=>(db.prepare("SELECT created_at at FROM chaos_wheel_spins WHERE status IN ('active','completed','canceled') ORDER BY created_at DESC LIMIT 1").get() as {at:number}|undefined)?.at||null);
     if(cfg.autoWheel&&arcade.wheelAutoPilotEnabled===true&&!this.store.config('arcade_wheel_paused',false)&&lastWheel!==null&&lastWheel+30*60_000>now)scheduled.push({type:'chaos-wheel',at:lastWheel+30*60_000});
     const nextScheduled=scheduled.sort((a,b)=>a.at-b.at)[0]||null;
@@ -115,7 +118,7 @@ export class EventDirector {
     if(input.busy){this.setReason('Ein anderes Community-Spiel oder eine Chataktion läuft.',now);return;}
     const activity=this.activity(now);if(LEVELS.indexOf(activity.level)<LEVELS.indexOf(cfg.minimumActivity)){this.setReason('Die tatsächliche Chataktivität liegt unter der eingestellten Schwelle.',now);return;}
     const state=this.store.state<{lastEventAt:number|null;lastType?:string}>('event_director_state',{lastEventAt:null});
-    if(state.lastEventAt!==null&&now-state.lastEventAt<cfg.minimumGapMs){this.setReason('Der gemeinsame Event-Cooldown ist aktiv.',now);return;}
+    if(state.lastEventAt!==null&&now-state.lastEventAt<cfg.minimumGapMs){this.setReason('Der kurze Sicherheitsabstand zwischen zwei Starts ist aktiv; einzelne Event-Cooldowns laufen unabhängig.',now);return;}
     if(this.store.miniGameQuery(db=>(db.prepare("SELECT COUNT(*) n FROM event_director_runs WHERE started_at>? AND triggered_by='system' AND status IN ('started','active','completed','aborted')").get(now-60*60_000) as {n:number}).n)>=cfg.maxEventsPerHour){this.setReason('Das automatische Event-Budget dieser Stunde ist erreicht.',now);return;}
     const candidates=input.candidates.filter(c=>c.enabled&&c.ready&&LEVELS.indexOf(activity.level)>=LEVELS.indexOf(c.minimumActivity||'low'))
       .map(candidate=>{const rows=this.store.miniGameQuery(db=>db.prepare("SELECT participant_count participants,active_chatter_count activeChatters,success FROM event_director_runs WHERE event_type=? AND status='completed' ORDER BY started_at DESC LIMIT 10").all(candidate.type) as Array<{participants:number;activeChatters:number;success:number|null}>);const last=this.store.miniGameQuery(db=>(db.prepare('SELECT MAX(started_at) at FROM event_director_runs WHERE event_type=?').get(candidate.type) as {at:number|null}).at)||0;const aging=Math.min(3,Math.floor((now-(last||now-90*60_000))/(90*60_000)));const noParticipation=rows.length?rows.filter(row=>row.participants===0).length/rows.length:0;const successRate=rows.length?rows.filter(row=>row.success===1).length/rows.length:.5;const engagement=rows.length?rows.reduce((sum,row)=>sum+Math.min(1,row.participants/Math.max(1,row.activeChatters)),0)/rows.length:.5;const recentRepeat=this.store.miniGameQuery(db=>(db.prepare("SELECT COUNT(*) n FROM (SELECT event_type FROM event_director_runs WHERE status IN ('completed','active','started') ORDER BY started_at DESC LIMIT 2) WHERE event_type=?").get(candidate.type) as {n:number}).n);const penalty=cfg.adaptiveEventWeighting?noParticipation*2+(0.5-successRate)*1.2+(0.5-engagement)*1.2+(recentRepeat?0.5:0):0;return {candidate,effective:candidate.priority+penalty-aging};})

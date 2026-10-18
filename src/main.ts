@@ -259,8 +259,11 @@ async function runLiveMode(): Promise<void> {
           || ['announced','claiming','resolving'].includes(dropStatus || '') || wheel.active
           || community.interactive.active().some(event=>event.status==='open') || Boolean(community.chaos.status(now).active) || Boolean(community.activeEventId())
           || queue.busy || now - lastSpecialAnnouncementAt < 60_000);
+        const eventConflictBusy = Boolean(snapshots.imposter || snapshots.detective || community.vault.isActive(now) || features.activeQuest() || features.activePoll(now) || features.activeBoss(now)
+          || ['announced','claiming','resolving'].includes(dropStatus || '') || wheel.active
+          || community.interactive.active().some(event=>event.status==='open') || Boolean(community.chaos.status(now).active) || Boolean(community.activeEventId()));
         if(lastKnownStreamLive!==undefined&&Date.now()-streamStatusCheckedAt<45_000){
-          const directorAction=community.runEventDirector(lastKnownStreamLive,busy,now);
+          const directorAction=community.runEventDirector(lastKnownStreamLive,eventConflictBusy,now);
           if(directorAction){lastSpecialAnnouncementAt=now;void queue.enqueue(directorAction.message,undefined,directorAction.category).then(sent=>{if(directorAction.chaosEventId){if(sent)community.chaos.markAnnouncementSent(directorAction.chaosEventId);else community.chaos.releaseStartAnnouncement(directorAction.chaosEventId);}}).catch(error=>{if(directorAction.chaosEventId)community.chaos.releaseStartAnnouncement(directorAction.chaosEventId);logger.warn('Event-Director-Ankündigung konnte nicht gesendet werden.',{eventType:directorAction.category,error:error instanceof Error?error.message:'unbekannt'});});return;}
         }
         const chaosStart=community.chaos.claimStartAnnouncement();
