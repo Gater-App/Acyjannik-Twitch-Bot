@@ -5,7 +5,7 @@ import type { FeatureStore } from './feature-store.js';
 export type PrankKind = 'chief' | 'accusation' | 'vault-alarm' | 'oracle';
 export interface ModeratorPrankSettings { enabled: Record<PrankKind, boolean>; announce: Record<PrankKind, boolean>; }
 interface ActivePrank { id: string; kind: PrankKind; startedAt: number; endsAt: number; targetId?: string; targetName?: string; }
-interface PersistedPranks { settings: ModeratorPrankSettings; active?: ActivePrank; cooldowns: Partial<Record<PrankKind, number>>; optOutHashes: string[]; targetCooldowns?: Record<string,number>; oracleUserCooldowns?:Record<string,number>; oracleRecent?:number[]; }
+interface PersistedPranks { settings: ModeratorPrankSettings; active?: ActivePrank; cooldowns: Partial<Record<PrankKind, number>>; lastStartedAt?:Partial<Record<PrankKind,number>>; optOutHashes: string[]; targetCooldowns?: Record<string,number>; oracleUserCooldowns?:Record<string,number>; oracleRecent?:number[]; }
 const KINDS: PrankKind[] = ['chief','accusation','vault-alarm','oracle'];
 const DEFAULTS: ModeratorPrankSettings = { enabled: { chief:false, accusation:false, 'vault-alarm':false, oracle:false }, announce: { chief:false, accusation:false, 'vault-alarm':false, oracle:false } };
 const ORACLE_ANSWERS = ['Die Sterne empfehlen einen Snack und eine entspannte Runde.','Das Orakel sieht: Gleich passiert etwas völlig Normales.','Meine Kristallkugel ist beschlagen. Frag später noch einmal.','Die Antwort lautet vielleicht – aber mit sehr viel Konfetti.','Heute stehen die Chancen gut für gute Laune.'];
@@ -17,7 +17,7 @@ export class ModeratorPranks {
   private data(now=Date.now()): PersistedPranks {
     const raw=this.store.config<Partial<PersistedPranks>>('moderator_pranks',{});
     return { settings:{ enabled:{...DEFAULTS.enabled,...raw.settings?.enabled},announce:{...DEFAULTS.announce,...raw.settings?.announce} },
-      ...(raw.active&&raw.active.endsAt>now?{active:raw.active}:{}), cooldowns:raw.cooldowns||{}, optOutHashes:raw.optOutHashes||[],targetCooldowns:Object.fromEntries(Object.entries(raw.targetCooldowns||{}).filter(([,at])=>at>now-24*60*60_000)),
+      ...(raw.active&&raw.active.endsAt>now?{active:raw.active}:{}), cooldowns:raw.cooldowns||{},lastStartedAt:raw.lastStartedAt||{}, optOutHashes:raw.optOutHashes||[],targetCooldowns:Object.fromEntries(Object.entries(raw.targetCooldowns||{}).filter(([,at])=>at>now-24*60*60_000)),
       oracleUserCooldowns:Object.fromEntries(Object.entries(raw.oracleUserCooldowns||{}).filter(([,at])=>at>now-30_000)),oracleRecent:(raw.oracleRecent||[]).filter(at=>at>now-60_000) };
   }
   private save(value:PersistedPranks):void { this.store.setConfig('moderator_pranks',value); }
@@ -25,7 +25,7 @@ export class ModeratorPranks {
   settings():ModeratorPrankSettings { return this.data().settings; }
   snapshot(now=Date.now()):Record<string,unknown> {
     const d=this.data(now); return {settings:d.settings,active:d.active?{kind:d.active.kind,startedAt:d.active.startedAt,endsAt:d.active.endsAt,remainingMs:Math.max(0,d.active.endsAt-now),...(d.active.targetName?{targetName:d.active.targetName}:{})}:null,
-      cooldowns:Object.fromEntries(KINDS.map(k=>[k,Math.max(0,(d.cooldowns[k]||0)-now)])),vaultActive:this.vaultActive()};
+      cooldowns:Object.fromEntries(KINDS.map(k=>[k,Math.max(0,(d.cooldowns[k]||0)-now)])),lastActions:d.lastStartedAt,vaultActive:this.vaultActive()};
   }
   configure(input:unknown):ModeratorPrankSettings {
     if(!input||typeof input!=='object')throw new Error('Prank-Einstellungen ungültig.');
@@ -42,6 +42,7 @@ export class ModeratorPranks {
     const d=this.data();d.settings=settings;this.save(d);return settings;
   }
   start(kind:PrankKind,actorId:string,now=Date.now(),target?:{id:string;name:string}):{ok:boolean;message:string;announcement?:string} {
+    return this.store.miniGameTransaction(()=>{
     const d=this.data(now);if(!d.settings.enabled[kind])return {ok:false,message:'Dieser Prank ist ausgeschaltet.'};
     if(d.active)return {ok:false,message:'Es läuft bereits ein Prank. Beende ihn zuerst.'};
     if((d.cooldowns[kind]||0)>now)return {ok:false,message:`Bitte noch ${Math.ceil(((d.cooldowns[kind]||0)-now)/60_000)} Min. warten.`};
@@ -57,13 +58,14 @@ export class ModeratorPranks {
     d.active={id:randomUUID(),kind,startedAt:now,endsAt:now+duration,...(target?{targetId:target.id,targetName:clean(target.name,32)}:{})};
     if(kind==='oracle'){d.oracleRecent=[];d.oracleUserCooldowns={};}
     if(kind==='accusation'&&target){const hash=createHash('sha256').update(target.id).digest('hex');d.targetCooldowns={...d.targetCooldowns,[hash]:now+24*60*60_000};}
-    d.cooldowns[kind]=now+cooldown;this.save(d);
+    d.cooldowns[kind]=now+cooldown;d.lastStartedAt={...d.lastStartedAt,[kind]:now};this.save(d);
     const announcements:Partial<Record<PrankKind,string>>={chief:'👑 Elio hat für eine Minute die Kontrolle übernommen. Beschwerden bitte ausschließlich in Form von Leckerlis einreichen.',
       accusation:`🐱 Elio verdächtigt @${clean(target?.name||'',32)}, heimlich Katzenfutter stibitzt zu haben. Das ist nur Quatsch! Mit !unschuldig verteidigst du dich oder mit !prankoptout sagst du dauerhaft ab.`,
       'vault-alarm':'🚨 Fehlalarm! Elio hat die Tresorwache übernommen. Am Spielstand ändert sich nichts.',oracle:'🔮 Das unseriöse Orakel ist für zwei Minuten geöffnet: Stelle eine harmlose Frage mit !orakel.'};
     return {ok:true,message:`${label(kind)} gestartet.`,...(d.settings.announce[kind]?{announcement:announcements[kind]}:{})};
+    });
   }
-  end(now=Date.now()):boolean { const d=this.data(now);if(!d.active)return false;d.cooldowns[d.active.kind]=Math.max(d.cooldowns[d.active.kind]||0,now);delete d.active;this.save(d);return true; }
+  end(now=Date.now()):boolean { return this.store.miniGameTransaction(()=>{const d=this.data(now);if(!d.active)return false;d.cooldowns[d.active.kind]=Math.max(d.cooldowns[d.active.kind]||0,now);delete d.active;this.save(d);return true;}); }
   tick(now=Date.now()):void { const raw=this.store.config<PersistedPranks>('moderator_pranks',this.empty());if(raw.active&&raw.active.endsAt<=now){delete raw.active;this.save(raw);} }
   private empty():PersistedPranks{return {settings:DEFAULTS,cooldowns:{},optOutHashes:[],targetCooldowns:{}};}
   handle(message:ChatMessage,command:string,args:string[],now=Date.now()):string|undefined {

@@ -183,7 +183,7 @@ export class CommunityFeatures {
     const interactiveReply=this.interactiveCommand(message,command,args,now);
     if(interactiveReply!==undefined)return say(interactiveReply,'community');
 
-    if(command==='code') { this.vault.guess(message,args,now); return []; }
+    if(command==='code') { const result=this.vault.guess(message,args,now);return result.privateHint?say(result.privateHint,'vault'):[]; }
 
     const prankReply=this.moderatorPranks.handle(message,command,args,now);
     if(prankReply!==undefined)return say(prankReply,command==='orakel'?'oracle':'pet');

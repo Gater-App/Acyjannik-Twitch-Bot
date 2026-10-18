@@ -904,7 +904,7 @@ export class DashboardServer {
       else if(this.vault.activeViewerCount(now)<settings.minActiveViewers){reason=`⏳ Benötigt ${settings.minActiveViewers} aktive Zuschauer; aktuell ${this.vault.activeViewerCount(now)}.`;canStart=false;}
       else if(busy){reason='⏳ Ein anderes Community-Spiel läuft gerade.';canStart=false;}
       else if(streamLive===true){reason='Startklar · Stream und aktive Zuschauer bestätigt.';}
-      this.json(res,200,{settings,snapshot,readiness:{canStart,reason,streamLive:streamLive??null,streamFresh,activeViewers:this.vault.activeViewerCount(now)}});return;
+      this.json(res,200,{settings,snapshot,history:this.vault.history(10),readiness:{canStart,reason,streamLive:streamLive??null,streamFresh,activeViewers:this.vault.activeViewerCount(now)}});return;
     }
     if (route === 'arcade' && req.method === 'GET') { this.json(res,200,this.arcade?{settings:this.arcade.settings(),pet:this.arcade.pet(),petStats:this.arcade.petInteractionStats(),petEvents:this.arcade.petActivity(),interactiveFeatures:{elio2Enabled:this.interactive.settings().elio2Enabled},challenges:this.arcade.manageChallenges(),wheel:this.arcade.wheelStatus(),drop:this.arcade.snapshot('drop')}:{settings:{dropsEnabled:false},pet:null,petStats:null,petEvents:[],interactiveFeatures:{elio2Enabled:false},challenges:[],wheel:{canSpin:false,activeAction:null,reason:'Chaos Wheel ist hier nicht eingerichtet.'},drop:{drop:null}});return; }
     if (route === 'events' && req.method === 'GET') { this.json(res, 200, { events: this.store.events() }); return; }

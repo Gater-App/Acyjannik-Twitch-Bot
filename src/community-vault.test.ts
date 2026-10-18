@@ -14,6 +14,12 @@ test('Community-Tresor bewertet führende Nullen und doppelte Ziffern mathematis
   assert.deepEqual(scoreGuess('042','404'),{exact:0,misplaced:2});
 });
 
+test('Tresorstart erklärt Befehl, Zeitlimit und die tatsächlich eingestellte Teilnahmebelohnung',()=>{
+  const {store,vault}=setup(),result=vault.startManual(50_000);
+  assert.equal(result.ok,true);assert.match(result.message,/!code 042/u);assert.match(result.message,/3 Sekunden/u);assert.match(result.message,/20 Tipps/u);assert.match(result.message,/bis zu 5 XP/u);assert.match(result.message,/3 Minuten/u);
+  store.close();
+});
+
 test('Tresor speichert keine Ratestrings, schützt den Geheimcode und begrenzt Versuche pro Zuschauer',()=>{
   const {store,vault}=setup(),now=100_000;assert.equal(vault.startManual(now).ok,true);
   store.miniGameQuery(db=>db.prepare("UPDATE community_vault_rounds SET secret_code='042' WHERE status='active'").run());
@@ -36,11 +42,31 @@ test('gleiche richtige Versuche öffnen den Tresor genau einmal und belohnen inn
   vault.guess(chat('winner-a','000',now+1),['000'],now+1);
   const correct=chat('winner-correct','042',now+3_002);correct.senderUserId='viewer-winner-a';
   const a=vault.guess(correct,['042'],now+3_002),b=vault.guess(chat('winner-b','042',now+3_003),['042'],now+3_003);
-  assert.equal(a.privateHint,'Tresor geöffnet!');assert.equal(b.privateHint,'Gerade ist kein Tresor offen.');
+  assert.match(a.privateHint||'',/tatsächliche Auszahlung: \+5 XP/u);assert.equal(b.privateHint,'Gerade ist kein Tresor offen.');
   assert.equal(store.xp('viewer-winner-a').xp,5);assert.equal(store.xp('viewer-winner-b').xp,0);
+  const awards=store.miniGameQuery(db=>db.prepare('SELECT award_type,xp FROM community_vault_awards ORDER BY award_type').all()) as Array<{award_type:string;xp:number}>;assert.deepEqual(awards,[{award_type:'participant',xp:5},{award_type:'solver',xp:0}],'der Verlauf speichert tatsächlich gebuchte XP statt den konfigurierten Sollwert');
   const notices=vault.tickMessages(now+3_004);assert.equal(notices.length,1);assert.equal(notices[0]?.category,'vault');
+  assert.match(notices[0]?.message||'',/1 qualifizierte Personen · 5 XP tatsächlich ausgezahlt/u);
   assert.equal(vault.tickMessages(now+3_005).length,0);assert.equal(store.miniGameQuery(db=>(db.prepare('SELECT COUNT(*) n FROM community_vault_awards').get() as {n:number}).n),2,JSON.stringify(store.miniGameQuery(db=>db.prepare('SELECT * FROM community_vault_awards').all())));
+  assert.equal(vault.history()[0]?.xpAwarded,5);
   store.close();
+});
+
+test('Tresor lehnt Tipps nach der Deadline ab, vergibt keine XP und veröffentlicht die Auflösung einmal',()=>{
+  const {store,vault}=setup(),now=400_000;assert.equal(vault.startManual(now).ok,true);
+  store.miniGameQuery(db=>db.prepare("UPDATE community_vault_rounds SET secret_code='042',ends_at=? WHERE status='active'").run(now+1_000));
+  const late=vault.guess(chat('late','042',now+1_001),['042'],now+1_001);assert.match(late.privateHint||'',/Zeit ist abgelaufen/u);
+  assert.equal(store.xp('viewer-late').xp,0);assert.equal(vault.isActive(now+1_001),false);
+  const notice=vault.tickMessages(now+1_002);assert.equal(notice.length,1);assert.match(notice[0]?.message||'',/042/);assert.match(notice[0]?.message||'',/keine XP vergeben/u);
+  assert.equal(vault.tickMessages(now+1_003).length,0);store.close();
+});
+
+test('Abbruch verwirft offene Tipps ohne Belohnung und parallele Starts erzeugen nur eine Runde',async()=>{
+  const {store,vault}=setup(),now=500_000;const attempts=await Promise.all(Array.from({length:8},(_,i)=>Promise.resolve().then(()=>vault.startManual(now+i))));
+  assert.equal(attempts.filter(x=>x.ok).length,1);vault.guess(chat('pending','111',now+10),['111'],now+10);
+  assert.equal(vault.cancel(now+20),true);assert.equal(vault.cancel(now+21),false);
+  assert.equal(store.miniGameQuery(db=>(db.prepare('SELECT COUNT(*) n FROM community_vault_attempts').get() as {n:number}).n),0);
+  assert.equal(store.miniGameQuery(db=>(db.prepare('SELECT status FROM community_vault_rounds ORDER BY started_at DESC LIMIT 1').get() as {status:string}).status),'canceled');store.close();
 });
 
 test('Automatik braucht drei unterschiedliche echte aktive Zuschauer, Live-Freigabe im Aufrufer und respektiert Stunde und Cooldown',()=>{

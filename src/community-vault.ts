@@ -7,6 +7,10 @@ export interface CommunityVaultSettings {
   enabled: boolean; autoStart: boolean; durationMinutes: number; minActiveViewers: number;
   cooldownMinutes: number; participantXp: number; solverBonusXp: number;
 }
+export interface CommunityVaultHistoryItem {
+  status:'opened'|'expired'|'canceled'|'active'; startedAt:number; endedAt:number; attempts:number;
+  winnerName:string|null; awardedParticipants:number; xpAwarded:number; resultCode:string|null;
+}
 export const DEFAULT_COMMUNITY_VAULT_SETTINGS: CommunityVaultSettings = {
   enabled:false, autoStart:false, durationMinutes:3, minActiveViewers:3, cooldownMinutes:30, participantXp:5, solverBonusXp:0,
 };
@@ -27,7 +31,7 @@ export class CommunityVault {
   constructor(private readonly store:FeatureStore,private readonly botUserId=''){}
 
   settings():CommunityVaultSettings{return normalizeVaultSettings(this.store.config('community_vault_settings',DEFAULT_COMMUNITY_VAULT_SETTINGS));}
-  isActive(now=Date.now()):boolean{return this.settings().enabled&&Boolean(this.store.miniGameQuery(db=>db.prepare("SELECT 1 FROM community_vault_rounds WHERE status='active' AND ends_at>? LIMIT 1").get(now)));}
+  isActive(now=Date.now()):boolean{return Boolean(this.store.miniGameQuery(db=>db.prepare("SELECT 1 FROM community_vault_rounds WHERE status='active' AND ends_at>? LIMIT 1").get(now)));}
   cooldownRemainingMs(now=Date.now()):number {
     const previous=this.store.miniGameQuery(db=>db.prepare('SELECT started_at FROM community_vault_rounds ORDER BY started_at DESC LIMIT 1').get()) as {started_at:number}|undefined;
     return previous?Math.max(0,this.settings().cooldownMinutes*60_000-(now-previous.started_at)):0;
@@ -85,17 +89,24 @@ export class CommunityVault {
       db.prepare(`INSERT INTO community_vault_rounds(id,secret_code,status,started_at,ends_at,is_auto,updated_at)
         VALUES(?,?,'active',?,?,?,?)`).run(id,secret,now,now+cfg.durationMinutes*60_000,automatic?1:0,now);return true;
     });
-    return created?{ok:true,message:`🔐 Der Community-Tresor ist offen! Knackt gemeinsam den dreistelligen Code mit !code 427. Ihr habt ${cfg.durationMinutes} Minuten.`}:{ok:false,message:'Der Tresor kann gerade nicht starten: Es läuft bereits eine Runde oder die Wartezeit gilt noch.'};
+    const participantReward=cfg.participantXp>0?` Ab mindestens zwei gültigen Tipps gibt es bis zu ${cfg.participantXp} XP Teilnehmerbelohnung pro Person; das tägliche XP-Limit gilt.`:' Für diese Runde sind keine Teilnehmer-XP eingestellt.';
+    const solverReward=cfg.solverBonusXp>0?` Der Finder-Bonus beträgt zusätzlich bis zu ${cfg.solverBonusXp} XP, ebenfalls vorbehaltlich des Tageslimits.`:'';
+    return created?{ok:true,message:`🔐 ELIO-TRESOR: Knackt den dreistelligen Code mit !code 042 (nur ein Beispiel). Ihr habt ${cfg.durationMinutes} Minuten. Pro Person gelten 3 Sekunden Abstand und höchstens 20 Tipps.${participantReward}${solverReward} Der erste richtige Code öffnet den Tresor.`}:{ok:false,message:'Der Tresor kann gerade nicht starten: Es läuft bereits eine Runde oder die Wartezeit gilt noch.'};
   }
   cancel(now=Date.now()):boolean {
-    return this.store.miniGameTransaction(db=>Boolean(db.prepare("UPDATE community_vault_rounds SET status='canceled',updated_at=?,announcement_sent=1 WHERE status='active'").run(now).changes));
+    return this.store.miniGameTransaction(db=>{const row=db.prepare("SELECT id FROM community_vault_rounds WHERE status='active'").get() as {id:string}|undefined;if(!row)return false;
+      const changed=db.prepare("UPDATE community_vault_rounds SET status='canceled',updated_at=?,announcement_sent=1 WHERE id=? AND status='active'").run(now,row.id).changes;
+      if(changed)db.prepare('DELETE FROM community_vault_attempts WHERE round_id=?').run(row.id);return Boolean(changed);});
   }
   guess(message:ChatMessage,args:string[],now=Date.now()):{recognized:boolean;privateHint?:string} {
-    if(!/^\d{3}$/u.test(args[0]||''))return {recognized:true,privateHint:'Bitte gib genau drei Ziffern an, zum Beispiel !code 042.'};
+    if(args.length!==1||!/^\d{3}$/u.test(args[0]||''))return {recognized:true,privateHint:'Bitte gib genau drei Ziffern an, zum Beispiel !code 042.'};
     if(message.senderUserId===this.botUserId||message.senderUserId===message.broadcasterUserId)return {recognized:true};
     return this.store.miniGameTransaction(db=>{
       const round=db.prepare("SELECT * FROM community_vault_rounds WHERE status='active' ORDER BY started_at DESC LIMIT 1").get() as RoundRow|undefined;
       if(!round)return {recognized:true,privateHint:'Gerade ist kein Tresor offen.'};
+      if(round.ends_at<=now){db.prepare("UPDATE community_vault_rounds SET status='expired',result_code=secret_code,updated_at=? WHERE id=? AND status='active'").run(now,round.id);
+        db.prepare('DELETE FROM community_vault_attempts WHERE round_id=?').run(round.id);
+        return {recognized:true,privateHint:'Die Zeit ist abgelaufen. Diese Runde zählt nicht mehr; der Bot veröffentlicht gleich die Auflösung.'};}
       const last=db.prepare('SELECT MAX(submitted_at) at FROM community_vault_attempts WHERE round_id=? AND user_id=?').get(round.id,message.senderUserId) as {at:number|null};
       if(last.at!==null&&now-last.at<3_000)return {recognized:true,privateHint:'Warte kurz, bevor du wieder rätst.'};
       const attempts=db.prepare('SELECT COUNT(*) n FROM community_vault_attempts WHERE round_id=? AND user_id=?').get(round.id,message.senderUserId) as {n:number};
@@ -107,32 +118,38 @@ export class CommunityVault {
       db.prepare('UPDATE community_vault_rounds SET attempts_count=attempts_count+1,updated_at=? WHERE id=? AND status=\'active\'').run(now,round.id);
       if(args[0]===round.secret_code){
         const opened=db.prepare("UPDATE community_vault_rounds SET status='opened',winner_user_id=?,winner_name=?,updated_at=? WHERE id=? AND status='active'").run(message.senderUserId,cleanName(message.senderDisplayName),now,round.id);
-        if(opened.changes){this.awardRound(db,round.id,round.secret_code,message.senderUserId,cleanName(message.senderDisplayName),now);}
-        return {recognized:true,privateHint:'Tresor geöffnet!'};
+        const rewards=opened.changes?this.awardRound(db,round.id,round.secret_code,message.senderUserId,cleanName(message.senderDisplayName),now):{participantXp:0,solverXp:0};
+        const total=rewards.participantXp+rewards.solverXp;
+        return {recognized:true,privateHint:`🎉 Tresor geöffnet! Deine tatsächliche Auszahlung: +${total} XP${total===0?' (für dich wurde kein XP-Spielraum frei).':''}`};
       }
-      return {recognized:true,privateHint:`Dein Hinweis: ${clue.exact} richtige Stelle(n), ${clue.misplaced} weitere Ziffer(n) enthalten, aber falsch positioniert.`};
+      const total=(db.prepare('SELECT attempts_count FROM community_vault_rounds WHERE id=?').get(round.id) as {attempts_count:number}).attempts_count;
+      const personal=(db.prepare('SELECT COUNT(*) n FROM community_vault_attempts WHERE round_id=? AND user_id=?').get(round.id,message.senderUserId) as {n:number}).n;
+      const eligibility=personal>=2?'Du erfüllst die Mindestteilnahme für die eingestellten Teilnehmer-XP (Tageslimit gilt).':'Noch ein Tipp nach Ablauf des 3-Sekunden-Abstands qualifiziert dich für die eingestellten Teilnehmer-XP.';
+      return {recognized:true,privateHint:`🔐 Tipp gespeichert · ${clue.exact} richtige Stelle(n), ${clue.misplaced} Ziffer(n) an falscher Stelle · ${total} Tipps insgesamt. ${eligibility}`};
     });
   }
-  private awardRound(db:import('better-sqlite3').Database,roundId:string,code:string,winnerId:string,winnerName:string,now:number):void {
+  private awardRound(db:import('better-sqlite3').Database,roundId:string,code:string,winnerId:string,winnerName:string,now:number):{participantXp:number;solverXp:number} {
     const cfg=this.settings(),cap=Number(this.store.config<{dailyGameCap?:number}>('xp_settings',{dailyGameCap:100}).dailyGameCap??100);
+    let participantXp=0,solverXp=0;
     const participants=db.prepare(`SELECT user_id,MAX(display_name) display_name,COUNT(*) attempts FROM community_vault_attempts WHERE round_id=? GROUP BY user_id HAVING COUNT(*)>=2`).all(roundId) as Array<{user_id:string;display_name:string;attempts:number}>;
     const winnerAttempts=db.prepare('SELECT COUNT(*) n FROM community_vault_attempts WHERE round_id=? AND user_id=?').get(roundId,winnerId) as {n:number};
-    for(const p of participants){const claim=db.prepare("INSERT OR IGNORE INTO community_vault_awards(round_id,user_id,award_type,xp) VALUES(?,?,'participant',?)").run(roundId,p.user_id,cfg.participantXp);
-      if(claim.changes&&cfg.participantXp>0)this.store.awardXp(`vault:${roundId}:${p.user_id}:participant`,p.user_id,p.display_name,cfg.participantXp,'bonus:community-vault',now,cap);}
-    if(cfg.solverBonusXp>0&&winnerAttempts.n>=2){const claim=db.prepare("INSERT OR IGNORE INTO community_vault_awards(round_id,user_id,award_type,xp) VALUES(?,?,'solver',?)").run(roundId,winnerId,cfg.solverBonusXp);
-      if(claim.changes)this.store.awardXp(`vault:${roundId}:${winnerId}:solver`,winnerId,winnerName,cfg.solverBonusXp,'bonus:community-vault-solver',now,cap);}
+    for(const p of participants){const claim=db.prepare("INSERT OR IGNORE INTO community_vault_awards(round_id,user_id,award_type,xp) VALUES(?,?,'participant',0)").run(roundId,p.user_id);
+      if(claim.changes&&cfg.participantXp>0){const actual=this.store.awardXp(`vault:${roundId}:${p.user_id}:participant`,p.user_id,p.display_name,cfg.participantXp,'bonus:community-vault',now,cap);db.prepare("UPDATE community_vault_awards SET xp=? WHERE round_id=? AND user_id=? AND award_type='participant'").run(actual,roundId,p.user_id);if(p.user_id===winnerId)participantXp=actual;}}
+    if(cfg.solverBonusXp>0&&winnerAttempts.n>=2){const claim=db.prepare("INSERT OR IGNORE INTO community_vault_awards(round_id,user_id,award_type,xp) VALUES(?,?,'solver',0)").run(roundId,winnerId);
+      if(claim.changes){solverXp=this.store.awardXp(`vault:${roundId}:${winnerId}:solver`,winnerId,winnerName,cfg.solverBonusXp,'bonus:community-vault-solver',now,cap);db.prepare("UPDATE community_vault_awards SET xp=? WHERE round_id=? AND user_id=? AND award_type='solver'").run(solverXp,roundId,winnerId);}}
     // Keep no guess history or personal clues after settlement.
     db.prepare('DELETE FROM community_vault_attempts WHERE round_id=?').run(roundId);
     db.prepare('UPDATE community_vault_rounds SET result_code=? WHERE id=?').run(code,roundId);
+    return {participantXp,solverXp};
   }
   tickMessages(now=Date.now()):OutboundChatMessage[] {
     return this.store.miniGameTransaction(db=>{
-      const expired=db.prepare("UPDATE community_vault_rounds SET status='expired',updated_at=? WHERE status='active' AND ends_at<=?").run(now,now);
-      if(expired.changes){const round=db.prepare("SELECT id,secret_code FROM community_vault_rounds WHERE status='expired' AND announcement_sent=0 ORDER BY updated_at DESC LIMIT 1").get() as {id:string;secret_code:string}|undefined;
-        if(round){db.prepare('UPDATE community_vault_rounds SET result_code=?,announcement_sent=1 WHERE id=?').run(round.secret_code,round.id);db.prepare('DELETE FROM community_vault_attempts WHERE round_id=?').run(round.id);
-          return [{message:`⏰ Die Tresor-Zeit ist abgelaufen. Der Code war ${round.secret_code}.`,category:'vault'}];}}
-      const opened=db.prepare("SELECT id,winner_name FROM community_vault_rounds WHERE status='opened' AND announcement_sent=0 ORDER BY updated_at DESC LIMIT 1").get() as {id:string;winner_name:string}|undefined;
-      if(opened){db.prepare('UPDATE community_vault_rounds SET announcement_sent=1 WHERE id=?').run(opened.id);return [{message:`🎉 Der Tresor ist offen! @${opened.winner_name} hat den Code geknackt.`,category:'vault'}];}
+      db.prepare("UPDATE community_vault_rounds SET status='expired',updated_at=? WHERE status='active' AND ends_at<=?").run(now,now);
+      const expired=db.prepare("SELECT id,secret_code FROM community_vault_rounds WHERE status='expired' AND announcement_sent=0 ORDER BY updated_at DESC LIMIT 1").get() as {id:string;secret_code:string}|undefined;
+      if(expired){db.prepare('UPDATE community_vault_rounds SET result_code=?,announcement_sent=1 WHERE id=?').run(expired.secret_code,expired.id);db.prepare('DELETE FROM community_vault_attempts WHERE round_id=?').run(expired.id);
+        return [{message:`⏰ Die Tresor-Zeit ist abgelaufen. Der Code war ${expired.secret_code}. Es wurden keine XP vergeben.`,category:'vault'}];}
+      const opened=db.prepare("SELECT id,winner_name,attempts_count FROM community_vault_rounds WHERE status='opened' AND announcement_sent=0 ORDER BY updated_at DESC LIMIT 1").get() as {id:string;winner_name:string;attempts_count:number}|undefined;
+      if(opened){db.prepare('UPDATE community_vault_rounds SET announcement_sent=1 WHERE id=?').run(opened.id);const awards=db.prepare('SELECT COUNT(DISTINCT user_id) participants,COALESCE(SUM(xp),0) xp FROM community_vault_awards WHERE round_id=?').get(opened.id) as {participants:number;xp:number};return [{message:`🎉 Der Community-Tresor ist offen! @${opened.winner_name} hat den Code geknackt. ${opened.attempts_count} Tipps · ${awards.participants} qualifizierte Personen · ${awards.xp} XP tatsächlich ausgezahlt.`,category:'vault'}];}
       const round=db.prepare("SELECT id,attempts_count,last_public_hint,last_public_hint_at FROM community_vault_rounds WHERE status='active' ORDER BY started_at DESC LIMIT 1").get() as {id:string;attempts_count:number;last_public_hint:string|null;last_public_hint_at:number|null}|undefined;
       if(round&&round.attempts_count>=5&&round.attempts_count%5===0&&(!round.last_public_hint_at||now-round.last_public_hint_at>=30_000)){
         const best=db.prepare('SELECT exact_count,misplaced_count FROM community_vault_attempts WHERE round_id=? ORDER BY exact_count DESC,misplaced_count DESC LIMIT 1').get(round.id) as {exact_count:number;misplaced_count:number}|undefined;
@@ -144,6 +161,16 @@ export class CommunityVault {
     });
   }
   publicSnapshot(now=Date.now()):Record<string,unknown>{return this.store.widgetSnapshot('vault',now);}
+  history(limit=10):CommunityVaultHistoryItem[]{
+    const rows=this.store.miniGameQuery(db=>db.prepare(`SELECT r.status,r.started_at,r.updated_at,r.attempts_count,r.winner_name,r.result_code,
+      COUNT(DISTINCT a.user_id) awarded_participants,COALESCE(SUM(a.xp),0) xp_awarded
+      FROM community_vault_rounds r LEFT JOIN community_vault_awards a ON a.round_id=r.id
+      GROUP BY r.id ORDER BY r.started_at DESC LIMIT ?`).all(Math.max(1,Math.min(20,Math.trunc(limit)))) as Array<{
+        status:'opened'|'expired'|'canceled'|'active';started_at:number;updated_at:number;attempts_count:number;winner_name:string|null;result_code:string|null;awarded_participants:number;xp_awarded:number;
+      }>);
+    return rows.map(r=>({status:r.status,startedAt:r.started_at,endedAt:r.updated_at,attempts:r.attempts_count,winnerName:r.winner_name,
+      awardedParticipants:r.awarded_participants,xpAwarded:r.xp_awarded,resultCode:r.status==='active'?null:r.result_code}));
+  }
   personalHint(userId:string):Record<string,unknown>|null {
     return this.store.miniGameQuery(db=>{const round=db.prepare("SELECT id FROM community_vault_rounds WHERE status='active' ORDER BY started_at DESC LIMIT 1").get() as {id:string}|undefined;if(!round)return null;
       const row=db.prepare('SELECT exact_count,misplaced_count,submitted_at FROM community_vault_attempts WHERE round_id=? AND user_id=? ORDER BY submitted_at DESC LIMIT 1').get(round.id,userId) as {exact_count:number;misplaced_count:number;submitted_at:number}|undefined;
