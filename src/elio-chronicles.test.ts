@@ -26,6 +26,21 @@ test('flags default off and story start reuses existing chaos event and XP ledge
   store.close();
 });
 
+test('Elio Chronicles can use the shared minigame engine while general Community-Chaos stays disabled',()=>{
+  const store=new FeatureStore(':memory:'),chaos=new CommunityChaos(store,()=>0),story=new ElioChronicles(store,chaos);
+  story.updateSettings({enabled:true});story.startSeason(1);
+  assert.equal(chaos.settings().enabled,false);
+  assert.throws(()=>chaos.start('treasure','admin',2),/Community-Chaos ist im Dashboard ausgeschaltet/u);
+  const event=story.startNext('admin',undefined,10);
+  assert.equal(event.game,'elio_rescue');assert.match(event.prompt,/!retten/u);
+  chaos.participate(message('story-viewer','!retten'),'retten',11);
+  chaos.finishDue(event.deadline);story.reconcile(event.deadline);
+  assert.equal(story.status().progress.completed,1);
+  assert.equal(store.users().find(user=>user.userId==='story-viewer')?.xp,20);
+  assert.equal(store.discordOutboxBatch(event.deadline+1).length,0,'Story-Diary und allgemeine Chaos-Ankündigungen bleiben ohne ihre eigenen Freigaben aus');
+  store.close();
+});
+
 test('full four chapter story simulation resumes at exact mission and stores choices and clues once',()=>{
   const store=new FeatureStore(':memory:'),chaos=new CommunityChaos(store,()=>0),story=new ElioChronicles(store,chaos);
   chaos.updateSettings({enabled:true});story.updateSettings({enabled:true});story.startSeason(100);
