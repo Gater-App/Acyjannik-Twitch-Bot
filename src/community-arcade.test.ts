@@ -45,15 +45,29 @@ test('Elio-Bedürfnisse verändern sich zeitbasiert ohne Chataktivität; Ruhe re
     const start=10_000,period=6*60*60_000;
     store.miniGameTransaction(db=>db.prepare("UPDATE community_pet SET level=4,xp=399,hunger=70,happiness=70,energy=70,state_updated_at=?,updated_at=? WHERE id=1").run(start,start));
     arcade.tickMessages(start+period);
-    const decayed=arcade.pet(start+period);assert.deepEqual([decayed.hunger,decayed.happiness,decayed.energy],[69,70,69]);
-    arcade.tickMessages(start+period+period-1);
-    assert.equal(arcade.pet(start+period+period-1).hunger,69,'erneutes Tick zählt denselben Zeitraum nicht doppelt');
+    const decayed=arcade.pet(start+period);assert.deepEqual([decayed.hunger,decayed.happiness,decayed.energy],[64,64,64]);
+    arcade.tickMessages(start+period);
+    assert.deepEqual([arcade.pet(start+period).hunger,arcade.pet(start+period).happiness,arcade.pet(start+period).energy],[64,64,64],'erneutes Tick zählt denselben Zeitraum nicht doppelt');
     store.miniGameTransaction(db=>db.prepare('UPDATE community_pet SET state_updated_at=?,updated_at=?,hunger=70,happiness=70,energy=50 WHERE id=1').run(start,start));
     const sleep=arcade.handle(message('viewer','sleep-event','!petsleep'),'petsleep',[],start);
     assert.match(sleep||'',/sechs Stunden/u);assert.equal(arcade.pet(start).sleeping,true);
     arcade.tickMessages(start+period);
-    const rested=arcade.pet(start+period);assert.deepEqual([rested.hunger,rested.happiness,rested.energy],[69,72,60]);
+    const rested=arcade.pet(start+period);assert.deepEqual([rested.hunger,rested.happiness,rested.energy],[64,71,62]);
     assert.equal(rested.sleeping,false);assert.deepEqual([rested.level,rested.xp,rested.outfit.id],[4,399,'classic']);
+  }finally{store.close();}
+});
+
+test('Elio verliert im Wachzustand jede Stunde Hunger, Energie und Zufriedenheit',()=>{
+  const {store,arcade}=setup();
+  try{
+    const start=20_000;
+    store.miniGameTransaction(db=>db.prepare('UPDATE community_pet SET hunger=70,happiness=70,energy=70,state_updated_at=?,updated_at=? WHERE id=1').run(start,start));
+    const beforeHour=arcade.pet(start+59*60_000);
+    assert.deepEqual([beforeHour.hunger,beforeHour.happiness,beforeHour.energy],[70,70,70]);
+    const afterHour=arcade.pet(start+60*60_000);
+    assert.deepEqual([afterHour.hunger,afterHour.happiness,afterHour.energy],[69,69,69]);
+    const afterTwo=arcade.pet(start+2*60*60_000);
+    assert.deepEqual([afterTwo.hunger,afterTwo.happiness,afterTwo.energy],[68,68,68]);
   }finally{store.close();}
 });
 

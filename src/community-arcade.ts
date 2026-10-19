@@ -536,14 +536,17 @@ export class CommunityArcade {
   }
   private applyPetNeeds(db:BetterSqlite3.Database,now:number):void{
     const row=db.prepare('SELECT hunger,happiness,energy,paused,updated_at,state_updated_at,sleep_until FROM community_pet WHERE id=1').get() as {hunger:number;happiness:number;energy:number;paused:number;updated_at:number;state_updated_at:number;sleep_until:number};
-    const baseline=row.state_updated_at||row.updated_at,period=6*60*60_000;
+    // Needs change hourly so viewers can notice them during a normal stream.
+    // While asleep, energy recovers at +2/hour and happiness is maintained;
+    // hunger continues to decrease. The saved timestamp keeps restarts idempotent.
+    const baseline=row.state_updated_at||row.updated_at,period=60*60_000;
     if(row.paused===1||now<=baseline)return;
     const periods=Math.floor((now-baseline)/period);if(periods<1){if(row.sleep_until>0&&row.sleep_until<=now)db.prepare('UPDATE community_pet SET sleep_until=0,animation=CASE WHEN animation=\'sleep\' THEN \'idle\' ELSE animation END WHERE id=1').run();return;}
     const slept=Math.max(0,Math.min(periods,Math.floor((Math.min(now,row.sleep_until||0)-baseline)/period)));
     const awake=periods-slept;
     const hunger=Math.max(0,row.hunger-periods);
-    const energy=Math.max(0,Math.min(100,row.energy-awake+slept*10));
-    const happiness=Math.max(0,Math.min(100,row.happiness-Math.floor(periods/2)+slept));
+    const energy=Math.max(0,Math.min(100,row.energy-awake+slept*2));
+    const happiness=Math.max(0,Math.min(100,row.happiness-awake));
     const stateAt=baseline+periods*period;
     db.prepare("UPDATE community_pet SET hunger=?,happiness=?,energy=?,state_updated_at=?,sleep_until=CASE WHEN sleep_until<=? THEN 0 ELSE sleep_until END,animation=CASE WHEN sleep_until>? THEN 'sleep' WHEN animation='sleep' THEN 'idle' ELSE animation END,updated_at=? WHERE id=1")
       .run(hunger,happiness,energy,stateAt,now,now,now);
