@@ -3,6 +3,7 @@ import path from 'node:path';
 import { randomInt, randomUUID } from 'node:crypto';
 import BetterSqlite3 from 'better-sqlite3';
 import type { Player } from './types.js';
+import { findActiveCommunityEventConflict } from './community-event-conflicts.js';
 import { DEFAULT_8BALL_ANSWERS, LEGACY_DEFAULT_8BALL_ANSWERS } from './eight-ball-answers.js';
 
 export interface SeasonalEvent {
@@ -2474,16 +2475,8 @@ export class FeatureStore {
   startBoss(id: string, name: string, hp: number, durationMs: number, now: number): boolean {
     try {
       this.db.transaction(() => {
-        const conflict=this.db.prepare(`SELECT 1 FROM community_chaos_events WHERE status='active'
-          UNION ALL SELECT 1 FROM community_interactive_events WHERE status='open' AND kind!='game_night'
-          UNION ALL SELECT 1 FROM mystery_drops WHERE status IN ('announced','claiming','resolving')
-          UNION ALL SELECT 1 FROM chaos_wheel_spins WHERE status IN ('spinning','active')
-          UNION ALL SELECT 1 FROM polls WHERE status='active'
-          UNION ALL SELECT 1 FROM imposter_rounds WHERE phase IN ('registration','role_distribution','playing','voting')
-          UNION ALL SELECT 1 FROM detective_rounds WHERE phase IN ('playing','results')
-          UNION ALL SELECT 1 FROM community_vault_rounds WHERE status='active'
-          UNION ALL SELECT 1 FROM seasonal_events WHERE active=1 LIMIT 1`).get();
-        if(conflict)throw new Error('Ein anderes Community-Event läuft bereits.');
+        const conflict=findActiveCommunityEventConflict(this.db);
+        if(conflict)throw new Error(`Ein anderes Community-Event läuft bereits: ${conflict.label}.`);
         this.db.prepare('INSERT INTO boss_fights(id,name,max_hp,hp,status,started_at,expires_at) VALUES(?,?,?,?,?,?,?)')
           .run(id, name, hp, hp, 'active', now, now + durationMs);
         this.recordCommunityEvent('boss.started', { id, name, hp, expiresAt: now + durationMs }, now);

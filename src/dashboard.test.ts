@@ -45,9 +45,9 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     if (url.endsWith('/oauth2/token')) return Response.json({ access_token: 'ephemeral-token' });
     if (url.endsWith('/oauth2/validate')) {
       assert.equal(new Headers(init?.headers).get('Authorization'), 'OAuth ephemeral-token');
-      return Response.json({ client_id: 'test-client', user_id: verifiedUserId, login: verifiedUserId==='admin-id'?'iobestie':'admin' });
+      return Response.json({ client_id: 'test-client', user_id: verifiedUserId, login: verifiedUserId==='admin-id'?'iobasti':'admin' });
     }
-    if (url.endsWith('/helix/users')) return Response.json({ data: [{ id: verifiedUserId, login: verifiedUserId==='admin-id'?'iobestie':'admin', display_name: 'Admin' }] });
+    if (url.endsWith('/helix/users')) return Response.json({ data: [{ id: verifiedUserId, login: verifiedUserId==='admin-id'?'iobasti':'admin', display_name: 'Basti' }] });
     throw new Error(`Unerwarteter externer Aufruf: ${url}`);
   };
   const arcade = new CommunityArcade(store,'admin-id',()=>0);
