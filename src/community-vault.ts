@@ -2,6 +2,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 import type { ChatMessage } from './types.js';
 import { FeatureStore } from './feature-store.js';
 import type { OutboundChatMessage } from './chat-message-format.js';
+import { communityConflictMessage, findActiveCommunityEventConflict } from './community-event-conflicts.js';
 
 export interface CommunityVaultSettings {
   enabled: boolean; autoStart: boolean; durationMinutes: number; minActiveViewers: number;
@@ -57,7 +58,7 @@ export class CommunityVault {
     return this.activeViewers.size;
   }
   autoStartReady(now:number,activeViewers:number,busy:boolean,lastMajorEventAt:number):boolean {
-    const cfg=this.settings();if(!cfg.enabled||!cfg.autoStart||busy||activeViewers<cfg.minActiveViewers||now-lastMajorEventAt<5*60_000)return false;
+    const cfg=this.settings();if(!cfg.enabled||!cfg.autoStart||busy||this.store.miniGameQuery(db=>Boolean(findActiveCommunityEventConflict(db)))||activeViewers<cfg.minActiveViewers||now-lastMajorEventAt<5*60_000)return false;
     return this.store.miniGameQuery(db=>{
       const active=db.prepare("SELECT 1 FROM community_vault_rounds WHERE status='active'").get();if(active)return false;
       const previous=db.prepare("SELECT started_at,is_auto FROM community_vault_rounds ORDER BY started_at DESC LIMIT 1").get() as {started_at:number;is_auto:number}|undefined;
@@ -72,26 +73,19 @@ export class CommunityVault {
     const cfg=this.settings();if(!cfg.enabled)return {ok:false,message:'Der Community-Tresor ist ausgeschaltet.'};
     const secret=generateCode(),id=randomUUID();
     const created=this.store.miniGameTransaction(db=>{
-      const active=db.prepare("SELECT 1 FROM community_vault_rounds WHERE status='active'").get();if(active)return false;
-      const conflict=db.prepare(`SELECT 1 FROM community_chaos_events WHERE status='active'
-        UNION ALL SELECT 1 FROM community_interactive_events WHERE status='open' AND kind!='game_night'
-        UNION ALL SELECT 1 FROM mystery_drops WHERE status IN ('announced','claiming','resolving')
-        UNION ALL SELECT 1 FROM chaos_wheel_spins WHERE status IN ('spinning','active')
-        UNION ALL SELECT 1 FROM boss_fights WHERE status='active'
-        UNION ALL SELECT 1 FROM polls WHERE status='active'
-        UNION ALL SELECT 1 FROM imposter_rounds WHERE phase IN ('registration','role_distribution','playing','voting')
-        UNION ALL SELECT 1 FROM detective_rounds WHERE phase IN ('playing','results')
-        UNION ALL SELECT 1 FROM seasonal_events WHERE active=1 LIMIT 1`).get();if(conflict)return false;
+      if(db.prepare("SELECT 1 FROM community_vault_rounds WHERE status='active'").get())return {ok:false,reason:'Der Community-Tresor läuft bereits.'};
+      const conflict=findActiveCommunityEventConflict(db);if(conflict)return {ok:false,reason:communityConflictMessage(conflict)};
       const previous=db.prepare("SELECT started_at FROM community_vault_rounds ORDER BY started_at DESC LIMIT 1").get() as {started_at:number}|undefined;
-      if(previous&&now-previous.started_at<cfg.cooldownMinutes*60_000)return false;
+      if(previous&&now-previous.started_at<cfg.cooldownMinutes*60_000)return {ok:false,reason:`Die Tresor-Wartezeit läuft noch ${Math.ceil((cfg.cooldownMinutes*60_000-(now-previous.started_at))/60_000)} Min.`};
       if(automatic){const lastAuto=db.prepare("SELECT started_at FROM community_vault_rounds WHERE is_auto=1 ORDER BY started_at DESC LIMIT 1").get() as {started_at:number}|undefined;
-        if(lastAuto&&now-lastAuto.started_at<60*60_000)return false;}
+        if(lastAuto&&now-lastAuto.started_at<60*60_000)return {ok:false,reason:`Die automatische Tresor-Wartezeit läuft noch ${Math.ceil((60*60_000-(now-lastAuto.started_at))/60_000)} Min.`};}
       db.prepare(`INSERT INTO community_vault_rounds(id,secret_code,status,started_at,ends_at,is_auto,updated_at)
-        VALUES(?,?,'active',?,?,?,?)`).run(id,secret,now,now+cfg.durationMinutes*60_000,automatic?1:0,now);return true;
+        VALUES(?,?,'active',?,?,?,?)`).run(id,secret,now,now+cfg.durationMinutes*60_000,automatic?1:0,now);return {ok:true as const};
     });
+    if(!created.ok)return {ok:false,message:`Der Tresor kann gerade nicht starten: ${created.reason}`};
     const participantReward=cfg.participantXp>0?` Bei geknacktem Code: ab zwei eigenen Tipps bis zu ${cfg.participantXp} XP Teilnahmebelohnung; das Tageslimit gilt.`:' Für diese Runde gibt es keine Teilnahme-XP.';
     const solverReward=cfg.solverBonusXp>0?` Finder-Bonus: bis zu ${cfg.solverBonusXp} XP ab zwei eigenen Tipps; das Tageslimit gilt.`:'';
-    return created?{ok:true,message:`🔐 COMMUNITY-TRESOR GEÖFFNET! Ein geheimer dreistelliger Code wartet. Rate mit !code XXX. XXX ist ein Platzhalter: Ersetze ihn durch drei selbst gewählte Ziffern. ⏱️ ${cfg.durationMinutes} Minuten. Pro Person: 3 Sekunden Abstand, höchstens 20 Tipps. Der erste richtige Tipp öffnet den Tresor.${participantReward}${solverReward}`}:{ok:false,message:'Der Tresor kann gerade nicht starten: Es läuft bereits eine Runde oder die Wartezeit gilt noch.'};
+    return {ok:true,message:`🔐 COMMUNITY-TRESOR GEÖFFNET! Ein geheimer dreistelliger Code wartet. Rate mit !code XXX. XXX ist ein Platzhalter: Ersetze ihn durch drei selbst gewählte Ziffern. ⏱️ ${cfg.durationMinutes} Minuten. Pro Person: 3 Sekunden Abstand, höchstens 20 Tipps. Der erste richtige Tipp öffnet den Tresor.${participantReward}${solverReward}`};
   }
   cancel(now=Date.now()):boolean {
     return this.store.miniGameTransaction(db=>{const row=db.prepare("SELECT id FROM community_vault_rounds WHERE status='active'").get() as {id:string}|undefined;if(!row)return false;

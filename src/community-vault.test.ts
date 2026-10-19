@@ -29,6 +29,26 @@ test('Tresorstart erklärt XXX als Platzhalter und verrät keine dreistellige Za
   store.close();
 });
 
+test('aktivierter Halloween-Saisonmodus blockiert keine Tresorrunde oder deren Automatik',()=>{
+  const {store,vault}=setup(),now=75_000;
+  store.miniGameQuery(db=>db.prepare("UPDATE seasonal_events SET active=1 WHERE id='halloween'").run());
+  assert.equal(vault.startManual(now).ok,true,'ein Saison-Schalter ist kein laufendes Spiel');
+  vault.cancel(now+1);
+  vault.updateSettings({enabled:true,autoStart:true,minActiveViewers:3,cooldownMinutes:10});
+  assert.equal(vault.autoStartReady(now+600_001,3,false,now),true,'ein Saison-Schalter ist kein laufendes Spiel und blockiert die Automatik nicht');
+  assert.equal(vault.startAutomatic(now+600_001).ok,true);
+  store.close();
+});
+
+test('tatsächlich laufende inkompatible Live-Abstimmung blockiert den Tresor mit konkretem Grund',()=>{
+  const {store,vault}=setup(),now=80_000;
+  store.miniGameQuery(db=>db.prepare("INSERT INTO polls(id,poll_type,question,options_json,status,starts_at,ends_at,created_by) VALUES('poll-1','chat','Welche Option?',?,'active',?,?, 'test')").run(JSON.stringify(['A','B']),now,now+60_000));
+  const result=vault.startManual(now);
+  assert.equal(result.ok,false);assert.match(result.message,/Live-Abstimmung/u);
+  assert.equal(vault.isActive(now),false);
+  store.close();
+});
+
 test('Tresor speichert keine Ratestrings, schützt den Geheimcode und begrenzt Versuche pro Zuschauer',()=>{
   const {store,vault}=setup(),now=100_000;assert.equal(vault.startManual(now).ok,true);
   store.miniGameQuery(db=>db.prepare("UPDATE community_vault_rounds SET secret_code='042' WHERE status='active'").run());

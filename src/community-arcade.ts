@@ -2,6 +2,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 import type BetterSqlite3 from 'better-sqlite3';
 import type { ChatMessage } from './types.js';
 import { FeatureStore, type QuestPolicy } from './feature-store.js';
+import { communityConflictMessage, findActiveCommunityEventConflict } from './community-event-conflicts.js';
 
 export type ChaosWheelActionType = 'manual_challenge'|'start_mystery_drop'|'boost_pet';
 
@@ -357,16 +358,7 @@ export class CommunityArcade {
       db.prepare('UPDATE chaos_wheel_challenges SET active=?,weight=? WHERE id=?').run(active?1:0,weight,id);
     });
   }
-  private hasBlockingCommunityGame():boolean{return this.store.miniGameQuery(db=>Boolean(db.prepare(`SELECT 1 FROM imposter_rounds WHERE phase IN ('registration','role_distribution','playing','voting')
-    UNION ALL SELECT 1 FROM detective_rounds WHERE phase IN ('playing','results')
-    UNION ALL SELECT 1 FROM community_chaos_events WHERE status='active'
-    UNION ALL SELECT 1 FROM community_interactive_events WHERE status='open' AND kind!='game_night'
-    UNION ALL SELECT 1 FROM mystery_drops WHERE status IN ('announced','claiming','resolving')
-    UNION ALL SELECT 1 FROM chaos_wheel_spins WHERE status IN ('spinning','active')
-    UNION ALL SELECT 1 FROM boss_fights WHERE status='active'
-    UNION ALL SELECT 1 FROM polls WHERE status='active'
-    UNION ALL SELECT 1 FROM community_vault_rounds WHERE status='active'
-    UNION ALL SELECT 1 FROM seasonal_events WHERE active=1 LIMIT 1`).get()));}
+  private hasBlockingCommunityGame():boolean{return this.store.miniGameQuery(db=>Boolean(findActiveCommunityEventConflict(db)));}
   private wheelPrizeSlotsRemaining(settings=this.settings()):number{
     if(!this.currentStreamId)return 0;
     const used=this.store.miniGameQuery(db=>(db.prepare("SELECT COUNT(*) n FROM chaos_wheel_spins WHERE stream_id=? AND reward_status IN ('granted','cosmetic')").get(this.currentStreamId) as {n:number}).n);
@@ -403,13 +395,7 @@ export class CommunityArcade {
   }
   private startDrop(actor:string,now:number,rarityArg?:string):string {
     const rarity=(rarityArg||'common').toLowerCase();if(!(rarity in LIMITS))return '🎁 Diese Seltenheitsstufe gibt es nicht.';
-    try{return this.store.miniGameTransaction(db=>{const conflict=db.prepare(`SELECT 1 FROM community_chaos_events WHERE status='active'
-      UNION ALL SELECT 1 FROM community_interactive_events WHERE status='open' AND kind!='game_night'
-      UNION ALL SELECT 1 FROM chaos_wheel_spins WHERE status IN ('spinning','active')
-      UNION ALL SELECT 1 FROM boss_fights WHERE status='active' UNION ALL SELECT 1 FROM polls WHERE status='active'
-      UNION ALL SELECT 1 FROM imposter_rounds WHERE phase IN ('registration','role_distribution','playing','voting')
-      UNION ALL SELECT 1 FROM detective_rounds WHERE phase IN ('playing','results') UNION ALL SELECT 1 FROM community_vault_rounds WHERE status='active'
-      UNION ALL SELECT 1 FROM seasonal_events WHERE active=1 UNION ALL SELECT 1 FROM mystery_drops WHERE status IN ('announced','claiming','resolving') LIMIT 1`).get();if(conflict)return '🎁 Ein anderes Community-Event läuft bereits. Der Mystery Drop wartet.';return this.insertDrop(db,actor,now,rarity);});}
+    try{return this.store.miniGameTransaction(db=>{const conflict=findActiveCommunityEventConflict(db);if(conflict)return `🎁 ${communityConflictMessage(conflict)} Der Mystery Drop wartet.`;return this.insertDrop(db,actor,now,rarity);});}
     catch{return '🎁 Es läuft bereits ein Drop.';}
   }
   private claim(m:ChatMessage,now:number):string {
@@ -425,11 +411,8 @@ export class CommunityArcade {
     return this.store.miniGameTransaction(db=>{
       const open=db.prepare("SELECT 1 FROM chaos_wheel_spins WHERE status IN ('spinning','active')").get();if(open)return '🎡 Eine Rad-Aktion läuft bereits.';
       if(db.prepare("SELECT 1 FROM mystery_drops WHERE status IN ('announced','claiming','resolving') LIMIT 1").get())return '🎡 Ein Mystery Drop läuft bereits. Das Rad wartet, damit die Runde nicht gestört wird.';
-      const conflict=db.prepare(`SELECT 1 FROM community_chaos_events WHERE status='active'
-        UNION ALL SELECT 1 FROM community_interactive_events WHERE status='open' AND kind!='game_night'
-        UNION ALL SELECT 1 FROM boss_fights WHERE status='active' UNION ALL SELECT 1 FROM polls WHERE status='active'
-        UNION ALL SELECT 1 FROM community_vault_rounds WHERE status='active' UNION ALL SELECT 1 FROM seasonal_events WHERE active=1 LIMIT 1`).get();
-      if(conflict)return '🎡 Ein anderes Community-Event läuft bereits. Das Rad wartet.';
+      const conflict=findActiveCommunityEventConflict(db);
+      if(conflict)return `🎡 ${communityConflictMessage(conflict)} Das Rad wartet.`;
       const recent=db.prepare("SELECT created_at FROM chaos_wheel_spins WHERE status IN ('active','completed','canceled') ORDER BY created_at DESC LIMIT 1").get() as {created_at:number}|undefined;
       if(recent&&now-recent.created_at<this.settings().wheelCooldownMs)return '🎡 Das Rad braucht noch eine kurze Pause.';
       const options=db.prepare("SELECT id,title,weight,action_type actionType,wheel_key wheelKey FROM chaos_wheel_challenges WHERE active=1 AND (action_type!='manual_challenge' OR wheel_key IN ('viewer_xp','viewer_mystery_drop','viewer_honor','community_bonus','quest_luck','chaos_title','extra_spin')) ORDER BY rowid").all() as Array<{id:string;title:string;weight:number;actionType:ChaosWheelActionType;wheelKey:string|null}>;

@@ -12,6 +12,7 @@ import { ElioChronicles } from './elio-chronicles.js';
 import { CommunityVault } from './community-vault.js';
 import { CommunityHauntedHouse } from './community-haunted-house.js';
 import { EventDirector, adaptiveBossHp, type EventCandidate } from './event-director.js';
+import { findActiveCommunityEventConflict } from './community-event-conflicts.js';
 import { ModeratorPranks } from './moderator-pranks.js';
 import { categoryForCommand, type ChatCategory } from './chat-message-format.js';
 import type { OutboundChatMessage } from './chat-message-format.js';
@@ -87,7 +88,7 @@ export class CommunityFeatures {
     const candidates:EventCandidate[]=[];
     const chaosCfg=this.chaos.settings(),storyCfg=this.chronicles.settings();
     candidates.push({type:'community-chaos',priority:4,enabled:(cfg.autoChaos||cfg.autoStories)&&chaosCfg.enabled&&chaosCfg.autoEnabled,ready:this.chaos.automaticReady(now),minimumActivity:'low',start:()=>this.chaos.startAutomatic(now,false)?.message,interval:{min:chaosCfg.minIntervalMs,max:chaosCfg.minIntervalMs+chaosCfg.randomDelayMs},intervalKey:'community-chaos'});
-    candidates.push({type:'elio-chronicles',priority:1,enabled:cfg.autoStories&&storyCfg.enabled&&storyCfg.autoEnabled,ready:this.chronicles.automaticReady(now),minimumActivity:'low',start:()=>this.chronicles.startAutomatic(now).prompt,interval:{min:storyCfg.automaticIntervalMs,max:storyCfg.automaticIntervalMs},intervalKey:'elio-chronicles'});
+    candidates.push({type:'elio-chronicles',priority:1,enabled:cfg.autoStories&&storyCfg.enabled&&storyCfg.autoEnabled,ready:this.chronicles.automaticReady(now,live),minimumActivity:'low',start:()=>this.chronicles.startAutomatic(now).prompt,interval:{min:storyCfg.automaticIntervalMs,max:storyCfg.automaticIntervalMs},intervalKey:'elio-chronicles'});
     const secretSettings=this.interactive.settings();
     candidates.push({type:'secret-event',priority:5,enabled:cfg.autoSecretEvents&&secretSettings.secretEventsEnabled&&secretSettings.autoSecretEventsEnabled,
       ready:!this.interactive.active(undefined,now).some(event=>event.status==='open'),minimumActivity:'normal',start:()=>this.interactive.startAutomaticSecretEvent(now,activity.uniqueChatters15m)?'🎁 Ein geheimes Community-Event beginnt! Schaut auf die Community-Seite.':undefined});
@@ -136,6 +137,8 @@ export class CommunityFeatures {
   recordHauntedHouseContribution(eventId:string,userId:string,now=Date.now()):void { this.hauntedHouse.recordAcceptedPlay(eventId,userId,now); }
 
   activeEventId(): string | undefined { return this.store.activeEvent()?.id; }
+
+  activeGameConflict(){return this.store.miniGameQuery(db=>findActiveCommunityEventConflict(db));}
 
   claimChatDeliveryMessages(now=Date.now()){return this.store.claimChatDeliveryMessages(now);}
   finishChatDelivery(id:string,accepted:boolean,now=Date.now(),error=''){this.store.finishChatDelivery(id,accepted,now,error);}

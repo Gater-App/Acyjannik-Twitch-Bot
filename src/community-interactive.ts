@@ -1,5 +1,6 @@
 import { randomInt, randomUUID } from 'node:crypto';
 import { FeatureStore } from './feature-store.js';
+import { findActiveCommunityEventConflict } from './community-event-conflicts.js';
 
 export type InteractiveEventKind='battle'|'mystery_case'|'elio_rescue'|'secret_portal'|'game_night';
 export type InteractivePlatform='twitch'|'discord';
@@ -171,16 +172,7 @@ export class CommunityInteractive {
 interface EventRow{id:string;kind:InteractiveEventKind;status:'scheduled'|'open'|'completed'|'canceled';title:string;description:string;starts_at:number;ends_at:number|null;settings_json:string;created_by:string;created_at:number;updated_at:number;}
 interface ParticipantRow{identity_key:string;team:InteractivePlatform|null;status:string;points:number;last_action_at:number|null;}
 function parseSettings(value:string):Record<string,unknown>{try{const parsed=JSON.parse(value);return parsed&&typeof parsed==='object'?parsed:{}}catch{return {};}}
-function hasConflictingActiveEvent(db:import('better-sqlite3').Database):boolean{return Boolean(db.prepare(`SELECT 1 FROM community_interactive_events WHERE status='open' AND kind!='game_night'
-  UNION ALL SELECT 1 FROM community_chaos_events WHERE status='active'
-  UNION ALL SELECT 1 FROM mystery_drops WHERE status IN ('announced','claiming','resolving')
-  UNION ALL SELECT 1 FROM chaos_wheel_spins WHERE status IN ('spinning','active')
-  UNION ALL SELECT 1 FROM boss_fights WHERE status='active'
-  UNION ALL SELECT 1 FROM polls WHERE status='active'
-  UNION ALL SELECT 1 FROM community_vault_rounds WHERE status='active'
-  UNION ALL SELECT 1 FROM seasonal_events WHERE active=1
-  UNION ALL SELECT 1 FROM imposter_rounds WHERE phase IN ('registration','role_distribution','playing','voting')
-  UNION ALL SELECT 1 FROM detective_rounds WHERE phase IN ('playing','results') LIMIT 1`).get());}
+function hasConflictingActiveEvent(db:import('better-sqlite3').Database):boolean{return Boolean(findActiveCommunityEventConflict(db));}
 export function localTimeToEpoch(value:string,timeZone='Europe/Berlin'):number{
   const match=/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/u.exec(value);if(!match)throw new Error('Bitte Datum und Uhrzeit im lokalen Format JJJJ-MM-TT HH:MM angeben.');
   const target=match.slice(1).map(Number),[year,month,day,hour,minute]=target as [number,number,number,number,number];
