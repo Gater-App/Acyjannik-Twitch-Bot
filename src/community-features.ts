@@ -84,6 +84,11 @@ export class CommunityFeatures {
     return next;
   }
   runEventDirector(live:boolean,busy:boolean,now=Date.now()):{message:string;category:'boss'|'drop'|'wheel'|'community';chaosEventId?:string}|undefined {
+    return this.store.miniGameImmediateTransaction(()=>{
+    // Candidate readiness methods can advance persistent timers. Read the pause
+    // before evaluating any candidate, under the same SQLite write lock used
+    // for starts, so startup/reconnect ticks cannot mutate or resume work first.
+    if(this.eventDirector.settings().paused){this.eventDirector.run({live,busy,now,candidates:[]});return undefined;}
     const cfg=this.eventDirector.settings(),activity=this.eventDirector.activity(now),modules=this.store.config<Record<string,boolean>>('modules',{});
     const candidates:EventCandidate[]=[];
     const chaosCfg=this.chaos.settings(),storyCfg=this.chronicles.settings();
@@ -125,6 +130,7 @@ export class CommunityFeatures {
     if(!live){this.chaos.pauseAutomatic(now);}
     if(result){const category=result.type==='boss'?'boss':result.type==='mystery-drop'?'drop':result.type==='chaos-wheel'?'wheel':'community';if(result.type==='community-chaos'||result.type==='elio-chronicles'){const announcement=this.chaos.claimStartAnnouncement(now);return {message:announcement?.prompt||result.message,category,...(announcement?{chaosEventId:announcement.id}:{})};}return {message:result.message,category};}
     return undefined;
+    });
   }
   private currentInteractiveStatus(now:number){return {chaos:this.chaos.status(now).active,secretEvents:this.interactive.active().filter(event=>event.kind==='mystery_case'||event.kind==='elio_rescue'||event.kind==='secret_portal'),boss:this.store.activeBoss(now)||null,wheel:this.arcade.wheelStatus(now).active,drop:(this.arcade.snapshot('drop').drop as {status?:string}|undefined)?.status||null};}
 
