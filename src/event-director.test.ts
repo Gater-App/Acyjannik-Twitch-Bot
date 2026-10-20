@@ -24,6 +24,49 @@ test('one persistent lease and shared cooldown prevent duplicate automatic start
 
 test('paused Event Director keeps all feature flags but prevents automatic starts with an explicit reason',()=>{const store=new FeatureStore(':memory:'),director=new EventDirector(store,()=>0);director.updateSettings({enabled:true,paused:true,minimumActivity:'quiet',autoBosses:true});let starts=0;assert.equal(director.run({live:true,busy:false,now:10,candidates:[candidate(()=>{starts++;return 'start';})]}),undefined);assert.equal(starts,0);assert.match(director.snapshot(10).reason,/pausiert/u);assert.equal(director.settings().autoBosses,true);store.close();});
 
+test('global pause is checked before queue lifecycle work and preserves queued manual and automatic work across a process restart',()=>{
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'event-director-paused-restart-')),database=path.join(directory,'data','state.sqlite'),now=50_000_000;
+  let store=new FeatureStore(database),director=new EventDirector(store,()=>0);director.updateSettings({enabled:true,paused:true,queuePaused:false,minimumActivity:'quiet',autoBosses:true});
+  const queued=director.enqueueManual('boss','admin',now,{},'paused-restart-key-0001',true);
+  store.miniGameQuery(db=>db.prepare('UPDATE event_director_runs SET max_delay_at=? WHERE id=?').run(now-1,queued.id));
+  let manualStarts=0,automaticStarts=0;const manual:EventCandidate={type:'boss',priority:1,enabled:false,ready:false,start:()=>undefined,manualStart:()=>{manualStarts++;store.startBoss('paused-queue-boss','Boss',50,60_000,now);store.awardXp('paused-start-reward','viewer','Viewer',7,'test:queued-start',now);return 'Boss gestartet';}};
+  const automatic=candidate(()=>{automaticStarts++;store.startBoss('paused-auto-boss','Boss',50,60_000,now);return 'Boss gestartet';},'boss');
+  store.close();
+  store=new FeatureStore(database);director=new EventDirector(store,()=>0);
+  for(let attempt=0;attempt<2;attempt++)assert.equal(director.run({live:true,busy:false,now:now+attempt,candidates:[manual,automatic]}),undefined);
+  const state=store.miniGameQuery(db=>({queue:db.prepare("SELECT status FROM event_director_runs WHERE id=?").get(queued.id) as {status:string},bosses:(db.prepare("SELECT COUNT(*) n FROM boss_fights WHERE status='active'").get() as {n:number}).n,xp:(db.prepare('SELECT COUNT(*) n FROM xp_ledger').get() as {n:number}).n}));
+  assert.deepEqual(state,{queue:{status:'queued'},bosses:0,xp:0});assert.equal(manualStarts,0);assert.equal(automaticStarts,0);assert.match(director.snapshot(now+2).reason,/pausiert/u);store.close();fs.rmSync(directory,{recursive:true,force:true});
+});
+
+test('the two pause gates preserve queued requests until both are open, then start and award at most once',()=>{
+  const store=new FeatureStore(':memory:'),director=new EventDirector(store),now=51_000_000;director.updateSettings({enabled:true,paused:true,queuePaused:true,minimumActivity:'quiet'});
+  const request=director.enqueueManual('boss','admin',now,{},'two-pause-key-0001',true);let starts=0;
+  const manual:EventCandidate={type:'boss',priority:1,enabled:false,ready:false,start:()=>undefined,manualStart:()=>{starts++;store.startBoss('two-pause-boss','Boss',50,60_000,now);store.awardXp('two-pause-reward','viewer','Viewer',9,'test:single-start',now);return 'Boss gestartet';}};
+  const run=()=>director.run({live:true,busy:false,now:now+1,candidates:[manual]});
+  assert.equal(run(),undefined);director.updateSettings({paused:false});assert.equal(run(),undefined);assert.equal(starts,0);assert.equal(director.snapshot(now+2).queue.some(item=>item.id===request.id),true);
+  director.updateSettings({paused:true,queuePaused:false});assert.equal(run(),undefined);assert.equal(starts,0);assert.equal(director.snapshot(now+3).queue.some(item=>item.id===request.id),true);
+  director.updateSettings({paused:false});assert.equal(run()?.message,'Boss gestartet');assert.equal(run(),undefined);assert.equal(starts,1);assert.equal(store.users().find(user=>user.userId==='viewer')?.xp,9);assert.equal(store.miniGameQuery(db=>(db.prepare("SELECT COUNT(*) n FROM xp_ledger WHERE event_id='two-pause-reward'").get() as {n:number}).n),1);store.close();
+});
+
+test('direct dashboard manual starts reject while paused and serialize their start with the pause setting',()=>{
+  const store=new FeatureStore(':memory:'),director=new EventDirector(store);director.updateSettings({enabled:true,paused:true});let starts=0;
+  assert.throws(()=>director.manualStart('boss','admin',52_000_000,()=>{starts++;return store.startBoss('paused-direct-start','Boss',50,60_000,52_000_000)?'start':undefined;}),/pausiert/u);
+  assert.equal(starts,0);assert.equal(store.activeBoss(52_000_000),undefined);assert.equal(store.miniGameQuery(db=>(db.prepare('SELECT COUNT(*) n FROM event_director_runs').get() as {n:number}).n),0);store.close();
+});
+
+test('community coordinator checks the global pause before candidate readiness can advance persistent schedulers',()=>{
+  const store=new FeatureStore(':memory:'),community=new CommunityFeatures(store,testConfig()),now=52_500_000;
+  community.eventDirector.updateSettings({enabled:true,paused:true,queuePaused:false,minimumActivity:'quiet',autoChaos:true,autoStories:true});
+  community.chaos.updateSettings({...community.chaos.settings(),enabled:true,autoEnabled:true});
+  community.chronicles.updateSettings({...community.chronicles.settings(),enabled:true,autoEnabled:true,diaryEnabled:false,diaryChannelId:''});community.chronicles.startSeason(now-1_000);
+  const request=community.eventDirector.enqueueManual('boss','admin',now,{},'coordinator-paused-001',true);
+  assert.equal(community.runEventDirector(true,false,now),undefined);
+  const state=store.state<Record<string,number|null>>('event_director_timers',{});
+  assert.equal(state['elio-chronicles'],undefined);assert.equal(store.miniGameQuery(db=>(db.prepare('SELECT next_at at FROM community_chaos_scheduler WHERE id=1').get() as {at:number|null}).at),null);
+  assert.equal(store.miniGameQuery(db=>(db.prepare("SELECT COUNT(*) n FROM event_director_runs WHERE id=? AND status='queued'").get(request.id) as {n:number}).n),1);
+  assert.match(community.eventDirector.snapshot(now).reason,/pausiert/u);store.close();
+});
+
 test('offline, busy, event budget and activity threshold leave events unstarted with explicit reason',()=>{const store=new FeatureStore(':memory:'),director=new EventDirector(store,()=>0);director.updateSettings({enabled:true,minimumActivity:'normal'});let starts=0;const list=[candidate(()=>{starts++;return 'start';})];director.run({live:false,busy:false,now:1,candidates:list});assert.match(director.snapshot(1).reason,/offline/u);director.run({live:true,busy:true,now:2,candidates:list});assert.match(director.snapshot(2).reason,/läuft/u);director.run({live:true,busy:false,now:3,candidates:list});assert.match(director.snapshot(3).reason,/unter/u);assert.equal(starts,0);store.close();});
 
 test('automatic event budget is bounded to two by default and timer state survives service recreation',()=>{const store=new FeatureStore(':memory:'),director=new EventDirector(store,()=>0);director.updateSettings({enabled:true,minimumActivity:'quiet'});let starts=0;const first=candidate(()=>{starts++;store.startBoss('timer-boss','Boss',10,60_000,100);return 'ok';},'boss');first.interval={min:4_500_000,max:6_300_000};assert.equal(director.run({live:true,busy:false,now:100,candidates:[first]})?.message,'ok');assert.equal(director.intervalDue('boss',101,4_500_000,6_300_000,true,true),false);assert.equal(new EventDirector(store,()=>0).intervalDue('boss',4_500_200,4_500_000,6_300_000,true,true),true);assert.equal(starts,1);store.close();});
@@ -77,7 +120,7 @@ test('manual event requests are durable, idempotent, ordered and serialized thro
 
 test('new double-click requests from the same operator are coalesced while a matching item is queued',()=>{const store=new FeatureStore(':memory:'),director=new EventDirector(store),now=20_000_000;const first=director.enqueueManual('mystery-drop','admin',now,{},'click-key-0001',false),second=director.enqueueManual('mystery-drop','moderator-two',now+100,{},'click-key-0002',false);assert.equal(second.duplicate,true);assert.equal(second.id,first.id);assert.equal(director.snapshot(now+100).queue.length,1);store.close();});
 
-test('manual queue cannot bypass the shared safety gap when another start occurs after its request was queued',()=>{const store=new FeatureStore(':memory:'),director=new EventDirector(store),now=21_000_000;director.updateSettings({minimumGapMs:120_000});const request=director.enqueueManual('mystery-drop','admin',now,{},'cooldown-queue-0001',true);director.manualStart('boss','moderator',now,()=>store.startBoss('cooldown-existing','Schattenwächter',80,60_000,now)?'start':undefined);store.endBoss(now+1);const candidate:EventCandidate={type:'mystery-drop',priority:1,enabled:false,ready:false,start:()=>undefined,manualStart:()=>store.startBoss('cooldown-queued','Drop',80,60_000,now+2)?'Drop gestartet':undefined};assert.equal(director.run({live:true,busy:false,now:now+30_000,candidates:[candidate]}),undefined);const waiting=director.snapshot(now+30_000).queue.find(item=>item.id===request.id);assert.equal(waiting?.scheduledFor,now+120_000);assert.match(waiting?.reason||'',/Sicherheitsabstand/u);assert.equal(director.run({live:true,busy:false,now:now+120_000,candidates:[candidate]})?.message,'Drop gestartet');store.close();});
+test('manual queue cannot bypass the shared safety gap after another event starts',()=>{const store=new FeatureStore(':memory:'),director=new EventDirector(store),now=21_000_000;director.updateSettings({minimumGapMs:120_000});const request=director.enqueueManual('mystery-drop','admin',now,{},'cooldown-queue-0001',true);store.startBoss('cooldown-existing','Schattenwächter',80,60_000,now+1);store.setState('event_director_state',{lastEventAt:now+1,lastType:'boss'},now+1);store.endBoss(now+2);const candidate:EventCandidate={type:'mystery-drop',priority:1,enabled:false,ready:false,start:()=>undefined,manualStart:()=>store.startBoss('cooldown-queued','Drop',80,60_000,now+2)?'Drop gestartet':undefined};assert.equal(director.run({live:true,busy:false,now:now+30_000,candidates:[candidate]}),undefined);const waiting=director.snapshot(now+30_000).queue.find(item=>item.id===request.id);assert.equal(waiting?.scheduledFor,now+120_001);assert.match(waiting?.reason||'',/Sicherheitsabstand/u);assert.equal(director.run({live:true,busy:false,now:now+120_001,candidates:[candidate]})?.message,'Drop gestartet');store.close();});
 
 test('next manual request accounts for queued actions and the current active event; queue pause preserves it',()=>{const store=new FeatureStore(':memory:'),director=new EventDirector(store),now=30_000_000;director.updateSettings({minimumGapMs:120_000});const first=director.enqueueManual('boss','admin',now,{},'next-key-0001',true),second=director.enqueueManual('mystery-drop','admin',now+1,{},'next-key-0002',false);assert.equal(first.scheduledFor,now);assert.equal(second.scheduledFor,now+120_000);store.startBoss('occupied-source','Schattenwächter',80,600_000,now);const third=director.enqueueManual('chat-imposter','admin',now+2,{},'next-key-0003',false);assert.equal(third.scheduledFor,now+720_000);director.updateSettings({queuePaused:true});director.run({live:true,busy:false,now:now+800_000,candidates:[]});assert.equal(director.snapshot(now+800_000).queue.length,3);assert.equal(director.settings().queuePaused,true);assert.equal(director.updateQueued(second.id,'skip','admin',now+800_000),true);assert.equal(director.snapshot(now+800_000).queue.length,2);store.close();});
 
@@ -88,10 +131,12 @@ test('Event Director schema migration adds persistent idempotency and queue inde
 test('Migration v46 upgrades a v45 database in place, retains event/XP/lease data, and restores from its pre-migration backup',()=>{
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'event-director-v46-')),database=path.join(directory,'data','state.sqlite');fs.mkdirSync(path.dirname(database),{recursive:true});
   let store=new FeatureStore(database);
+  store.setConfig('event_director_settings',{enabled:true,paused:true,queuePaused:false,autoBosses:true});
   store.miniGameTransaction(db=>{
     db.prepare(`INSERT INTO event_director_runs(id,event_type,started_at,completed_at,participant_count,xp_total,outcome,reason,status,triggered_by,source_event_id,payout_status,delivery_status)
       VALUES('legacy-run','boss',100,200,3,15,'defeated','legacy production-like run','completed','moderator','legacy-boss','settled','sent')`).run();
     db.prepare("INSERT OR IGNORE INTO xp_ledger(event_id,user_id,amount,reason,created_at) VALUES('legacy-xp','viewer-1',15,'boss:legacy-boss',200)").run();
+    db.prepare("INSERT INTO event_director_runs(id,event_type,started_at,reason,status,triggered_by,payout_status) VALUES('legacy-queued','community-chaos',100,'manual request','queued','admin','not-applicable')").run();
     db.prepare('UPDATE event_director_lease SET owner=?,lease_until=?,updated_at=? WHERE id=1').run('legacy-owner',50_000,100);
     db.exec('DROP INDEX IF EXISTS event_director_request_key;DROP INDEX IF EXISTS event_director_queue;ALTER TABLE event_director_runs DROP COLUMN request_payload;ALTER TABLE event_director_runs DROP COLUMN request_key;ALTER TABLE event_director_runs DROP COLUMN queue_priority;ALTER TABLE event_director_runs DROP COLUMN max_delay_at;DELETE FROM schema_migrations WHERE version=46');
   });
@@ -111,6 +156,11 @@ test('Migration v46 upgrades a v45 database in place, retains event/XP/lease dat
   }));
   assert.deepEqual(after.run,{event_type:'boss',status:'completed',participant_count:3,xp_total:15,outcome:'defeated',source_event_id:'legacy-boss',payout_status:'settled'});
   assert.deepEqual(after.xp,{event_id:'legacy-xp',user_id:'viewer-1',amount:15});assert.deepEqual(after.lease,{owner:'legacy-owner',lease_until:50_000});assert.equal(after.version,46);assert.equal(after.integrity,'ok');assert.equal(after.requestIndex,1);
+  const migratedDirector=new EventDirector(store),queuedCandidate:EventCandidate={type:'community-chaos',priority:1,enabled:false,ready:false,start:()=>undefined,manualStart:()=>{store.awardXp('migration-should-not-award','viewer-2','Viewer 2',20,'test:paused-migration',300);return 'unexpected';}},automaticCandidate=candidate(()=>{store.awardXp('migration-auto-should-not-award','viewer-3','Viewer 3',20,'test:paused-migration',300);return 'unexpected';},'boss');
+  assert.equal(migratedDirector.settings().paused,true);assert.equal(migratedDirector.settings().queuePaused,false);
+  assert.equal(migratedDirector.run({live:true,busy:false,now:300,candidates:[queuedCandidate,automaticCandidate]}),undefined);
+  assert.equal(store.miniGameQuery(db=>(db.prepare("SELECT COUNT(*) n FROM event_director_runs WHERE id='legacy-queued' AND status='queued'").get() as {n:number}).n),1);
+  assert.equal(store.miniGameQuery(db=>(db.prepare("SELECT COUNT(*) n FROM xp_ledger WHERE event_id IN ('migration-should-not-award','migration-auto-should-not-award')").get() as {n:number}).n),0);assert.equal(store.activeBoss(301),undefined);
   const first= new EventDirector(store).enqueueManual('boss','admin',1_000,{},'v46-request-key-0001',false),duplicate=new EventDirector(store).enqueueManual('boss','admin',1_001,{},'v46-request-key-0001',false);assert.equal(duplicate.id,first.id);assert.equal(duplicate.duplicate,true);store.close();
 
   const backupDirectory=path.join(directory,'backups'),backup=fs.readdirSync(backupDirectory).find(name=>name.includes('before-feature-migration-v46-'));assert.ok(backup,'Migration legt ein Vorab-Backup an');

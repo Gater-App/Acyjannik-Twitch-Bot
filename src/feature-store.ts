@@ -1181,6 +1181,10 @@ export class FeatureStore {
 
   /** Shared connection for feature modules; all mutations must remain transactional. */
   miniGameTransaction<T>(operation: (db: BetterSqlite3.Database) => T): T { return this.db.transaction(() => operation(this.db))(); }
+  /** Serialize safety-critical start decisions against concurrent pause/config writes. */
+  miniGameImmediateTransaction<T>(operation: (db: BetterSqlite3.Database) => T): T {
+    return this.db.transaction(() => operation(this.db)).immediate();
+  }
   miniGameQuery<T>(operation: (db: BetterSqlite3.Database) => T): T { return operation(this.db); }
 
   createViewerOAuthState(stateHash:string,expiresAt:number,now:number):void {

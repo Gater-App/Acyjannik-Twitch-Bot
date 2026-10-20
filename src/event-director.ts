@@ -151,22 +151,16 @@ export class EventDirector {
     const at=now+minMs+this.choose(Math.max(1,maxMs-minMs+1)),next={...timers,[type]:at};this.store.setState('event_director_timers',next,now);this.writePlan(eventType,at,now);
   }
   run(input:{live:boolean;busy:boolean;now:number;candidates:EventCandidate[]}):{message:string;type:string}|undefined {
-    const now=input.now,cfg=this.settings();this.reconcileLifecycle(now);
+    const now=input.now,cfg=this.settings();
+    // Global pause is authoritative and must be checked before lifecycle
+    // reconciliation, queue expiry, automatic selection, or any start handler.
+    if(cfg.paused){this.setReason('Event Director ist pausiert.',now);return;}
+    this.reconcileLifecycle(now);
     if(!input.live){this.setReason('Twitch-Stream ist offline.',now);return;}
     if(input.busy){this.setReason('Ein anderes Community-Spiel oder eine Chataktion läuft.',now);return;}
     const queued=this.store.miniGameQuery(db=>db.prepare("SELECT id,event_type type,scheduled_for scheduledFor,triggered_by actor,request_payload payload,max_delay_at maxDelayAt FROM event_director_runs WHERE status='queued' ORDER BY queue_priority DESC,scheduled_for,started_at LIMIT 1").get() as {id:string;type:string;scheduledFor:number|null;actor:string;payload:string|null;maxDelayAt:number|null}|undefined);
-    if(queued&&!cfg.queuePaused){
-      if(queued.maxDelayAt!==null&&queued.maxDelayAt<=now){this.store.miniGameQuery(db=>db.prepare("UPDATE event_director_runs SET status='skipped',completed_at=?,reason='Gültigkeitsfenster der manuellen Anfrage abgelaufen',outcome='expired' WHERE id=? AND status='queued'").run(now,queued.id));this.setReason('Eine manuelle Anfrage ist nach sechs Stunden abgelaufen; die nächste Warteschlangenaktion wird geprüft.',now);return;}
-      if(queued.scheduledFor!==null&&queued.scheduledFor>now){this.setReason(`Manuelle Aktion ${queued.type} ist für ${new Date(queued.scheduledFor).toLocaleTimeString('de-DE')} eingeplant.`,now);return;}
-      const lastStart=this.store.state<{lastEventAt:number|null}>('event_director_state',{lastEventAt:null}).lastEventAt;
-      if(lastStart!==null&&now-lastStart<cfg.minimumGapMs){const at=lastStart+cfg.minimumGapMs;this.store.miniGameQuery(db=>db.prepare("UPDATE event_director_runs SET scheduled_for=?,reason='Wartet auf den gemeinsamen Sicherheitsabstand' WHERE id=? AND status='queued'").run(at,queued.id));this.setReason(`Manuelle Aktion ${queued.type} wartet bis ${new Date(at).toLocaleTimeString('de-DE')} auf den gemeinsamen Sicherheitsabstand.`,now);return;}
-      const result=this.runQueuedManual(queued,input.candidates,now);if(result)return result;
-      // A queued manual request owns the next eligible slot even when its own
-      // handler reports a recoverable failure; automatic events must not jump it.
-      return;
-    }
+    if(queued&&!cfg.queuePaused)return this.runQueuedManual(queued,input.candidates,now);
     if(!cfg.enabled){this.setReason('Event Director ist deaktiviert.',now);return;}
-    if(cfg.paused){this.setReason('Event Director ist pausiert.',now);return;}
     const activity=this.activity(now);if(LEVELS.indexOf(activity.level)<LEVELS.indexOf(cfg.minimumActivity)){this.setReason('Die tatsächliche Chataktivität liegt unter der eingestellten Schwelle.',now);return;}
     const state=this.store.state<{lastEventAt:number|null;lastType?:string}>('event_director_state',{lastEventAt:null});
     if(state.lastEventAt!==null&&now-state.lastEventAt<cfg.minimumGapMs){this.setReason('Der kurze Sicherheitsabstand zwischen zwei Starts ist aktiv; einzelne Event-Cooldowns laufen unabhängig.',now);return;}
@@ -175,51 +169,87 @@ export class EventDirector {
       .map(candidate=>{const rows=this.store.miniGameQuery(db=>db.prepare("SELECT participant_count participants,active_chatter_count activeChatters,success FROM event_director_runs WHERE event_type=? AND status='completed' ORDER BY started_at DESC LIMIT 10").all(candidate.type) as Array<{participants:number;activeChatters:number;success:number|null}>);const last=this.store.miniGameQuery(db=>(db.prepare('SELECT MAX(started_at) at FROM event_director_runs WHERE event_type=?').get(candidate.type) as {at:number|null}).at)||0;const aging=Math.min(3,Math.floor((now-(last||now-90*60_000))/(90*60_000)));const noParticipation=rows.length?rows.filter(row=>row.participants===0).length/rows.length:0;const successRate=rows.length?rows.filter(row=>row.success===1).length/rows.length:.5;const engagement=rows.length?rows.reduce((sum,row)=>sum+Math.min(1,row.participants/Math.max(1,row.activeChatters)),0)/rows.length:.5;const recentRepeat=this.store.miniGameQuery(db=>(db.prepare("SELECT COUNT(*) n FROM (SELECT event_type FROM event_director_runs WHERE status IN ('completed','active','started') ORDER BY started_at DESC LIMIT 2) WHERE event_type=?").get(candidate.type) as {n:number}).n);const penalty=cfg.adaptiveEventWeighting?noParticipation*2+(0.5-successRate)*1.2+(0.5-engagement)*1.2+(recentRepeat?0.5:0):0;return {candidate,effective:candidate.priority+penalty-aging};})
       .sort((a,b)=>a.effective-b.effective||a.candidate.priority-b.candidate.priority).map(entry=>entry.candidate);
     if(!candidates.length){this.setReason('Kein aktiviertes Event ist fällig und konfliktfrei.',now);return;}
-    const leaseOwner=randomUUID();const claimed=this.claimLease(now,leaseOwner);
-    if(!claimed){this.setReason('Eine andere Scheduler-Instanz hält gerade die Start-Lease.',now);return;}
-    try {
-      for(const candidate of candidates){
-        let message:string|undefined;try{message=candidate.start();}catch(error){const reason=`Start von ${candidate.type} fehlgeschlagen: ${error instanceof Error?error.message:'unbekannter Fehler'}`;this.recordFailure(candidate.type,reason,'system',now);this.skipPlanned(candidate.type,now,reason);this.setReason(reason,now);continue;}if(!message){const reason='Die Event-Engine hat den Start abgelehnt.';this.recordFailure(candidate.type,reason,'system',now);this.skipPlanned(candidate.type,now,reason);continue;}
-        const source=this.activeSourceEvent(now);if(!source){const reason=`${candidate.type} hat keine aktive, persistierte Eventinstanz erzeugt.`;this.recordFailure(candidate.type,reason,'system',now);this.skipPlanned(candidate.type,now,reason);this.setReason(reason,now);continue;}const id=randomUUID();
-        this.store.miniGameTransaction(db=>{
-          const plan=db.prepare("SELECT id FROM event_director_runs WHERE event_type=? AND status='planned' ORDER BY scheduled_for DESC LIMIT 1").get(candidate.type) as {id:string}|undefined;
-          if(plan)db.prepare("UPDATE event_director_runs SET started_at=?,completed_at=NULL,status='active',triggered_by='system',source_event_id=?,payout_status='pending',active_chatter_count=?,reason='automatic' WHERE id=? AND status='planned'").run(now,source.id,activity.uniqueChatters5m,plan.id);
-          else db.prepare("INSERT INTO event_director_runs(id,event_type,started_at,reason,status,triggered_by,source_event_id,payout_status,active_chatter_count) VALUES(?,?,?,'automatic','active','system',?,'pending',?)").run(id,candidate.type,now,source.id,activity.uniqueChatters5m);
-          this.store.setState('event_director_state',{lastEventAt:now,lastType:candidate.type},now);
-        });
-        if(candidate.interval){const intervalKey=candidate.intervalKey||candidate.type;if(candidate.interval.afterCompletion)this.store.setState('event_director_timers',{...this.store.state<Record<string,number|null>>('event_director_timers',{}),[intervalKey]:0},now);else this.markIntervalStarted(intervalKey,now,candidate.interval.min,candidate.interval.max,candidate.type);}
-        this.setReason(`${candidate.type} wurde automatisch gestartet.`,now);
-        return {message,type:candidate.type};
+    return this.store.miniGameImmediateTransaction(()=>{
+      // BEGIN IMMEDIATE serializes this check and the synchronous start handler
+      // against pause writes from the dashboard or another process. A pause
+      // arriving after this transaction owns the write lock takes effect only
+      // after this already-claimed start has either committed or rolled back.
+      const locked=this.settings();
+      if(locked.paused){this.setReason('Event Director ist pausiert.',now);return;}
+      if(!locked.enabled){this.setReason('Event Director ist deaktiviert.',now);return;}
+      if(!input.live){this.setReason('Twitch-Stream ist offline.',now);return;}
+      if(this.activeSourceEvent(now)){this.setReason('Ein anderes Community-Spiel oder eine Chataktion läuft.',now);return;}
+      if(!locked.queuePaused&&this.store.miniGameQuery(db=>db.prepare("SELECT 1 FROM event_director_runs WHERE status='queued' LIMIT 1").get())){
+        this.setReason('Eine manuelle Aktion wartet in der Event-Warteschlange.',now);return;
       }
-      this.setReason('Ein fälliger Eventstart wurde von der jeweiligen Engine abgelehnt.',now);return;
-    } finally {this.releaseLease(now,leaseOwner);}
+      const leaseOwner=randomUUID();if(!this.claimLease(now,leaseOwner)){this.setReason('Eine andere Scheduler-Instanz hält gerade die Start-Lease.',now);return;}
+      try {
+        for(const candidate of candidates){
+          let message:string|undefined;try{message=candidate.start();}catch(error){const reason=`Start von ${candidate.type} fehlgeschlagen: ${error instanceof Error?error.message:'unbekannter Fehler'}`;this.recordFailure(candidate.type,reason,'system',now);this.skipPlanned(candidate.type,now,reason);this.setReason(reason,now);continue;}if(!message){const reason='Die Event-Engine hat den Start abgelehnt.';this.recordFailure(candidate.type,reason,'system',now);this.skipPlanned(candidate.type,now,reason);continue;}
+          const source=this.activeSourceEvent(now);if(!source){const reason=`${candidate.type} hat keine aktive, persistierte Eventinstanz erzeugt.`;this.recordFailure(candidate.type,reason,'system',now);this.skipPlanned(candidate.type,now,reason);this.setReason(reason,now);continue;}const id=randomUUID();
+          this.store.miniGameTransaction(db=>{
+            const plan=db.prepare("SELECT id FROM event_director_runs WHERE event_type=? AND status='planned' ORDER BY scheduled_for DESC LIMIT 1").get(candidate.type) as {id:string}|undefined;
+            if(plan)db.prepare("UPDATE event_director_runs SET started_at=?,completed_at=NULL,status='active',triggered_by='system',source_event_id=?,payout_status='pending',active_chatter_count=?,reason='automatic' WHERE id=? AND status='planned'").run(now,source.id,activity.uniqueChatters5m,plan.id);
+            else db.prepare("INSERT INTO event_director_runs(id,event_type,started_at,reason,status,triggered_by,source_event_id,payout_status,active_chatter_count) VALUES(?,?,?,'automatic','active','system',?,'pending',?)").run(id,candidate.type,now,source.id,activity.uniqueChatters5m);
+            this.store.setState('event_director_state',{lastEventAt:now,lastType:candidate.type},now);
+          });
+          if(candidate.interval){const intervalKey=candidate.intervalKey||candidate.type;if(candidate.interval.afterCompletion)this.store.setState('event_director_timers',{...this.store.state<Record<string,number|null>>('event_director_timers',{}),[intervalKey]:0},now);else this.markIntervalStarted(intervalKey,now,candidate.interval.min,candidate.interval.max,candidate.type);}
+          this.setReason(`${candidate.type} wurde automatisch gestartet.`,now);
+          return {message,type:candidate.type};
+        }
+        this.setReason('Ein fälliger Eventstart wurde von der jeweiligen Engine abgelehnt.',now);return;
+      } finally {this.releaseLease(now,leaseOwner);}
+    });
   }
   private runQueuedManual(queued:{id:string;type:string;scheduledFor:number|null;actor:string;payload:string|null},candidates:EventCandidate[],now:number):{message:string;type:string}|undefined{
-    const candidate=candidates.find(item=>item.type===queued.type&&item.manualStart);
-    if(!candidate?.manualStart){this.store.miniGameQuery(db=>db.prepare("UPDATE event_director_runs SET status='failed',completed_at=?,error_status='No manual event handler is registered.',reason='Diese Aktion kann derzeit nicht ausgeführt werden.' WHERE id=? AND status='queued'").run(now,queued.id));this.setReason(`Für ${queued.type} ist kein manueller Warteschlangen-Handler verfügbar.`,now);return;}
-    const owner=randomUUID();if(!this.claimLease(now,owner)){this.setReason('Eine andere Event-Director-Instanz reserviert gerade den nächsten Warteschlangenplatz.',now);return;}
-    try{
-      const claimed=this.store.miniGameTransaction(db=>db.prepare("UPDATE event_director_runs SET status='started',reason='Manuelle Aktion wird ausgeführt' WHERE id=? AND status='queued'").run(queued.id).changes===1);if(!claimed)return;
-      let payload:Record<string,unknown>={};try{const parsed=queued.payload?JSON.parse(queued.payload) as unknown:{};if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed))payload=parsed as Record<string,unknown>;}catch{/* A malformed stored request fails safely below. */}
-      let message:string|undefined;try{message=candidate.manualStart!(queued.actor,payload);}catch(error){const detail=error instanceof Error?error.message:'Unbekannter Fehler';this.store.miniGameQuery(db=>db.prepare("UPDATE event_director_runs SET status='failed',completed_at=?,reason=?,error_status=? WHERE id=? AND status='started'").run(now,`Manueller Start fehlgeschlagen: ${detail}`.slice(0,240),detail.slice(0,240),queued.id));this.setReason(`Manueller Start von ${queued.type} fehlgeschlagen: ${detail}`,now);return;}
-      const source=this.activeSourceEvent(now);if(!message||!source){const error='Die bestehende Event-Engine hat keinen laufenden Eventstatus bestätigt.';this.store.miniGameQuery(db=>db.prepare("UPDATE event_director_runs SET status='failed',completed_at=?,reason=?,error_status=? WHERE id=? AND status='started'").run(now,error,error,queued.id));this.setReason(`${queued.type}: ${error}`,now);return;}
-      const activity=this.activity(now);this.store.miniGameTransaction(db=>{db.prepare("UPDATE event_director_runs SET status='active',started_at=?,source_event_id=?,active_chatter_count=?,reason='Manuell über die Event-Warteschlange gestartet',payout_status='pending' WHERE id=? AND status='started'").run(now,source.id,activity.uniqueChatters5m,queued.id);this.store.setState('event_director_state',{lastEventAt:now,lastType:queued.type},now);});
-      this.setReason(`${queued.type} wurde aus der manuellen Warteschlange gestartet.`,now);return {message,type:queued.type};
-    }finally{this.releaseLease(now,owner);}
+    return this.store.miniGameImmediateTransaction(()=>{
+      // Re-read both pauses under the same SQLite write lock as queue claiming.
+      // A queued row is never consumed or started while either queue gate is closed.
+      const cfg=this.settings();
+      if(cfg.paused){this.setReason('Event Director ist pausiert; manuelle Warteschlangenaktionen bleiben erhalten.',now);return;}
+      if(cfg.queuePaused){this.setReason('Die manuelle Event-Warteschlange ist pausiert.',now);return;}
+      const row=this.store.miniGameQuery(db=>db.prepare("SELECT id,event_type type,scheduled_for scheduledFor,triggered_by actor,request_payload payload,max_delay_at maxDelayAt FROM event_director_runs WHERE id=? AND status='queued'").get(queued.id) as {id:string;type:string;scheduledFor:number|null;actor:string;payload:string|null;maxDelayAt:number|null}|undefined);
+      if(!row)return;
+      if(row.maxDelayAt!==null&&row.maxDelayAt<=now){this.store.miniGameQuery(db=>db.prepare("UPDATE event_director_runs SET status='skipped',completed_at=?,reason='Gültigkeitsfenster der manuellen Anfrage abgelaufen',outcome='expired' WHERE id=? AND status='queued'").run(now,row.id));this.setReason('Eine manuelle Anfrage ist nach sechs Stunden abgelaufen; die nächste Warteschlangenaktion wird geprüft.',now);return;}
+      if(row.scheduledFor!==null&&row.scheduledFor>now){this.setReason(`Manuelle Aktion ${row.type} ist für ${new Date(row.scheduledFor).toLocaleTimeString('de-DE')} eingeplant.`,now);return;}
+      const lastStart=this.store.state<{lastEventAt:number|null}>('event_director_state',{lastEventAt:null}).lastEventAt;
+      if(lastStart!==null&&now-lastStart<cfg.minimumGapMs){const at=lastStart+cfg.minimumGapMs;this.store.miniGameQuery(db=>db.prepare("UPDATE event_director_runs SET scheduled_for=?,reason='Wartet auf den gemeinsamen Sicherheitsabstand' WHERE id=? AND status='queued'").run(at,row.id));this.setReason(`Manuelle Aktion ${row.type} wartet bis ${new Date(at).toLocaleTimeString('de-DE')} auf den gemeinsamen Sicherheitsabstand.`,now);return;}
+      const candidate=candidates.find(item=>item.type===row.type&&item.manualStart);
+      if(!candidate?.manualStart){this.store.miniGameQuery(db=>db.prepare("UPDATE event_director_runs SET status='failed',completed_at=?,error_status='No manual event handler is registered.',reason='Diese Aktion kann derzeit nicht ausgeführt werden.' WHERE id=? AND status='queued'").run(now,row.id));this.setReason(`Für ${row.type} ist kein manueller Warteschlangen-Handler verfügbar.`,now);return;}
+      const owner=randomUUID();if(!this.claimLease(now,owner)){this.setReason('Eine andere Event-Director-Instanz reserviert gerade den nächsten Warteschlangenplatz.',now);return;}
+      try{
+        const claimed=this.store.miniGameQuery(db=>db.prepare("UPDATE event_director_runs SET status='started',reason='Manuelle Aktion wird ausgeführt' WHERE id=? AND status='queued'").run(row.id).changes===1);if(!claimed)return;
+        let payload:Record<string,unknown>={};try{const parsed=row.payload?JSON.parse(row.payload) as unknown:{};if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed))payload=parsed as Record<string,unknown>;}catch{/* A malformed stored request fails safely below. */}
+        let message:string|undefined;try{message=candidate.manualStart!(row.actor,payload);}catch(error){const detail=error instanceof Error?error.message:'Unbekannter Fehler';this.store.miniGameQuery(db=>db.prepare("UPDATE event_director_runs SET status='failed',completed_at=?,reason=?,error_status=? WHERE id=? AND status='started'").run(now,`Manueller Start fehlgeschlagen: ${detail}`.slice(0,240),detail.slice(0,240),row.id));this.setReason(`Manueller Start von ${row.type} fehlgeschlagen: ${detail}`,now);return;}
+        const source=this.activeSourceEvent(now);if(!message||!source){const error='Die bestehende Event-Engine hat keinen laufenden Eventstatus bestätigt.';this.store.miniGameQuery(db=>db.prepare("UPDATE event_director_runs SET status='failed',completed_at=?,reason=?,error_status=? WHERE id=? AND status='started'").run(now,error,error,row.id));this.setReason(`${row.type}: ${error}`,now);return;}
+        const activity=this.activity(now);this.store.miniGameQuery(db=>{db.prepare("UPDATE event_director_runs SET status='active',started_at=?,source_event_id=?,active_chatter_count=?,reason='Manuell über die Event-Warteschlange gestartet',payout_status='pending' WHERE id=? AND status='started'").run(now,source.id,activity.uniqueChatters5m,row.id);this.store.setState('event_director_state',{lastEventAt:now,lastType:row.type},now);});
+        this.setReason(`${row.type} wurde aus der manuellen Warteschlange gestartet.`,now);return {message,type:row.type};
+      }finally{this.releaseLease(now,owner);}
+    });
   }
   manualStart(type:string,actor:string,now:number,start:()=>string|undefined):{id:string;message:string}{
-    const leaseOwner=randomUUID();const claimed=this.claimLease(now,leaseOwner);if(!claimed)throw new Error('Eine andere Event-Director-Aktion läuft gerade. Bitte kurz warten.');
-    try{
-      if(this.activeSourceEvent(now))throw new Error('Ein inkompatibles Community-Event läuft bereits.');
-      let message:string|undefined;try{message=start()}catch(error){this.recordFailure(type,error instanceof Error?error.message:'Unbekannter Startfehler',actor,now);throw error;}
-      if(!message){this.recordFailure(type,'Die vorhandene Event-Engine hat den Start abgelehnt.',actor,now);throw new Error('Das Event konnte wegen seines aktuellen Zustands oder eines Konflikts nicht gestartet werden.');}
-      const source=this.activeSourceEvent(now);if(!source){const error=new Error('Der Start wurde nicht als aktive Eventinstanz gespeichert.');this.recordFailure(type,error.message,actor,now);throw error;}const id=randomUUID();
-      const activeChatters=this.activity(now).uniqueChatters5m;
-      this.store.miniGameTransaction(db=>{db.prepare("INSERT INTO event_director_runs(id,event_type,started_at,reason,status,triggered_by,source_event_id,payout_status,active_chatter_count) VALUES(?,?,?,'manual',?,?,?,'pending',?)").run(id,type,now,source?'active':'started',actor,source.id,activeChatters);this.store.setState('event_director_state',{lastEventAt:now,lastType:type},now);});
-      if(type==='boss'){this.skipPlanned('boss',now,'Der Timer wurde durch einen manuellen Bossstart ersetzt.');this.store.setState('event_director_timers',{...this.store.state<Record<string,number|null>>('event_director_timers',{}),boss:0},now);}
-      if(type==='mystery-drop')this.markIntervalStarted('drop',now,60*60_000,90*60_000,'mystery-drop');
-      this.setReason(`${type} wurde manuell von ${actor} gestartet.`,now);return {id,message};
-    }finally{this.releaseLease(now,leaseOwner);}
+    try{return this.store.miniGameImmediateTransaction(()=>{
+      if(this.settings().paused)throw new Error('Der Event Director ist pausiert. Manuelle Events können während der Pause nicht gestartet werden.');
+      const leaseOwner=randomUUID();const claimed=this.claimLease(now,leaseOwner);if(!claimed)throw new Error('Eine andere Event-Director-Aktion läuft gerade. Bitte kurz warten.');
+      try{
+        if(this.activeSourceEvent(now))throw new Error('Ein inkompatibles Community-Event läuft bereits.');
+        const queued=this.store.miniGameQuery(db=>db.prepare("SELECT 1 FROM event_director_runs WHERE status='queued' LIMIT 1").get());
+        if(queued&&!this.settings().queuePaused)throw new Error('Eine manuelle Event-Anfrage wartet bereits in der zentralen Warteschlange.');
+        let message:string|undefined;try{message=start()}catch(error){throw error;}
+        if(!message)throw new Error('Das Event konnte wegen seines aktuellen Zustands oder eines Konflikts nicht gestartet werden.');
+        const source=this.activeSourceEvent(now);if(!source)throw new Error('Der Start wurde nicht als aktive Eventinstanz gespeichert.');const id=randomUUID();
+        const activeChatters=this.activity(now).uniqueChatters5m;
+        this.store.miniGameQuery(db=>{db.prepare("INSERT INTO event_director_runs(id,event_type,started_at,reason,status,triggered_by,source_event_id,payout_status,active_chatter_count) VALUES(?,?,?,'manual',?,?,?,'pending',?)").run(id,type,now,'active',actor,source.id,activeChatters);this.store.setState('event_director_state',{lastEventAt:now,lastType:type},now);});
+        if(type==='boss'){this.skipPlanned('boss',now,'Der Timer wurde durch einen manuellen Bossstart ersetzt.');this.store.setState('event_director_timers',{...this.store.state<Record<string,number|null>>('event_director_timers',{}),boss:0},now);}
+        if(type==='mystery-drop')this.markIntervalStarted('drop',now,60*60_000,90*60_000,'mystery-drop');
+        this.setReason(`${type} wurde manuell von ${actor} gestartet.`,now);return {id,message};
+      }finally{this.releaseLease(now,leaseOwner);}
+    });}catch(error){
+      // The immediate transaction has rolled back partial feature writes;
+      // persist its diagnostic row only after that rollback.
+      if(!(error instanceof Error&&/pausiert/u.test(error.message)))this.recordFailure(type,error instanceof Error?error.message:'Unbekannter Fehler',actor,now);
+      throw error;
+    }
   }
   private claimLease(now:number,owner:string):boolean{return this.store.miniGameTransaction(db=>{const row=db.prepare('SELECT owner,lease_until FROM event_director_lease WHERE id=1').get() as {owner:string|null;lease_until:number};if(row.lease_until>now)return false;db.prepare('UPDATE event_director_lease SET owner=?,lease_until=?,updated_at=? WHERE id=1').run(owner,now+30_000,now);return true;});}
   private releaseLease(now:number,owner:string):void{this.store.miniGameQuery(db=>db.prepare('UPDATE event_director_lease SET owner=NULL,lease_until=0,updated_at=? WHERE id=1 AND owner=?').run(now,owner));}
