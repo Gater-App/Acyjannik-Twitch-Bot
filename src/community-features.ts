@@ -7,7 +7,7 @@ import { ConversationSpark } from './conversation-spark.js';
 import { MiniGames } from './mini-games.js';
 import { CommunityArcade } from './community-arcade.js';
 import { CommunityInteractive } from './community-interactive.js';
-import { CommunityChaos } from './community-chaos.js';
+import { CommunityChaos, CHAOS_GAMES, type ChaosGame } from './community-chaos.js';
 import { ElioChronicles } from './elio-chronicles.js';
 import { CommunityVault } from './community-vault.js';
 import { CommunityHauntedHouse } from './community-haunted-house.js';
@@ -87,35 +87,40 @@ export class CommunityFeatures {
     const cfg=this.eventDirector.settings(),activity=this.eventDirector.activity(now),modules=this.store.config<Record<string,boolean>>('modules',{});
     const candidates:EventCandidate[]=[];
     const chaosCfg=this.chaos.settings(),storyCfg=this.chronicles.settings();
-    candidates.push({type:'community-chaos',priority:4,enabled:(cfg.autoChaos||cfg.autoStories)&&chaosCfg.enabled&&chaosCfg.autoEnabled,ready:this.chaos.automaticReady(now),minimumActivity:'low',start:()=>this.chaos.startAutomatic(now,false)?.message,interval:{min:chaosCfg.minIntervalMs,max:chaosCfg.minIntervalMs+chaosCfg.randomDelayMs},intervalKey:'community-chaos'});
-    candidates.push({type:'elio-chronicles',priority:1,enabled:cfg.autoStories&&storyCfg.enabled&&storyCfg.autoEnabled,ready:this.chronicles.automaticReady(now,live),minimumActivity:'low',start:()=>this.chronicles.startAutomatic(now).prompt,interval:{min:storyCfg.automaticIntervalMs,max:storyCfg.automaticIntervalMs},intervalKey:'elio-chronicles'});
+    candidates.push({type:'community-chaos',priority:4,enabled:(cfg.autoChaos||cfg.autoStories)&&chaosCfg.enabled&&chaosCfg.autoEnabled,ready:this.chaos.automaticReady(now),minimumActivity:'low',start:()=>this.chaos.startAutomatic(now,false)?.message,manualStart:(actor,payload)=>{const game=payload.game;if(typeof game!=='string'||!CHAOS_GAMES.includes(game as ChaosGame))throw new Error('Wähle ein verfügbares Community-Chaos-Minispiel aus.');return this.chaos.start(game as ChaosGame,actor,now,false).prompt;},interval:{min:chaosCfg.minIntervalMs,max:chaosCfg.minIntervalMs+chaosCfg.randomDelayMs},intervalKey:'community-chaos'});
+    candidates.push({type:'elio-chronicles',priority:1,enabled:cfg.autoStories&&storyCfg.enabled&&storyCfg.autoEnabled,ready:this.chronicles.automaticReady(now,live),minimumActivity:'low',start:()=>this.chronicles.startAutomatic(now).prompt,manualStart:(actor,payload)=>this.chronicles.startNext(actor,typeof payload.missionId==='string'?payload.missionId:undefined,now,false).prompt,interval:{min:storyCfg.automaticIntervalMs,max:storyCfg.automaticIntervalMs},intervalKey:'elio-chronicles'});
     const secretSettings=this.interactive.settings();
     candidates.push({type:'secret-event',priority:5,enabled:cfg.autoSecretEvents&&secretSettings.secretEventsEnabled&&secretSettings.autoSecretEventsEnabled,
-      ready:!this.interactive.active(undefined,now).some(event=>event.status==='open'),minimumActivity:'normal',start:()=>this.interactive.startAutomaticSecretEvent(now,activity.uniqueChatters15m)?'🎁 Ein geheimes Community-Event beginnt! Schaut auf die Community-Seite.':undefined});
+      ready:!this.interactive.active(undefined,now).some(event=>event.status==='open'),minimumActivity:'normal',start:()=>this.interactive.startAutomaticSecretEvent(now,activity.uniqueChatters15m)?'🎁 Ein geheimes Community-Event beginnt! Schaut auf die Community-Seite.':undefined,manualStart:(actor,payload)=>{const kind=payload.kind==='elio_rescue'||payload.kind==='secret_portal'?payload.kind:'mystery_case';const result=this.interactive.createSecretEvent(kind,actor,{title:typeof payload.title==='string'?payload.title:'Ein mysteriöser Koffer ist aufgetaucht',description:typeof payload.description==='string'?payload.description:''},now);return result.ok?result.message:undefined;}});
     const bossSettings=this.store.config('game_settings',{bossHp:1000,bossDurationMs:900_000}),activeBoss=this.store.activeBoss(now);
     const bossFinishedAt=this.store.miniGameQuery(db=>(db.prepare("SELECT MAX(finished_at) at FROM boss_fights WHERE status IN ('defeated','timeout','canceled')").get() as {at:number|null}).at||undefined);
     const bossDue=this.eventDirector.intervalDue('boss',now,cfg.bossMinIntervalMs,cfg.bossMaxIntervalMs,cfg.autoBosses&&modules.boss!==false,live,Boolean(activeBoss),bossFinishedAt);
-    candidates.push({type:'boss',priority:3,enabled:cfg.autoBosses&&modules.boss!==false,ready:bossDue&&!activeBoss,minimumActivity:'normal',interval:{min:cfg.bossMinIntervalMs,max:cfg.bossMaxIntervalMs,afterCompletion:true},start:()=>{
+    const startBoss=()=>{
       const active=activity.uniqueChatters5m;
       const recent=this.store.miniGameQuery(db=>db.prepare(`SELECT fight.status,COUNT(DISTINCT participant.user_id) participants,
         COALESCE(AVG(participant.damage),0) averageDamage,MAX(0,fight.finished_at-fight.started_at) durationMs FROM (
         SELECT id,status,started_at,finished_at FROM boss_fights WHERE finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 10
       ) fight LEFT JOIN boss_participants participant ON participant.boss_id=fight.id GROUP BY fight.id ORDER BY MAX(fight.finished_at) DESC`).all() as Array<{status:string;participants:number;averageDamage:number;durationMs:number}>);
       const hp=adaptiveBossHp(active,recent,cfg.bossAdaptiveHp),names=active<=3?['Kleiner Schattenpfoten-Späher']:active<=8?['Schattenwächter']:active<=15?['Portalwächter']:['Schattenkönig'];
-      if(!this.store.startBoss(randomUUID(),names[this.random(0,names.length-1)]!,hp,bossSettings.bossDurationMs,now))return undefined;
-      return `👹 ${names[0]} erscheint mit ${hp} HP! Besiegt ihn gemeinsam mit !attack!`;
-    }});
+      const name=names[this.random(0,names.length-1)]!;
+      if(!this.store.startBoss(randomUUID(),name,hp,bossSettings.bossDurationMs,now))return undefined;
+      return `👹 ${name} erscheint mit ${hp} HP! Besiegt ihn gemeinsam mit !attack!`;
+    };
+    candidates.push({type:'boss',priority:3,enabled:cfg.autoBosses&&modules.boss!==false,ready:bossDue&&!activeBoss,minimumActivity:'normal',interval:{min:cfg.bossMinIntervalMs,max:cfg.bossMaxIntervalMs,afterCompletion:true},start:startBoss,manualStart:()=>{if(modules.boss===false)throw new Error('Community-Bosse sind im vorhandenen Funktionsmodul ausgeschaltet.');return startBoss();}});
     const arcadeSettings=this.arcade.settings(),drop=this.arcade.snapshot('drop'),dropStatus=(drop.drop as {status?:string}|undefined)?.status;
     const dropDue=this.eventDirector.intervalDue('drop',now,60*60_000,90*60_000,cfg.autoDrops&&arcadeSettings.dropsEnabled&&arcadeSettings.autoDrops,live,false,undefined,'mystery-drop');
-    candidates.push({type:'mystery-drop',priority:6,enabled:cfg.autoDrops&&arcadeSettings.dropsEnabled&&arcadeSettings.autoDrops,ready:dropDue&&!['announced','claiming','resolving'].includes(dropStatus||''),minimumActivity:'normal',interval:{min:60*60_000,max:90*60_000},intervalKey:'drop',start:()=>{
+    candidates.push({type:'mystery-drop',priority:6,enabled:cfg.autoDrops&&arcadeSettings.dropsEnabled&&arcadeSettings.autoDrops,ready:dropDue&&!['announced','claiming','resolving'].includes(dropStatus||''),minimumActivity:'normal',interval:{min:60*60_000,max:90*60_000},intervalKey:'drop',manualStart:actor=>this.arcade.startDropAdmin(actor,'common',now),start:()=>{
       const before=(this.arcade.snapshot('drop').drop as {id?:string}|undefined)?.id;
       const message=this.arcade.startDropAdmin('event-director','common',now);
       const after=this.arcade.snapshot('drop').drop as {id?:string}|undefined;return after?.id&&after.id!==before?message:undefined;
     }});
     const wheelStatus=this.arcade.wheelStatus(now) as {enabled:boolean;autoPilotEnabled:boolean;canSpin:boolean;autoSpinDue:boolean};
-    candidates.push({type:'chaos-wheel',priority:7,enabled:cfg.autoWheel&&wheelStatus.enabled&&wheelStatus.autoPilotEnabled,ready:wheelStatus.canSpin&&wheelStatus.autoSpinDue,minimumActivity:'high',start:()=>this.arcade.autoSpinIfDue(now)});
+    candidates.push({type:'chaos-wheel',priority:7,enabled:cfg.autoWheel&&wheelStatus.enabled&&wheelStatus.autoPilotEnabled,ready:wheelStatus.canSpin&&wheelStatus.autoSpinDue,minimumActivity:'high',start:()=>this.arcade.autoSpinIfDue(now),manualStart:actor=>this.arcade.spinAdmin(actor,now)});
+    candidates.push({type:'chat-imposter',priority:10,enabled:false,ready:false,start:()=>undefined,manualStart:actor=>this.miniGames.startImposter(actor,now)});
+    candidates.push({type:'chat-detective',priority:11,enabled:false,ready:false,start:()=>undefined,manualStart:()=>this.miniGames.startDetective(now)});
+    candidates.push({type:'community-quest',priority:9,enabled:false,ready:false,start:()=>undefined,manualStart:actor=>this.questPoll.startNextApproved(actor,now).message});
     const vaultReady=this.vault.autoStartReady(now,this.vault.activeViewerCount(now),busy,0);
-    candidates.push({type:'community-vault',priority:8,enabled:cfg.enabled&&this.vault.settings().enabled&&this.vault.settings().autoStart,ready:vaultReady,minimumActivity:'normal',start:()=>{const result=this.vault.startAutomatic(now);return result.ok?result.message:undefined;}});
+    candidates.push({type:'community-vault',priority:8,enabled:cfg.enabled&&this.vault.settings().enabled&&this.vault.settings().autoStart,ready:vaultReady,minimumActivity:'normal',start:()=>{const result=this.vault.startAutomatic(now);return result.ok?result.message:undefined;},manualStart:()=>{const result=this.vault.startManual(now);return result.ok?result.message:undefined;}});
     const result=this.eventDirector.run({live,busy,now,candidates});
     if(!live){this.chaos.pauseAutomatic(now);}
     if(result){const category=result.type==='boss'?'boss':result.type==='mystery-drop'?'drop':result.type==='chaos-wheel'?'wheel':'community';if(result.type==='community-chaos'||result.type==='elio-chronicles'){const announcement=this.chaos.claimStartAnnouncement(now);return {message:announcement?.prompt||result.message,category,...(announcement?{chaosEventId:announcement.id}:{})};}return {message:result.message,category};}

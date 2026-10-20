@@ -1153,6 +1153,20 @@ export class FeatureStore {
         INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (45, unixepoch()*1000);
       `))();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 46) {
+      if (currentVersion > 0) this.backupBeforeMigration(46);
+      this.db.transaction(() => {
+        const columns = new Set((this.db.prepare('PRAGMA table_info(event_director_runs)').all() as Array<{name:string}>).map(column => column.name));
+        if (!columns.has('request_payload')) this.db.exec('ALTER TABLE event_director_runs ADD COLUMN request_payload TEXT');
+        if (!columns.has('request_key')) this.db.exec('ALTER TABLE event_director_runs ADD COLUMN request_key TEXT');
+        if (!columns.has('queue_priority')) this.db.exec('ALTER TABLE event_director_runs ADD COLUMN queue_priority INTEGER NOT NULL DEFAULT 0');
+        if (!columns.has('max_delay_at')) this.db.exec('ALTER TABLE event_director_runs ADD COLUMN max_delay_at INTEGER');
+        this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS event_director_request_key ON event_director_runs(request_key) WHERE request_key IS NOT NULL;
+          CREATE INDEX IF NOT EXISTS event_director_queue ON event_director_runs(status,scheduled_for,queue_priority);
+          INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (46, unixepoch()*1000);`);
+      })();
+    }
   }
 
   private backupBeforeMigration(version: number): void {

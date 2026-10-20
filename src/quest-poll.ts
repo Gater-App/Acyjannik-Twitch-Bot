@@ -33,6 +33,21 @@ const STATUS_LABEL: Record<QuestStatus, string> = {
 export class QuestPollFeatures {
   constructor(private readonly store: FeatureStore, private readonly config: AppConfig) {}
 
+  startNextApproved(actorId:string,now=Date.now()):{message:string;questId?:string}{
+    const settings=this.questSettings(),quest=this.store.approvedQuests(1)[0];
+    if(!settings.enabled)return {message:'📜 Das Quest-System ist deaktiviert.'};
+    if(!quest)return {message:'📜 Es gibt gerade keine freigegebene Quest zum Starten.'};
+    const result=this.store.transitionQuest(quest.id,'active',actorId,now,settings);
+    if(!result.ok)return {message:result.reason==='active-exists'?'📜 Eine andere Quest läuft bereits.':'📜 Die ausgewählte Quest kann gerade nicht gestartet werden.'};
+    return {message:`📜 LIVE-QUEST gestartet: ${result.quest.title}${result.quest.game?` · ${result.quest.game}`:''}.`,questId:quest.id};
+  }
+
+  cancelActive(actorId:string,now=Date.now()):{ok:boolean;message:string;questId?:string}{
+    const quest=this.store.activeQuest();if(!quest)return {ok:false,message:'Es läuft keine Quest, die beendet werden kann.'};
+    const result=this.store.transitionQuest(quest.id,'canceled',actorId,now,this.questSettings());
+    return result.ok?{ok:true,questId:quest.id,message:`Die Quest „${result.quest.title}“ wurde abgebrochen. Bereits gebuchte Belohnungen bleiben erhalten.`}:{ok:false,message:'Die aktive Quest konnte nicht abgebrochen werden.'};
+  }
+
   tick(now = Date.now()): void {
     this.store.expireQuests(now);
     this.store.finishExpiredPolls(now);
