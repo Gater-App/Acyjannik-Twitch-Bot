@@ -30,7 +30,7 @@ test('protected preview explains the actual first three missions and every one o
 test('started mission announcement includes story, task, valid command, and the complete bounded chat text',()=>{
   const store=new FeatureStore(':memory:'),chaos=new CommunityChaos(store),story=new ElioChronicles(store,chaos);story.updateSettings({enabled:true});story.startSeason(1);
   const mission=ELIO_CHRONICLES_SEASON_1.chapters[0]!.missions[0]!,active=story.startNext('admin',mission.id,100);
-  assert.ok(active.prompt.includes('📖 Rettet Elio!'));assert.ok(active.prompt.includes('Aufgabe:'));assert.ok(active.prompt.includes('!retten'));assert.ok(active.prompt.includes('Erfolg:'));assert.ok(active.prompt.length<=460);
+  assert.ok(active.prompt.startsWith('🐱 ELIOS CHRONICLES: !retten eingeben, um Elio zu helfen!'), 'der Teilnahmebefehl steht vor der Handlung');assert.ok(active.prompt.includes('Rettet Elio!'));assert.ok(active.prompt.includes('Aufgabe:'));assert.ok(active.prompt.includes('Erfolg:'));assert.ok(active.prompt.length<=460);
   store.close();
 });
 

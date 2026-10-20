@@ -113,6 +113,8 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     const streamerHtml=await streamer.text();
     assert.match(streamerHtml,/dashboardPoll\('#stream-status',update,10000\)/u,'Streamerstatus aktualisiert sichtbar und mit Single-Flight statt alle drei Sekunden');
     assert.match(streamerHtml,/Streamer-Steuerung/u);
+    assert.match(streamerHtml,/data-director-admin="true"/u,'Owner-Admin bekommt die vollständige Event-Zentrale');
+    assert.match(streamerHtml,/event-director-story-status/u,'Streamer-Steuerung zeigt den laufenden Chronicles-Status');
     assert.match(streamerHtml,/start-drop/u);
     assert.match(streamerHtml,/start-imposter/u);
     assert.match(streamerHtml,/start-detective/u);
@@ -569,7 +571,13 @@ test('Moderator-OAuth öffnet nur die Prank-Oberfläche und serverseitig nur der
     const page=await fetch(`${base}/dashboard`,{headers:{Cookie:session}});assert.equal(page.status,200);const html=await page.text();assert.match(html,/Chaos &amp; Pranks/u);assert.match(html,/VIP-Chaos-Anfragen/u);assert.doesNotMatch(html,/data-dashboard-view="overview"|DASHBOARD_ADMIN/u);
     const csrf=html.match(/<meta name="csrf" content="([^"]+)/u)?.[1]||'';assert.ok(csrf);
     assert.equal((await fetch(`${base}/dashboard/api/overview`,{headers:{Cookie:session}})).status,403);
-    assert.equal((await fetch(`${base}/streamer`,{headers:{Cookie:session}})).status,403);
+    const streamer=await fetch(`${base}/streamer`,{headers:{Cookie:session}});assert.equal(streamer.status,200);const streamerHtml=await streamer.text();assert.match(streamerHtml,/data-director-admin="false"/u);assert.match(streamerHtml,/Moderatoransicht · Streamstatus/u);assert.match(streamerHtml,/Befehl:/u,'Moderatorseite zeigt die Story-Befehle über den geschützten Statusendpunkt');
+    assert.equal((await fetch(`${base}/dashboard/streamer`,{headers:{Cookie:session}})).status,200,'kanonischer direkter Link lädt dieselbe Steuerung');
+    assert.equal((await fetch(`${base}/dashboard/api/event-director`,{headers:{Cookie:session}})).status,200,'berechtigte Moderatoren dürfen die Event-Zentrale ansehen');
+    assert.equal((await fetch(`${base}/dashboard/api/elio-chronicles`,{headers:{Cookie:session}})).status,200,'berechtigte Moderatoren dürfen den geschützten Chronicles-Livestatus ansehen');
+    assert.equal((await fetch(`${base}/dashboard/api/overview`,{headers:{Cookie:session}})).status,403,'andere Adminbereiche bleiben für Moderatoren gesperrt');
+    const modDirectorSettings=await fetch(`${base}/dashboard/api/event-director`,{method:'POST',headers:{Cookie:session,Origin:'https://bot.example.test','X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({action:'settings',settings:{enabled:false}})});assert.equal(modDirectorSettings.status,403,'Moderator kann Admin-Einstellungen nicht ändern');
+    const modQueuePause=await fetch(`${base}/dashboard/api/event-director`,{method:'POST',headers:{Cookie:session,Origin:'https://bot.example.test','X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({action:'queue-pause'})});assert.equal(modQueuePause.status,403,'Moderator kann die zentrale Warteschlange nicht pausieren');
     assert.equal((await fetch(`${base}/dashboard/api/fairness`,{headers:{Cookie:session}})).status,403);
     assert.equal((await fetch(`${base}/dashboard/api/discord`,{headers:{Cookie:session}})).status,403,'Discord-Verbindungsdetails bleiben Administratoren vorbehalten');
     assert.equal((await fetch(`${base}/dashboard/api/pranks`,{headers:{Cookie:session}})).status,200);
@@ -579,5 +587,16 @@ test('Moderator-OAuth öffnet nur die Prank-Oberfläche und serverseitig nur der
     assert.equal((pranks.snapshot().active as {kind?:string}|null)?.kind,'chief','Freigabe startet genau einmal den vorhandenen Prank');
     assert.equal((await fetch(`${base}/dashboard/api/minigames`,{headers:{Cookie:session}})).status,403);
     assert.equal((await fetch(`${base}/dashboard/api/pranks`)).status,401);
+  }finally{await dashboard.stop();store.close();fs.rmSync(directory,{recursive:true,force:true});for(const key of Object.keys(process.env))if(!(key in env))delete process.env[key];for(const [key,value] of Object.entries(env))process.env[key]=value}
+});
+
+test('Twitch OAuth maps the verified iobasti owner account to full admin without granting admin to other moderators',async()=>{
+  const env={...process.env},directory=fs.mkdtempSync(path.join(os.tmpdir(),'acy-owner-admin-')),store=new FeatureStore(path.join(directory,'features.sqlite')),port=await freePort();
+  process.env.TWITCH_CLIENT_ID='test-client';process.env.TWITCH_CLIENT_SECRET='test-secret';process.env.DASHBOARD_REDIRECT_URI='https://bot.example.test/dashboard/oauth/callback';process.env.DASHBOARD_ADMIN_IDS='configured-admin-id';process.env.AUTHORIZED_MODERATOR_IDS='regular-mod-id';process.env.DASHBOARD_OWNER_ADMIN_LOGIN='iobasti';process.env.DASHBOARD_HOST='127.0.0.1';process.env.DASHBOARD_PORT=String(port);
+  let verifiedUserId='owner-id';const loginFor=(id:string)=>id==='owner-id'?'iobasti':id==='regular-mod-id'?'mod':'other';const fetchImpl:typeof fetch=async(input)=>{const url=String(input);if(url.endsWith('/oauth2/token'))return Response.json({access_token:'temporary'});if(url.endsWith('/oauth2/validate'))return Response.json({client_id:'test-client',user_id:verifiedUserId,login:loginFor(verifiedUserId)});if(url.endsWith('/helix/users'))return Response.json({data:[{id:verifiedUserId,login:loginFor(verifiedUserId),display_name:'Basti'}]});throw Error(`Unexpected URL ${url}`)};
+  const dashboard=new DashboardServer(store,()=>({twitchConnected:true,channel:'acyjannik',startedAt:1}),logger,fetchImpl);
+  async function signIn(base:string){const started=await fetch(`${base}/dashboard/login`,{redirect:'manual'}),state=new URL(started.headers.get('location')||'').searchParams.get('state')||'',oauthCookie=started.headers.get('set-cookie')?.split(';')[0]||'',callback=await fetch(`${base}/dashboard/oauth/callback?code=x&state=${state}`,{headers:{Cookie:oauthCookie},redirect:'manual'});assert.equal(callback.status,303);return callback.headers.getSetCookie().find(value=>value.startsWith('community_admin='))?.split(';')[0]||''}
+  try{assert.equal(await dashboard.start(),true);const base=`http://127.0.0.1:${port}`,ownerCookie=await signIn(base),ownerPage=await fetch(`${base}/streamer`,{headers:{Cookie:ownerCookie}});assert.equal(ownerPage.status,200);assert.match(await ownerPage.text(),/data-director-admin="true"/u,'verifizierter iobasti-Login erhält Admin-Steuerung, obwohl die numerische ID nicht in den statischen Listen steht');
+    verifiedUserId='regular-mod-id';const modCookie=await signIn(base);assert.equal((await fetch(`${base}/streamer`,{headers:{Cookie:modCookie}})).status,200);assert.match(await(await fetch(`${base}/streamer`,{headers:{Cookie:modCookie}})).text(),/data-director-admin="false"/u);
   }finally{await dashboard.stop();store.close();fs.rmSync(directory,{recursive:true,force:true});for(const key of Object.keys(process.env))if(!(key in env))delete process.env[key];for(const [key,value] of Object.entries(env))process.env[key]=value}
 });
