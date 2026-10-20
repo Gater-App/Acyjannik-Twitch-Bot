@@ -63,6 +63,8 @@ type DashboardQuestSettings = QuestPolicy & { enabled: boolean; chatEnabled: boo
   modsCanModerate: boolean; modsCanSkip: boolean; moderatorUserIds: string[] };
 type DashboardPollSettings = { enabled: boolean; durationMs: number; allowVoteChange: boolean; ignoredUserIds: string[] };
 
+function moderatorStreamerPage(eventDirectorCard:string):string{return `<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#11131b"><meta name="csrf" content="__CSRF__"><title>ACY Event-Zentrale</title><style nonce="__NONCE__">:root{color-scheme:dark;font:16px/1.5 system-ui,sans-serif;background:#101116;color:#f2f0f8}*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 82% 0,#392958 0,transparent 34%),#101116}main{max-width:980px;margin:auto;padding:22px 24px}header{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:18px}h1{font-size:1.35rem;margin:0}a{color:#d5c1ff}.muted{color:#aeb1c2}.card{background:linear-gradient(145deg,#1d1c2b,#191a24);border:1px solid #353345;border-radius:16px;padding:17px;min-width:0}@media(max-width:520px){main{padding:14px 11px}header{align-items:flex-start;flex-direction:column}}</style></head><body><main><header><div><h1>🎛 Streamer-Steuerung · Event-Zentrale</h1><p class="muted">Moderatoransicht · Streamstatus, aktive Runde und freigegebene Aktionen</p></div><a href="/dashboard">Zur Moderationsübersicht</a></header>${eventDirectorCard}</main><script nonce="__NONCE__">${EVENT_DIRECTOR_SCRIPT}</script></body></html>`;}
+
 const DASHBOARD_POLLING_SCRIPT = `(()=>{
 const activeFlights=new Map(),shortCache=new Map();window.dashboardRetryUntil=0;
 window.fetch=((original)=>async(input,init={})=>{const method=(init.method||'GET').toUpperCase(),url=new URL(typeof input==='string'?input:input.url,location.href);
@@ -195,6 +197,7 @@ export class DashboardServer {
   private readonly eventStreams = new Map<http.ServerResponse, { timer: NodeJS.Timeout; userId: string }>();
   private readonly widgetStreams = new Map<http.ServerResponse, { timer: NodeJS.Timeout; tokenHash: string }>();
   private readonly adminIds: Set<string>;
+  private readonly ownerAdminLogin = (process.env.DASHBOARD_OWNER_ADMIN_LOGIN ?? 'iobasti').trim().toLowerCase();
   private readonly moderatorIds = new Set((process.env.AUTHORIZED_MODERATOR_IDS || '').split(/[ ,]+/u).filter(Boolean));
   private readonly clientId = process.env.TWITCH_CLIENT_ID?.trim() || '';
   private readonly clientSecret = process.env.TWITCH_CLIENT_SECRET?.trim() || '';
@@ -298,13 +301,17 @@ export class DashboardServer {
       if (url.pathname === '/games/imposter/login') { this.participantLogin(res); return; }
       this.login(res); return;
     }
-    if (url.pathname === '/streamer') {
+    if (['/streamer','/streamer/','/dashboard/streamer'].includes(url.pathname)) {
       if (req.method !== 'GET') { res.statusCode=405;res.setHeader('Allow','GET');res.end('Methode nicht erlaubt.');return; }
-      const session=this.authenticate(req,res);if(!session)return;if(session.role!=='admin'){this.json(res,403,{error:'Der Streamer-Modus ist nur für Jannik freigeschaltet.'});return;}
+      const session=this.authenticate(req,res);if(!session)return;if(session.role!=='admin'&&session.role!=='moderator'){this.json(res,403,{error:'Die Streamer-Steuerung ist nur für Admins und berechtigte Moderatoren verfügbar.'});return;}
       if (this.rejectRateLimit(res, this.rates.consume('admin-page', session.userId, 120, 60_000), 'Zu viele Seitenaufrufe. Bitte kurz warten.')) return;
       const nonce=randomBytes(18).toString('base64');res.setHeader('Cache-Control','no-store');
       res.setHeader('Content-Security-Policy',`default-src 'self'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`);
-      res.statusCode=200;res.setHeader('Content-Type','text/html; charset=utf-8');res.end(LIVE_CONTROL_PAGE.replace('(()=>{const csrf=',`${DASHBOARD_POLLING_SCRIPT}(()=>{const csrf=`).replace('update();setInterval(update,3000)',"window.dashboardPoll('#stream-status',update,10000)").replaceAll('__CSRF__',session.csrf).replaceAll('__NONCE__',nonce));return;
+      const directorCard=EVENT_DIRECTOR_CARD.replace('data-event-director','data-event-director data-director-admin="'+String(session.role==='admin')+'"');
+      res.statusCode=200;res.setHeader('Content-Type','text/html; charset=utf-8');
+      if(session.role==='moderator'){res.end(moderatorStreamerPage(directorCard).replaceAll('__CSRF__',session.csrf).replaceAll('__NONCE__',nonce));return;}
+      const page=LIVE_CONTROL_PAGE.replace('<section class="card hero"',`${directorCard}<section class="card hero"`).replace('(()=>{const csrf=',`${DASHBOARD_POLLING_SCRIPT}(()=>{const csrf=`).replace('</script>',`${EVENT_DIRECTOR_SCRIPT}</script>`).replace('update();setInterval(update,3000)',"window.dashboardPoll('#stream-status',update,10000)").replaceAll('__CSRF__',session.csrf).replaceAll('__NONCE__',nonce);
+      res.end(page);return;
     }
     if(url.pathname==='/dashboard/memories'&&req.method==='GET'){
       const session=this.authenticate(req,res);if(!session)return;
@@ -352,7 +359,7 @@ export class DashboardServer {
         const nonce=randomBytes(18).toString('base64');res.setHeader('Content-Security-Policy',`default-src 'self'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`);
         const chaosCard=COMMUNITY_CHAOS_CARD.replace('data-community-chaos','data-community-chaos data-chaos-admin="false"');
         const chaosScript=COMMUNITY_CHAOS_SCRIPT.replace('const csrf=','if(root.dataset.chaosAdmin===\'false\'){for(const item of root.querySelectorAll(\'[data-chaos-setting],[data-chaos-game],[data-chaos-reward],[data-chaos-weight],#chaos-duration,#chaos-interval,#chaos-jitter,#chaos-wake-energy,#chaos-save\'))item.disabled=true}const csrf=');
-        res.setHeader('Content-Type','text/html; charset=utf-8');res.end(moderatorPranksPage(session.csrf).replace('</main>',`${VIP_MODERATOR_CARD}${chaosCard}</main>`).replace('</script>',`${VIP_MODERATOR_SCRIPT}${chaosScript}</script>`).replaceAll('__NONCE__',nonce));return;
+        res.setHeader('Content-Type','text/html; charset=utf-8');res.end(moderatorPranksPage(session.csrf).replace('<h1>Chaos &amp; Pranks</h1>','<h1>Moderation</h1><p><a href="/streamer">🎛 Streamer-Steuerung · Event-Zentrale</a></p><h2>Chaos &amp; Pranks</h2>').replace('</main>',`${VIP_MODERATOR_CARD}${chaosCard}</main>`).replace('</script>',`${VIP_MODERATOR_SCRIPT}${chaosScript}</script>`).replaceAll('__NONCE__',nonce));return;
       }
       const nonce = randomBytes(18).toString('base64');
       res.setHeader('Content-Security-Policy', `default-src 'self'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`);
@@ -392,7 +399,7 @@ export class DashboardServer {
       const session = this.authenticate(req, res, true); if (!session) return;
       if (req.method !== 'GET' && !this.checkCsrf(req, session)) { this.json(res, 403, { error: 'CSRF-Prüfung fehlgeschlagen.' }); return; }
       const route = url.pathname.slice('/dashboard/api/'.length);
-      if(session.role==='moderator'&&!['pranks','pranks/search-user','memories','ideas','vip/status','vip/chaos','logout'].includes(route)){this.json(res,403,{error:'Für dieses Konto sind nur freigegebene Moderationsbereiche verfügbar.'});return;}
+      if(session.role==='moderator'&&!['pranks','pranks/search-user','memories','ideas','vip/status','vip/chaos','event-director','elio-chronicles','logout'].includes(route)){this.json(res,403,{error:'Für dieses Konto sind nur freigegebene Moderationsbereiche verfügbar.'});return;}
       if(session.role==='moderator'&&route==='logout'){this.sessions.delete(this.cookieSession(req)||'');this.clearCookie(res);this.json(res,200,{ok:true});return;}
       if (route === 'stream' && req.method === 'GET') {
         this.openEventStream(url, req, res, session.userId); return;
@@ -507,13 +514,14 @@ export class DashboardServer {
     const validatedResponse = await this.fetchImpl('https://id.twitch.tv/oauth2/validate', { headers: { Authorization: `OAuth ${token.access_token}` } });
     if (!validatedResponse.ok) { this.json(res, 401, { error: 'Twitch-Token ist ungültig.' }); return; }
     const validated = await validatedResponse.json() as TokenValidation;
-    const role:Session['role']=this.adminIds.has(validated.user_id)?'admin':'moderator';
-    if (validated.client_id !== this.clientId || (role==='moderator'&&!this.moderatorIds.has(validated.user_id))) { this.json(res, 403, { error: 'Dieses Twitch-Konto ist nicht für die Administration freigeschaltet.' }); return; }
+    if (validated.client_id !== this.clientId) { this.json(res, 403, { error: 'Dieses Twitch-Konto ist nicht für die Administration freigeschaltet.' }); return; }
     const userResponse = await this.fetchImpl('https://api.twitch.tv/helix/users', { headers: { 'Client-Id': this.clientId, Authorization: `Bearer ${token.access_token}` } });
     if (!userResponse.ok) { this.json(res, 401, { error: 'Twitch-Profil konnte nicht verifiziert werden.' }); return; }
     const userPayload = await userResponse.json() as { data?: HelixUser[] };
     const user = userPayload.data?.[0];
-    if (!user || user.id !== validated.user_id) { this.json(res, 401, { error: 'Twitch-Identität stimmt nicht überein.' }); return; }
+    if (!user || user.id !== validated.user_id || (typeof validated.login==='string'&&user.login.trim().toLowerCase()!==validated.login.trim().toLowerCase())) { this.json(res, 401, { error: 'Twitch-Identität stimmt nicht überein.' }); return; }
+    const role:Session['role']=this.isAdminIdentity(user.id,user.login)?'admin':'moderator';
+    if(role==='moderator'&&!this.moderatorIds.has(user.id)){this.json(res,403,{error:'Dieses Twitch-Konto ist nicht für die Administration freigeschaltet.'});return;}
     for (const [sessionKey, session] of this.sessions) if (session.expiresAt <= Date.now()) this.sessions.delete(sessionKey);
     const key = randomBytes(32).toString('hex');
     this.sessions.set(key, { userId: user.id, login: user.login, csrf: randomBytes(24).toString('hex'), expiresAt: Date.now() + SESSION_TTL_MS, role });
@@ -676,9 +684,9 @@ export class DashboardServer {
     }
     if(route==='elio-chronicles'&&req.method==='GET'){
       if(session.role!=='admin'&&session.role!=='moderator'){this.json(res,403,{error:'Elio Chronicles ist nur für Jannik und berechtigte Moderatoren sichtbar.'});return;}
-      this.chronicles.reconcile(now);const story=this.chronicles.status(),storySettings=this.chronicles.settings(),director=this.eventDirector.settings(),snapshot=this.eventDirector.snapshot(now),runtime=this.getStatus(),timers=this.store.state<Record<string,number|null>>('event_director_timers',{}),nextAt=timers['elio-chronicles']||null,lastMission=this.store.miniGameQuery(db=>db.prepare('SELECT mission_id missionId,started_at startedAt,status FROM elio_chronicles_events ORDER BY started_at DESC LIMIT 1').get() as {missionId:string;startedAt:number;status:string}|undefined),lastSchedulerAt=this.store.miniGameQuery(db=>(db.prepare('SELECT updated_at at FROM feature_state WHERE key=?').get('event_director_reason') as {at:number}|undefined)?.at||null),activityLevels=['quiet','low','normal','high'],streamFresh=Boolean(runtime.streamStatusCheckedAt&&now-runtime.streamStatusCheckedAt<90_000),streamLive=streamFresh?runtime.streamLive:undefined,conflict=this.store.miniGameQuery(db=>findActiveCommunityEventConflict(db));let blockReason='Automatik ist bereit.';
+      this.chronicles.reconcile(now);const story=this.chronicles.status(),activeRow=this.store.miniGameQuery(db=>db.prepare("SELECT c.id,c.game,c.deadline,c.announcement_sent,c.announcement_lease_until,c.settings_json FROM elio_chronicles_events e JOIN community_chaos_events c ON c.id=e.chaos_event_id WHERE e.status='active' AND c.status='active' ORDER BY c.starts_at DESC LIMIT 1").get() as {id:string;game:ChaosGame;deadline:number;announcement_sent:number;announcement_lease_until:number;settings_json:string}|undefined),liveEvent=activeRow?(()=>{let metadata:Record<string,unknown>={};try{const snapshot=JSON.parse(activeRow.settings_json) as {chronicle?:Record<string,unknown>};metadata=snapshot.chronicle||{};}catch{}const participants=this.store.miniGameQuery(db=>(db.prepare('SELECT COUNT(*) n FROM community_chaos_participants WHERE event_id=?').get(activeRow.id) as {n:number}).n);return {id:activeRow.id,title:String(metadata.title||story.currentMission?.title||'Elio Chronicles'),chapterTitle:String(metadata.chapterTitle||story.chapter?.title||'Story'),commands:this.chaos.guide(activeRow.game).commands,deadline:activeRow.deadline,remainingSeconds:Math.max(0,Math.ceil((activeRow.deadline-now)/1000)),participants,announcementStatus:activeRow.announcement_sent?'confirmed':activeRow.announcement_lease_until>now?'sending':'pending'};})():null,storySettings=this.chronicles.settings(),director=this.eventDirector.settings(),snapshot=this.eventDirector.snapshot(now),runtime=this.getStatus(),timers=this.store.state<Record<string,number|null>>('event_director_timers',{}),nextAt=timers['elio-chronicles']||null,lastMission=this.store.miniGameQuery(db=>db.prepare('SELECT mission_id missionId,started_at startedAt,status FROM elio_chronicles_events ORDER BY started_at DESC LIMIT 1').get() as {missionId:string;startedAt:number;status:string}|undefined),lastSchedulerAt=this.store.miniGameQuery(db=>(db.prepare('SELECT updated_at at FROM feature_state WHERE key=?').get('event_director_reason') as {at:number}|undefined)?.at||null),activityLevels=['quiet','low','normal','high'],streamFresh=Boolean(runtime.streamStatusCheckedAt&&now-runtime.streamStatusCheckedAt<90_000),streamLive=streamFresh?runtime.streamLive:undefined,conflict=this.store.miniGameQuery(db=>findActiveCommunityEventConflict(db));let blockReason='Automatik ist bereit.';
       if(!director.enabled)blockReason='Event Director ist deaktiviert.';else if(director.paused)blockReason='Event Director ist pausiert.';else if(!director.autoStories||!storySettings.autoEnabled)blockReason='Elio-Chronicles-Automatik ist deaktiviert.';else if(!storySettings.enabled)blockReason='Elio Chronicles ist deaktiviert.';else if(story.season?.status!=='active')blockReason='Die Staffel ist nicht aktiv.';else if(!streamFresh)blockReason='Twitch-Livestatus ist noch nicht frisch bestätigt.';else if(streamLive!==true)blockReason='Twitch-Stream ist offline.';else if(story.active)blockReason='Eine Story-Mission läuft bereits.';else if(conflict)blockReason=`${conflict.label} läuft gerade.`;else if(activityLevels.indexOf(snapshot.activity.level)<activityLevels.indexOf(director.minimumActivity))blockReason='Die Chataktivität liegt unter der eingestellten Schwelle.';else if(snapshot.lastEventAt!==null&&now-snapshot.lastEventAt<director.minimumGapMs)blockReason='Der kurze gemeinsame Sicherheitsabstand nach einer anderen Aktion läuft noch.';else if(snapshot.recentAutomaticEvents>=director.maxEventsPerHour)blockReason='Das automatische Stundenbudget ist erreicht.';else if(nextAt===null)blockReason='Der 40-Minuten-Timer wird beim nächsten Live-Scheduler-Durchlauf gestartet.';else if(nextAt>now)blockReason='Die nächste Story-Mission wartet auf ihren 40-Minuten-Termin.';else blockReason='Mission ist fällig; der nächste Scheduler-Durchlauf startet sie, sobald kein Konflikt besteht.';
-      this.json(res,200,{...story,automation:{enabled:director.enabled&&director.autoStories&&storySettings.enabled&&storySettings.autoEnabled,intervalMs:storySettings.automaticIntervalMs,lastMission,nextAt,streamLive:streamLive??null,lastSchedulerAt,blockReason}});return;
+      this.json(res,200,{...story,liveEvent,lastResult:story.lastEvents[0]||null,automation:{enabled:director.enabled&&director.autoStories&&storySettings.enabled&&storySettings.autoEnabled,intervalMs:storySettings.automaticIntervalMs,lastMission,nextAt,streamLive:streamLive??null,lastSchedulerAt,blockReason}});return;
     }
     if(route==='elio-chronicles'&&req.method==='POST'){
       if(session.role!=='admin'&&session.role!=='moderator'){this.json(res,403,{error:'Elio Chronicles ist nur für Jannik und berechtigte Moderatoren verfügbar.'});return;}
@@ -1741,11 +1749,12 @@ export class DashboardServer {
 
   private moderationMemory(row:Record<string,unknown>):Record<string,unknown>{return{id:row.id,body:row.body,clipUrl:row.clip_url,category:row.category,eventName:row.event_name,status:row.status,featured:Boolean(row.featured),reactions:Number(row.reactions||0),submittedAt:row.submitted_at,publishedAt:row.published_at,submitterName:row.submitter_name};}
 
-  private isSeasonalGrantOwner(session:Session):boolean{return session.role==='admin'&&this.adminIds.has(session.userId)&&session.login.trim().toLowerCase()==='iobasti';}
+  private isAdminIdentity(userId:string,login:string):boolean{return this.adminIds.has(userId)||(this.ownerAdminLogin!==''&&login.trim().toLowerCase()===this.ownerAdminLogin);}
+  private isSeasonalGrantOwner(session:Session):boolean{return session.role==='admin'&&this.isAdminIdentity(session.userId,session.login)&&session.login.trim().toLowerCase()===this.ownerAdminLogin;}
 
   private authenticate(req: http.IncomingMessage, res: http.ServerResponse, api = false): Session | undefined {
     const key = this.cookieSession(req); const session = key ? this.sessions.get(key) : undefined;
-    if (!session || session.expiresAt <= Date.now() || (session.role==='admin'?!this.adminIds.has(session.userId):!this.moderatorIds.has(session.userId))) {
+    if (!session || session.expiresAt <= Date.now() || (session.role==='admin'?!this.isAdminIdentity(session.userId,session.login):!this.moderatorIds.has(session.userId))) {
       if (key) this.sessions.delete(key); this.clearCookie(res);
       if (api) this.json(res, 401, { error: 'Anmeldung erforderlich.' });
       else { res.statusCode = 302; res.setHeader('Location', '/dashboard/login'); res.end(); }

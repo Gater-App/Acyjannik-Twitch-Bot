@@ -120,6 +120,7 @@ DASHBOARD_HOST=127.0.0.1
 DASHBOARD_PORT=3001
 DASHBOARD_REDIRECT_URI=http://localhost:3001/dashboard/oauth/callback
 DASHBOARD_ADMIN_IDS=DEINE_NUMERISCHE_TWITCH_USER_ID
+DASHBOARD_OWNER_ADMIN_LOGIN=iobasti
 ```
 
 Im Browser `http://localhost:3001/dashboard/login` öffnen. Der Dashboard-Token
@@ -129,11 +130,19 @@ Ein Neustart meldet bestehende Dashboard-Sitzungen ab. Dashboard-Änderungen
 werden in `admin_audit` protokolliert. Das Dashboard ist standardmäßig an
 `127.0.0.1` gebunden und nicht für das öffentliche Netz gedacht.
 
+`DASHBOARD_OWNER_ADMIN_LOGIN` bezeichnet das zusätzliche Owner-Konto. Der
+Standardwert `iobasti` wird erst nach erfolgreicher Twitch-OAuth- und Helix-
+Identitätsprüfung als Admin eingestuft; der OAuth-User-ID-Abgleich bleibt
+serverseitig erforderlich. Numerische IDs in `DASHBOARD_ADMIN_IDS` bleiben
+unverändert als Admins zugelassen.
+
 `AUTHORIZED_MODERATOR_IDS` kann numerische Twitch-IDs berechtigter Mods
-enthalten. Diese Konten erhalten nach Twitch-OAuth ausschließlich die separate
-Ansicht „Chaos & Pranks“; Admin-APIs, Fairnessdaten und Streamer-Steuerung bleiben
-gesperrt. Die vier Pranks sind standardmäßig ausgeschaltet und müssen dort einzeln
-aktiviert werden.
+enthalten. Diese Konten erhalten die Ansicht „Chaos & Pranks“ sowie eine eigene
+Streamer-Steuerung mit Eventstatus und freigegebenen manuellen Aktionen.
+Einstellungen und Warteschlangenverwaltung bleiben Admins vorbehalten; jede
+Schreibaktion wird zusätzlich serverseitig autorisiert. Andere Admin-APIs und
+private Dashboard-Daten bleiben für Moderatoren gesperrt. Die vier Pranks sind
+standardmäßig ausgeschaltet und müssen dort einzeln aktiviert werden.
 
 Die Oberfläche umfasst Statusanzeige und Aktualisierung, Modul-Schalter,
 Eventstart/-ende und Eventanlage, XP-Korrekturen, Nutzer-XP-Suche und
