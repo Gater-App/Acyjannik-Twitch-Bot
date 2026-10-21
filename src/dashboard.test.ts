@@ -107,8 +107,9 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.match(cookies.find((value) => value.startsWith('community_admin=')) || '', /HttpOnly; Secure; SameSite=Lax/u);
 
     const protectedStreamer=await fetch(`${base}/streamer`,{redirect:'manual'});
-    assert.equal(protectedStreamer.status,302,'Streamer-Modus ist ohne Admin-Sitzung nicht öffentlich');
-    const streamer=await fetch(`${base}/streamer`,{headers:{Cookie:sessionCookie}});
+    assert.equal(protectedStreamer.status,302,'Legacy-Streamer-Link wird auf die kanonische Dashboard-Route umgeleitet');
+    assert.equal(protectedStreamer.headers.get('location'),'/dashboard/streamer');
+    const streamer=await fetch(`${base}/dashboard/streamer`,{headers:{Cookie:sessionCookie}});
     assert.equal(streamer.status,200);
     const streamerHtml=await streamer.text();
     assert.match(streamerHtml,/dashboardPoll\('#stream-status',update,10000\)/u,'Streamerstatus aktualisiert sichtbar und mit Single-Flight statt alle drei Sekunden');
@@ -192,7 +193,7 @@ test('Dashboard validiert Twitch-Identität, Allowlist, Session, CSRF und Admin-
     assert.match(html,/Begrüßung neuer Chatter/u);
     assert.match(html,/Community-Aktionen/u);
     assert.match(html,/OBS: Widgets für den Stream/u);
-    assert.match(html,/streamerEntry\.href='\/streamer'/u,'Normales Dashboard bietet einen sichtbaren Einstieg in den Streamer-Modus');
+    assert.match(html,/streamerEntry\.href='\/dashboard\/streamer'/u,'Normales Dashboard bietet einen Einstieg auf einer Route innerhalb des geschützten Cookie-Pfads');
     assert.match(html,/3\. Anzeige in OBS einfügen/u);
     assert.match(html,/Link technisch testen/u);
     assert.match(html,/OBS-Sichtbarkeit ist damit noch nicht bestätigt/u);
