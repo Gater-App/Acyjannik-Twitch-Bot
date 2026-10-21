@@ -114,7 +114,7 @@ const DASHBOARD_OBS_DEMO_SCRIPT = `(()=>{const select=document.querySelector('#o
 const DASHBOARD_TIMER_SCRIPT = `(()=>{setInterval(()=>{const node=document.querySelector('#mini-next');if(!node)return;if(!node.querySelector('[data-countdown]')){node.dataset.phaseText=node.textContent;const timer=document.createElement('span');timer.dataset.countdown='true';node.append(timer)}const timer=node.querySelector('[data-countdown]');timer.textContent=miniEndsAt?' · Countdown '+Math.floor(Math.max(0,miniEndsAt-Date.now())/1000)+' Sek.':''},1000)})();`;
 const DASHBOARD_APP_SCRIPT = `(()=>{
 const quickLinks=document.querySelector('.dashboard-top');
-const streamerEntry=document.createElement('a');streamerEntry.href='/streamer';streamerEntry.textContent='🎛 Streamer-Steuerung';streamerEntry.className='streamer-entry';streamerEntry.setAttribute('aria-label','Streamer-Steuerung öffnen');quickLinks?.append(streamerEntry);
+const streamerEntry=document.createElement('a');streamerEntry.href='/dashboard/streamer';streamerEntry.textContent='🎛 Streamer-Steuerung';streamerEntry.className='streamer-entry';streamerEntry.setAttribute('aria-label','Streamer-Steuerung öffnen');quickLinks?.append(streamerEntry);
 const portalEntry=document.createElement('a');portalEntry.href='/community';portalEntry.textContent='👥 Community-Portal';portalEntry.className='portal-entry';portalEntry.setAttribute('aria-label','Öffentliches Community-Portal öffnen');quickLinks?.append(portalEntry);
 document.querySelectorAll('#dashboard-legacy-source [style]').forEach(x=>x.removeAttribute('style'));
 const views=[...document.querySelectorAll('[data-dashboard-view]')],mainNav=[...document.querySelectorAll('[data-view-target]')];
@@ -300,6 +300,16 @@ export class DashboardServer {
       if (this.rejectRateLimit(res, this.rates.consume('oauth-start', clientIp, 20, 10 * 60_000), 'Zu viele Anmeldeversuche. Bitte später erneut versuchen.')) return;
       if (url.pathname === '/games/imposter/login') { this.participantLogin(res); return; }
       this.login(res); return;
+    }
+    // Admin sessions are intentionally scoped to /dashboard. Keep the legacy
+    // short URL, but canonicalize it before authentication so browsers send
+    // that scoped cookie on the protected route.
+    if ((url.pathname === '/streamer' || url.pathname === '/streamer/') && req.method === 'GET') {
+      res.statusCode = 302;
+      res.setHeader('Location', '/dashboard/streamer');
+      res.setHeader('Cache-Control', 'no-store');
+      res.end();
+      return;
     }
     if (['/streamer','/streamer/','/dashboard/streamer'].includes(url.pathname)) {
       if (req.method !== 'GET') { res.statusCode=405;res.setHeader('Allow','GET');res.end('Methode nicht erlaubt.');return; }

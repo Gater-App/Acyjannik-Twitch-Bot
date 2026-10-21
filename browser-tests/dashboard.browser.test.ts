@@ -141,7 +141,7 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
       await page.screenshot({ path: path.join(ux50ScreenshotDir, `${name}.png`), fullPage: true });
     };
     await page.setViewportSize({ width: 1440, height: 1000 });
-    assert.equal(await page.getByRole('link', { name: 'Streamer-Steuerung öffnen' }).getAttribute('href'), '/streamer');
+    assert.equal(await page.getByRole('link', { name: 'Streamer-Steuerung öffnen' }).getAttribute('href'), '/dashboard/streamer');
     assert.equal(await page.getByRole('link', { name: 'Öffentliches Community-Portal öffnen' }).getAttribute('href'), '/community');
     assert.match((await page.locator('.main-nav [aria-current="page"]').innerText()).replace(/\s+/gu, ' '), /Übersicht/u);
     await screenshot('acy-ux50-desktop-overview');
@@ -515,7 +515,7 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     }
 
     const streamerPage = await context.newPage();
-    await streamerPage.context().addCookies([{ name: 'community_admin', value: sessionCookie.split('=')[1], domain: '127.0.0.1', path: '/', httpOnly: true, secure: true, sameSite: 'Lax' }]);
+    await streamerPage.context().addCookies([{ name: 'community_admin', value: sessionCookie.split('=')[1], domain: '127.0.0.1', path: '/dashboard', httpOnly: true, secure: true, sameSite: 'Lax' }]);
     streamerPage.on('pageerror', (error) => pageErrors.push(error.message));
     await streamerPage.route('**/dashboard/api/minigames', (route) => route.fulfill({ json: { settings: { enabled: true }, state: { imposter: { phase: 'registration', players: [{}, {}], endsAt: Date.now() + 60_000 }, detective: null } } }));
     const interactiveSettings={battleEnabled:true,secretEventsEnabled:true,gameNightEnabled:true,elio2Enabled:true};
@@ -529,8 +529,11 @@ test('Dashboard-Navigation, Teilansichten und Logout funktionieren im Browser', 
     await streamerPage.route('**/dashboard/api/discord/channels', (route) => route.fulfill({json:{channels:[{id:'configured-test-channel',usable:true}]}}));
     await streamerPage.goto(`${base}/dashboard`, { waitUntil: 'domcontentloaded', timeout: 10000 });
     await streamerPage.getByRole('link', { name: 'Streamer-Steuerung öffnen' }).click();
-    await streamerPage.waitForURL('**/streamer');
+    await streamerPage.waitForURL('**/dashboard/streamer');
     assert.equal(await streamerPage.getByRole('heading', { name: /Streamer-Steuerung/u }).isVisible(), true);
+    await streamerPage.goto(`${base}/streamer`, { waitUntil: 'domcontentloaded' });
+    await streamerPage.waitForURL('**/dashboard/streamer');
+    assert.equal(await streamerPage.getByRole('heading', { name: /Streamer-Steuerung/u }).isVisible(), true, 'der alte Kurzlink bleibt trotz auf /dashboard begrenztem Session-Cookie nutzbar');
     await streamerPage.getByRole('heading',{name:'ACY Live Test'}).waitFor({state:'visible'});
     assert.equal(await streamerPage.locator('#live-viewers').innerText(),'42','Live-Control zeigt die vom Server gelieferten Zuschauerzahlen');
     assert.match(await streamerPage.locator('#chat-receive').innerText(),/Bestätigt/u);
