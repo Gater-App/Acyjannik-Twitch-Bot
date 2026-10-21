@@ -106,6 +106,20 @@ test('a repeated or late finish cannot rewrite an already completed Event Direct
 
 test('recovery distinguishes a manually ended boss from a timeout after a crash',()=>{const store=new FeatureStore(':memory:');store.startBoss('ended-before-crash','Schattenwächter',100,60_000,10);const before=new EventDirector(store);before.snapshot(11);store.endBoss(12);const recovered=new EventDirector(store).snapshot(13).recentRuns.find(run=>run.sourceEventId==='ended-before-crash');assert.equal(recovered?.status,'aborted');store.close();});
 
+test('recovery closes an expired community vault as completed without inventing participants or replaying XP',()=>{
+  const store=new FeatureStore(':memory:'),director=new EventDirector(store),now=20_000;
+  store.miniGameTransaction(db=>{
+    db.prepare("INSERT INTO community_vault_rounds(id,secret_code,status,started_at,ends_at,attempts_count,is_auto,result_code,announcement_sent,updated_at) VALUES('expired-vault','731','expired',1000,1180,4,0,'731',1,1181)").run();
+    db.prepare("INSERT INTO event_director_runs(id,event_type,started_at,reason,status,triggered_by,source_event_id,payout_status) VALUES('stale-vault-run','community-vault',1000,'recovered after restart','active','recovery','expired-vault','pending')").run();
+  });
+  for(let attempt=0;attempt<2;attempt++)director.snapshot(now+attempt);
+  const run=director.snapshot(now+2).recentRuns.find(item=>item.id==='stale-vault-run');
+  assert.equal(run?.status,'completed');assert.equal(run?.endedAt,1181);assert.equal(run?.participants,0);assert.equal(run?.distinctParticipants,0);assert.equal(run?.xp,0);assert.equal(run?.outcome,'expired');assert.equal(run?.success,false);assert.equal(run?.payoutStatus,'none');
+  assert.equal(store.miniGameQuery(db=>(db.prepare('SELECT COUNT(*) n FROM xp_ledger').get() as {n:number}).n),0);
+  assert.equal(store.miniGameQuery(db=>(db.prepare('SELECT COUNT(*) n FROM event_director_runs WHERE id=?').get('stale-vault-run') as {n:number}).n),1);
+  store.close();
+});
+
 test('boss manual end writes a mention-free Discord completion event into the existing outbox',()=>{const store=new FeatureStore(':memory:');store.setConfig('event_director_settings',{discordAnnouncements:true});store.setConfig('discord_integration',{enabled:true,rewardsChannelId:'test-channel'});assert.equal(store.startBoss('discord-boss','Schattenwächter',100,60_000,10),true);assert.equal(store.endBoss(20),true);const events=store.discordOutboxBatch(21);assert.equal(events.length,2);assert.deepEqual(events.map(event=>event.type),['event.director.boss','event.director.boss']);assert.equal((events[1]?.payload as {status:string;discordMention:{mode:string}}).status,'failed');assert.equal((events[1]?.payload as {discordMention:{mode:string}}).discordMention.mode,'none');store.close();});
 
 test('orphaned active source is recovered after a restart and planned intervals remain persistent',()=>{const store=new FeatureStore(':memory:');store.startBoss('orphan-boss','Schattenwächter',100,60_000,100);const director=new EventDirector(store,()=>0),recovered=director.snapshot(101).recentRuns.find(item=>item.sourceEventId==='orphan-boss');assert.equal(recovered?.status,'active');assert.equal(recovered?.triggeredBy,'recovery');assert.equal(director.intervalDue('boss',200,4_500_000,6_300_000,true,true),false);assert.ok(director.snapshot(201).recentRuns.some(item=>item.type==='boss'&&item.status==='planned'&&item.scheduledFor!==null));store.close();});
