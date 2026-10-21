@@ -58,7 +58,7 @@ export function helpReply(args: string[], message: ChatMessage, availability: He
 
   const normalized = ALIASES[topic] || topic;
   switch (normalized) {
-    case 'start': return '🎮 !help spiele | 🎃 !help events | 🏆 !help xp | 📜 !help quests | 📖 Alle Befehle: https://twitch.gater-app.de/hilfe | 💜 Portal: https://twitch.gater-app.de/community';
+    case 'start': return '🎮 !help spiele | 🎃 !help events | 🏆 !help xp | 📜 !help quests | 💜 Discord: !discord | 📖 Alle Befehle: https://twitch.gater-app.de/hilfe | 💜 Portal: https://twitch.gater-app.de/community';
     case 'spiele': return gameHelp(availability);
     case 'event-halloween': return seasonalHelp('halloween',availability);
     case 'event-christmas': return seasonalHelp('christmas',availability);
@@ -76,6 +76,7 @@ export function helpReply(args: string[], message: ChatMessage, availability: He
     case 'gluecksrad': return availability.wheel ? '🎡 Jannik dreht das Glücksrad. Das Ergebnis startet automatisch; bei einer Challenge spielt Jannik die Aufgabe. Status: !wheel.' : '🎡 Das Chaos Wheel ist derzeit deaktiviert.';
     case 'tresor': return availability.vault ? '🔐 Rate den geheimen dreistelligen Code mit !code XXX. XXX ist ein Platzhalter: Ersetze ihn durch deine drei selbst gewählten Ziffern. Nach falschen Tipps erhältst du Hinweise. Dein letzter Tipp erscheint angemeldet im Community-Portal: https://twitch.gater-app.de/community' : '🔐 Der Community-Tresor ist derzeit deaktiviert.';
     case 'community-portal': return '💜 XP, Elio 🐱, Community-Ideen und Spiele: https://twitch.gater-app.de/community';
+    case 'discord': return '💜 Mit !discord bekommst du den aktuellen Einladungslink zu unserem Discord-Server.';
     case 'chaos': return availability.chaos ? '🎉 Community-Chaos läuft zeitweise im Chat: !retten, !rot / !blau / !gruen, !schatz, !aufwachen, !portal oder !bodyguard. Teilnahme zählt nur beim passenden aktiven Spiel.' : '🎉 Community-Chaos ist derzeit ausgeschaltet.';
     case 'story': return availability.chronicles ? '📖 Elio Chronicles entwickelt sich während echter Streams. Wenn eine Story-Abstimmung läuft, nutze nur die angezeigten Antworten. In Discord zeigen /elio-story status, /elio-story kapitel, /elio-story hinweise und /elio-story zusammenfassung den freigeschalteten Fortschritt.' : '📖 Elio Chronicles ist derzeit nicht freigegeben.';
     default: return '🎮 !help spiele | 🎃 !help events | 🏆 !help xp | 📜 !help quests | 📖 Alle Befehle: https://twitch.gater-app.de/hilfe | 💜 Portal: https://twitch.gater-app.de/community';
@@ -91,7 +92,7 @@ function gameHelp(a: HelpAvailability): string {
   return games.length ? `🎮 Weitere Chatspiele: ${games.join(' · ')}.` : '🎮 Weitere Chatspiele sind derzeit deaktiviert. Für Community-Runden: !help imposter oder !help detective.';
 }
 
-export const HELP_TOPICS = ['start','spiele','events','xp','quests','ideen','imposter','detektiv','pet','drop','gluecksrad','community','chaos','story'];
+export const HELP_TOPICS = ['start','spiele','events','xp','quests','ideen','imposter','detektiv','pet','drop','gluecksrad','community','discord','chaos','story'];
 
 function seasonalHelp(id:string,availability:HelpAvailability):string {
   const event=availability.seasonalEvents?.find(item=>item.id===id);

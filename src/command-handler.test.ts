@@ -8,6 +8,7 @@ import { Database } from './database.js';
 import { GameService } from './game.js';
 import { CommunityFeatures } from './community-features.js';
 import { FeatureStore } from './feature-store.js';
+import { AutomaticChatMessages } from './automatic-chat-messages.js';
 import { testConfig } from './test-config.js';
 import { parseEventSubChatMessage } from './chat.js';
 import type { AppConfig, ChatMessage } from './types.js';
@@ -54,6 +55,17 @@ test('Rangliste und eigener Punktestand werden kompakt ausgegeben', async () => 
   const top = await handler.handle(message(config, '!TOP', 'viewer-1'), 3_000);
   assert.match(top[0]?.message || '', /Top 10/);
   database.close();
+});
+
+test('!discord publishes only the unique invite from enabled recurring chat messages', async () => {
+  const config=testConfig(),database=new Database(':memory:',config.activeOnStart),store=new FeatureStore(':memory:');
+  const automatic=new AutomaticChatMessages(store);
+  automatic.save({title:'Discord-Hinweis',message:'Besucht unseren Server: https://discord.gg/F7gpQ43YxB',intervalMinutes:30,enabled:true},1_000);
+  const community=new CommunityFeatures(store,config),handler=new CommandHandler(database,new GameService(database,config,()=>0),config,undefined,community);
+  const response=await handler.handle(message(config,'!discord','viewer-discord',{eventId:'discord-invite-command'}),2_000);
+  assert.match(response[0]?.message||'',/https:\/\/discord\.gg\/F7gpQ43YxB/u);
+  assert.equal(response[0]?.category,'communityPortal');
+  store.close();database.close();
 });
 
 test('Spukhaus zählt nur angenommene !trickortreat-Runden und bewahrt bestehende Kürbiswerte', async () => {

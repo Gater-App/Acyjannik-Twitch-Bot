@@ -65,6 +65,10 @@ export class CommandHandler {
         this.helpCooldowns.set(message.senderUserId,now+5_000);
         return reply('Dein Community-Portal: XP und Level ansehen, Elio 🐱 besuchen, Quest-Ideen und Community-Ideen einreichen und bei Imposter mitspielen: https://twitch.gater-app.de/community','communityPortal');
       }
+      case 'discord': {
+        const invite=this.community?.discordInviteLink();
+        return reply(invite?`💜 Komm zu uns auf Discord: ${invite}`:'💜 Der Discord-Einladungslink ist gerade nicht eindeutig in den aktiven Chat-Hinweisen hinterlegt.','communityPortal');
+      }
       case 'trickortreat': {
         const result = this.trickOrTreat(name, message.senderUserId, message.eventId, now, message.messageId);
         return [{ message: clampChatMessage(result.message, this.config.appChatMessageLength), category: result.category,

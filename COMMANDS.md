@@ -8,6 +8,7 @@ Vollständige Übersicht der im aktuellen Bot-Code fest eingebauten Chatbefehle.
 |---|---|
 | `!help [basics\|events\|xp\|games\|quests\|spark\|imposter\|detective\|pet\|drops\|wheel\|chaos]` | Themenhilfe; `!help mods` nur Mods/Jannik, `!help admin` nur Jannik. |
 | `!community` | Öffnet den Wegweiser zum öffentlichen Community-Portal; persönliche Werte und Spielaktionen können Twitch-Anmeldung erfordern. |
+| `!discord` | Gibt den eindeutigen Discord-Einladungslink aus einer aktivierten automatischen Chatnachricht aus. `!help discord` erklärt den Befehl. |
 | `!trickortreat`, `!pumpkins`, `!top`, `!halloween` | Halloween spielen, Stand, Topliste und Status ansehen. |
 | `!gift`, `!egghunt` | Sammeln, wenn das aktive Event so konfiguriert ist. |
 | `!eventscore [event-id]`, `!eventtop [event-id]` | Event-Punktestand bzw. Topliste. |

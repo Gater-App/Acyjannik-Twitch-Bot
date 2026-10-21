@@ -51,7 +51,7 @@ const COMMAND_CATEGORY_ENTRIES: Array<[string[], ChatCategory]> = [
   [['level','rank','xptop'], 'xp'], [['help'], 'help'],
   [['addcommand','setcommand','delcommand'], 'custom'],
   [['welcome'], 'welcome'],
-  [['community'], 'communityPortal'],
+  [['community','discord'], 'communityPortal'],
 ];
 const COMMAND_CATEGORIES: Record<string, ChatCategory> = Object.fromEntries(
   COMMAND_CATEGORY_ENTRIES.flatMap(([commands, category]) => commands.map(command => [command, category] as const)),

@@ -19,6 +19,7 @@ import type { OutboundChatMessage } from './chat-message-format.js';
 import type { HelpAvailability } from './help.js';
 import { chooseEightBallAnswer, DEFAULT_EIGHT_BALL_SETTINGS, EIGHT_BALL_ANSWERS } from './eight-ball-answers.js';
 import { formatPollAnnouncement } from './poll-announcement.js';
+import { configuredDiscordInvite } from './discord-invite.js';
 
 type UserLookup = (login: string) => Promise<{ id: string; login: string; displayName: string } | undefined>;
 type RandomInclusive = (min: number, max: number) => number;
@@ -167,6 +168,11 @@ export class CommunityFeatures {
       drops:arcade.dropsEnabled,wheel:arcade.wheelEnabled,imposter:mini.enabled,detective:mini.enabled,vault:this.vault.settings().enabled,
       quests:modules.quests!==false&&eventSettings.enabled!==false,ideas:modules.ideas!==false&&ideaSettings.enabled!==false&&ideaSettings.chatEnabled!==false,spark:spark.enabled,
       eightBall:modules.eightBall!==false,rps:modules.rps!==false,guess:modules.guess!==false,duels:modules.duels!==false,chaos:this.chaos.settings().enabled,chronicles:this.chronicles.settings().enabled};
+  }
+
+  discordInviteLink(): string | undefined {
+    const messages=this.store.miniGameQuery(db=>db.prepare('SELECT message FROM automatic_chat_messages WHERE enabled=1 ORDER BY updated_at DESC').all() as Array<{message:string}>);
+    return configuredDiscordInvite(messages.map(row=>row.message));
   }
 
   tick(now = Date.now(), advanceMiniGames = true): string[] { return this.tickMessages(now, advanceMiniGames).map(item => item.message); }
