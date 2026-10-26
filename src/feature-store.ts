@@ -22,6 +22,18 @@ export interface SeasonalEvent {
   texts: Record<string, string>;
 }
 
+export interface SeasonalLossTransfer {
+  eventId: string;
+  status: 'transferred' | 'no_recipient' | 'no_balance';
+  eventType: string;
+  loserUserId: string;
+  loserName: string;
+  recipientUserId?: string;
+  recipientName?: string;
+  currency: string;
+  amount: number;
+}
+
 export interface CustomCommand {
   name: string;
   response: string;
@@ -1165,6 +1177,28 @@ export class FeatureStore {
         this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS event_director_request_key ON event_director_runs(request_key) WHERE request_key IS NOT NULL;
           CREATE INDEX IF NOT EXISTS event_director_queue ON event_director_runs(status,scheduled_for,queue_priority);
           INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (46, unixepoch()*1000);`);
+      })();
+    }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 47) {
+      if (currentVersion > 0) this.backupBeforeMigration(47);
+      this.db.transaction(() => {
+        this.db.exec(`CREATE TABLE IF NOT EXISTS seasonal_loss_transfers (
+          event_id TEXT PRIMARY KEY,
+          event_type TEXT NOT NULL REFERENCES seasonal_events(id),
+          loser_user_id TEXT NOT NULL,
+          loser_name TEXT NOT NULL,
+          recipient_user_id TEXT,
+          recipient_name TEXT,
+          currency TEXT NOT NULL,
+          amount INTEGER NOT NULL CHECK(amount >= 0),
+          status TEXT NOT NULL CHECK(status IN ('transferred','no_recipient','no_balance')),
+          created_at INTEGER NOT NULL,
+          CHECK((status='transferred' AND amount>0 AND recipient_user_id IS NOT NULL AND recipient_name IS NOT NULL)
+            OR (status IN ('no_recipient','no_balance') AND amount=0 AND recipient_user_id IS NULL AND recipient_name IS NULL))
+        );
+        CREATE INDEX IF NOT EXISTS seasonal_loss_transfers_recent ON seasonal_loss_transfers(created_at DESC);
+        INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (47, unixepoch()*1000);`);
       })();
     }
   }
@@ -2317,9 +2351,9 @@ export class FeatureStore {
   }
 
   playEvent(id: string, userId: string, displayName: string, delta: number, now: number,
-    delivery?: { eventId: string; replyParentMessageId?: string; format: (points: number) => string }):
-    { ok: true; points: number; deliveryId?: string } | { ok: false; reason: 'inactive' | 'cooldown' | 'duplicate'; remainingMs?: number } {
-    return this.db.transaction(() => {
+    delivery?: { eventId: string; replyParentMessageId?: string; category?: 'season' | 'halloween'; excludedUserIds?: string[]; activityWindowMinutes?: number; chooseRecipient?: (count: number) => number; format: (points: number, transfer?: SeasonalLossTransfer) => string }):
+    { ok: true; points: number; deliveryId?: string; transfer?: SeasonalLossTransfer } | { ok: false; reason: 'inactive' | 'cooldown' | 'duplicate'; remainingMs?: number } {
+    const operation=this.db.transaction(() => {
       if (delivery && this.db.prepare('SELECT 1 FROM chat_delivery_outbox WHERE event_id=?').get(delivery.eventId)) return { ok: false as const, reason: 'duplicate' as const };
       const event = this.event(id);
       if (!event?.active) return { ok: false as const, reason: 'inactive' as const };
@@ -2327,10 +2361,67 @@ export class FeatureStore {
       const cooldown = this.db.prepare('SELECT last_played_at FROM seasonal_cooldowns WHERE event_id=? AND user_id=?').get(id, userId) as { last_played_at: number } | undefined;
       if (cooldown && now - cooldown.last_played_at < event.cooldownMs) return { ok: false as const, reason: 'cooldown' as const, remainingMs: event.cooldownMs - (now - cooldown.last_played_at) };
       const row = this.db.prepare('SELECT points FROM seasonal_scores WHERE event_id=? AND user_id=?').get(id, userId) as { points: number } | undefined;
-      const points = Math.max(0, (row?.points ?? 0) + delta);
-      this.db.prepare(`INSERT INTO seasonal_scores(event_id,user_id,display_name,points,updated_at) VALUES(?,?,?,?,?)
-        ON CONFLICT(event_id,user_id) DO UPDATE SET display_name=excluded.display_name,points=excluded.points,updated_at=excluded.updated_at`)
-        .run(id, userId, displayName, points, now);
+      let points = row?.points ?? 0;
+      let transfer: SeasonalLossTransfer | undefined;
+      if (delta < 0) {
+        const transferEventId = delivery?.eventId || randomUUID();
+        const prior = this.db.prepare('SELECT status,amount,recipient_user_id,recipient_name FROM seasonal_loss_transfers WHERE event_id=?').get(transferEventId) as
+          { status: SeasonalLossTransfer['status']; amount: number; recipient_user_id: string | null; recipient_name: string | null } | undefined;
+        if (prior || (delivery && this.db.prepare('SELECT 1 FROM chat_delivery_outbox WHERE event_id=?').get(delivery.eventId))) return { ok: false as const, reason: 'duplicate' as const };
+        const available = id === 'halloween'
+          ? ((this.db.prepare('SELECT pumpkins AS points FROM players WHERE user_id=?').get(userId) as { points: number } | undefined)?.points ?? points)
+          : points;
+        points = Math.max(0, available);
+        const loss = Math.min(Math.max(0, Math.trunc(-delta)), Math.max(0, available));
+        let status: SeasonalLossTransfer['status'] = loss === 0 ? 'no_balance' : 'no_recipient';
+        let recipient: { user_id: string; display_name: string } | undefined;
+        if (loss > 0) {
+          const excluded = new Set([userId, ...(delivery?.excludedUserIds || [])].filter(Boolean));
+          const recent = this.db.prepare('SELECT user_id,display_name,login FROM recent_chat_activity WHERE last_activity_at>=? AND last_activity_at<=? ORDER BY user_id')
+            .all(now - Math.max(1, Math.min(15, delivery?.activityWindowMinutes ?? 5)) * 60_000, now) as Array<{ user_id: string; display_name: string; login: string }>;
+          const knownBots = new Set(['nightbot','streamelements','streamlabs','moobot','fossabot','wizebot','commanderroot','sery_bot','serybot']);
+          const eligible = recent.filter(candidate => candidate.user_id.trim() && candidate.display_name.trim() && /^[a-z0-9_]{1,25}$/iu.test(candidate.login)
+            && !excluded.has(candidate.user_id) && !knownBots.has(candidate.login.toLowerCase()) && !candidate.login.toLowerCase().endsWith('bot'));
+          if (eligible.length) {
+            const choose = delivery?.chooseRecipient || randomInt;
+            const index = Math.max(0, Math.min(eligible.length - 1, Math.trunc(choose(eligible.length))));
+            recipient = eligible[index];
+            status = 'transferred';
+          }
+        }
+        if (status === 'transferred' && recipient) {
+          points = available - loss;
+          this.db.prepare(`INSERT INTO seasonal_scores(event_id,user_id,display_name,points,updated_at) VALUES(?,?,?,?,?)
+            ON CONFLICT(event_id,user_id) DO UPDATE SET display_name=excluded.display_name,points=excluded.points,updated_at=excluded.updated_at`)
+            .run(id, userId, displayName, points, now);
+          this.db.prepare(`INSERT INTO seasonal_scores(event_id,user_id,display_name,points,updated_at) VALUES(?,?,?,?,?)
+            ON CONFLICT(event_id,user_id) DO UPDATE SET display_name=excluded.display_name,points=seasonal_scores.points+excluded.points,updated_at=excluded.updated_at`)
+            .run(id, recipient.user_id, recipient.display_name, loss, now);
+          if (id === 'halloween') {
+            this.db.prepare(`INSERT INTO players(user_id,display_name,pumpkins,updated_at) VALUES(?,?,?,?)
+              ON CONFLICT(user_id) DO UPDATE SET display_name=excluded.display_name,pumpkins=excluded.pumpkins,updated_at=excluded.updated_at`)
+              .run(userId, displayName, points, now);
+            this.db.prepare(`INSERT INTO players(user_id,display_name,pumpkins,updated_at) VALUES(?,?,?,?)
+              ON CONFLICT(user_id) DO UPDATE SET display_name=excluded.display_name,pumpkins=players.pumpkins+excluded.pumpkins,updated_at=excluded.updated_at`)
+              .run(recipient.user_id, recipient.display_name, loss, now);
+          }
+        } else {
+          this.db.prepare(`INSERT INTO seasonal_scores(event_id,user_id,display_name,points,updated_at) VALUES(?,?,?,?,?)
+            ON CONFLICT(event_id,user_id) DO UPDATE SET display_name=excluded.display_name,updated_at=excluded.updated_at`)
+            .run(id, userId, displayName, points, now);
+        }
+        transfer = { eventId: transferEventId, status, eventType: id, loserUserId: userId, loserName: displayName,
+          ...(recipient && status === 'transferred' ? { recipientUserId: recipient.user_id, recipientName: recipient.display_name } : {}),
+          currency: event.currency, amount: status === 'transferred' ? loss : 0 };
+        this.db.prepare(`INSERT INTO seasonal_loss_transfers(event_id,event_type,loser_user_id,loser_name,recipient_user_id,recipient_name,currency,amount,status,created_at)
+          VALUES(?,?,?,?,?,?,?,?,?,?)`).run(transfer.eventId,id,userId,displayName,transfer.recipientUserId??null,transfer.recipientName??null,event.currency,transfer.amount,status,now);
+        this.recordCommunityEvent('seasonal.loss.processed', transfer, now);
+      } else {
+        points = Math.max(0, points + delta);
+        this.db.prepare(`INSERT INTO seasonal_scores(event_id,user_id,display_name,points,updated_at) VALUES(?,?,?,?,?)
+          ON CONFLICT(event_id,user_id) DO UPDATE SET display_name=excluded.display_name,points=excluded.points,updated_at=excluded.updated_at`)
+          .run(id, userId, displayName, points, now);
+      }
       this.db.prepare(`INSERT INTO seasonal_cooldowns(event_id,user_id,last_played_at) VALUES(?,?,?)
         ON CONFLICT(event_id,user_id) DO UPDATE SET last_played_at=excluded.last_played_at`).run(id, userId, now);
       if (id === 'halloween') {
@@ -2340,14 +2431,15 @@ export class FeatureStore {
         this.db.prepare(`INSERT INTO cooldowns(user_id,last_played_at) VALUES(?,?)
           ON CONFLICT(user_id) DO UPDATE SET last_played_at=excluded.last_played_at`).run(userId, now);
       }
-      this.recordCommunityEvent('seasonal.score.changed', { eventId: id, userId, displayName, points, delta }, now);
+      this.recordCommunityEvent('seasonal.score.changed', { eventId: id, userId, displayName, points, delta, ...(transfer ? { transfer } : {}) }, now);
       if (delivery) {
-        const message=delivery.format(points).slice(0,500);
+        const message=delivery.format(points,transfer).slice(0,500);
         this.db.prepare("INSERT INTO chat_delivery_outbox(event_id,user_id,message,reply_parent_message_id,category,status,attempts,available_at,expires_at,created_at) VALUES(?,?,?,?,?,'pending',0,?,?,?)")
-          .run(delivery.eventId,userId,message,delivery.replyParentMessageId??null,'season',now,now+5*60_000,now);
+          .run(delivery.eventId,userId,message,delivery.replyParentMessageId??null,delivery.category??'season',now,now+5*60_000,now);
       }
-      return { ok: true as const, points,...(delivery?{deliveryId:delivery.eventId}:{}) };
-    })();
+      return { ok: true as const, points,...(delivery?{deliveryId:delivery.eventId}:{}), ...(transfer?{transfer}:{}) };
+    });
+    return operation.immediate();
   }
 
   claimChatDeliveryMessages(now=Date.now(),limit=25):Array<{id:string;attempt:number;message:string;replyParentMessageId?:string;category:'season'|'halloween';expiresAt:number}> {

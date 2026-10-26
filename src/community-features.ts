@@ -1,7 +1,7 @@
 import { createHash, randomInt, randomUUID } from 'node:crypto';
 import type { AppConfig, ChatMessage, CommandReply } from './types.js';
 import { clampChatMessage } from './chat.js';
-import { FeatureStore, type CustomCommand } from './feature-store.js';
+import { FeatureStore, type CustomCommand, type SeasonalLossTransfer } from './feature-store.js';
 import { QuestPollFeatures } from './quest-poll.js';
 import { ConversationSpark } from './conversation-spark.js';
 import { MiniGames } from './mini-games.js';
@@ -20,6 +20,7 @@ import type { HelpAvailability } from './help.js';
 import { chooseEightBallAnswer, DEFAULT_EIGHT_BALL_SETTINGS, EIGHT_BALL_ANSWERS } from './eight-ball-answers.js';
 import { formatPollAnnouncement } from './poll-announcement.js';
 import { configuredDiscordInvite } from './discord-invite.js';
+import { formatSeasonalLoss } from './seasonal-loss.js';
 
 type UserLookup = (login: string) => Promise<{ id: string; login: string; displayName: string } | undefined>;
 type RandomInclusive = (min: number, max: number) => number;
@@ -145,6 +146,18 @@ export class CommunityFeatures {
   }
 
   syncLegacyHalloween(now = Date.now()): void { this.store.syncLegacyHalloween(now); }
+
+  playHalloweenOutcome(userId:string,displayName:string,eventId:string,delta:number,now:number,positiveMessage:(points:number)=>string,replyParentMessageId?:string) {
+    let lossVariant=0,variantChosen=false,rendered='';
+    const result=this.store.playEvent('halloween',userId,displayName,delta,now,{
+      eventId,category:'halloween',...(replyParentMessageId?{replyParentMessageId}:{}),excludedUserIds:[this.config.botUserId,this.config.broadcasterUserId],
+      format:(points,transfer)=>{
+        if(transfer){if(!variantChosen){lossVariant=this.random(0,1);variantChosen=true;}rendered=formatSeasonalLoss('halloween',transfer,lossVariant);return rendered;}
+        rendered=positiveMessage(points);return rendered;
+      },
+    });
+    return result.ok?{...result,message:rendered}:result;
+  }
 
   recordHauntedHouseContribution(eventId:string,userId:string,now=Date.now()):void { this.hauntedHouse.recordAcceptedPlay(eventId,userId,now); }
 
@@ -331,14 +344,18 @@ export class CommunityFeatures {
     const defaultText = outcomeKey === 'EMPTY_HOUSE' ? `${event.emoji} {user} findet nichts.`
       : `${event.emoji} {user} sammelt {points} {currency}.`;
     const template = event.texts[outcomeKey] || event.texts.default || defaultText;
-    const format=(points:number)=>template.replace(/\{(user|points|currency|total|event)\}/gu, (_all, key: string) => ({
+    let lossVariant=0,variantChosen=false;
+    const format=(points:number,transfer?:SeasonalLossTransfer)=>{
+      if(transfer){if(!variantChosen){lossVariant=this.random(0,1);variantChosen=true;}return formatSeasonalLoss(event.id,transfer,lossVariant);}
+      return template.replace(/\{(user|points|currency|total|event)\}/gu, (_all, key: string) => ({
       user: name, points: String(delta), currency: event.currency, total: String(points), event: event.name,
-    })[key] || '');
+      })[key] || '');
+    };
     const outcome = this.store.playEvent(event.id, message.senderUserId, name, delta, now,
-      {eventId:message.eventId,...(message.messageId?{replyParentMessageId:message.messageId}:{}),format});
+      {eventId:message.eventId,...(message.messageId?{replyParentMessageId:message.messageId}:{}),excludedUserIds:[this.config.botUserId,this.config.broadcasterUserId],format});
     if (!outcome.ok&&outcome.reason==='duplicate')return undefined;
     if (!outcome.ok) return outcome.reason === 'inactive' ? '✨ Das Event ist gerade nicht aktiv.' : `⏳ Bitte noch ${Math.ceil((outcome.remainingMs || 0) / 60_000)} Min. warten.`;
-    return {message:format(outcome.points),deliveryId:outcome.deliveryId||message.eventId};
+    return {message:format(outcome.points,outcome.transfer),deliveryId:outcome.deliveryId||message.eventId};
   }
 
   private refreshScheduledEvents(now: number): void {

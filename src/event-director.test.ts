@@ -152,7 +152,7 @@ test('Migration v46 upgrades a v45 database in place, retains event/XP/lease dat
     db.prepare("INSERT OR IGNORE INTO xp_ledger(event_id,user_id,amount,reason,created_at) VALUES('legacy-xp','viewer-1',15,'boss:legacy-boss',200)").run();
     db.prepare("INSERT INTO event_director_runs(id,event_type,started_at,reason,status,triggered_by,payout_status) VALUES('legacy-queued','community-chaos',100,'manual request','queued','admin','not-applicable')").run();
     db.prepare('UPDATE event_director_lease SET owner=?,lease_until=?,updated_at=? WHERE id=1').run('legacy-owner',50_000,100);
-    db.exec('DROP INDEX IF EXISTS event_director_request_key;DROP INDEX IF EXISTS event_director_queue;ALTER TABLE event_director_runs DROP COLUMN request_payload;ALTER TABLE event_director_runs DROP COLUMN request_key;ALTER TABLE event_director_runs DROP COLUMN queue_priority;ALTER TABLE event_director_runs DROP COLUMN max_delay_at;DELETE FROM schema_migrations WHERE version=46');
+    db.exec('DROP INDEX IF EXISTS event_director_request_key;DROP INDEX IF EXISTS event_director_queue;ALTER TABLE event_director_runs DROP COLUMN request_payload;ALTER TABLE event_director_runs DROP COLUMN request_key;ALTER TABLE event_director_runs DROP COLUMN queue_priority;ALTER TABLE event_director_runs DROP COLUMN max_delay_at;DROP TABLE IF EXISTS seasonal_loss_transfers;DELETE FROM schema_migrations WHERE version>=46');
   });
   store.close();
   // Ignore backups created while building the synthetic v45 fixture; the one
@@ -169,7 +169,7 @@ test('Migration v46 upgrades a v45 database in place, retains event/XP/lease dat
     requestIndex:(db.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE type='index' AND name='event_director_request_key'").get() as {n:number}).n
   }));
   assert.deepEqual(after.run,{event_type:'boss',status:'completed',participant_count:3,xp_total:15,outcome:'defeated',source_event_id:'legacy-boss',payout_status:'settled'});
-  assert.deepEqual(after.xp,{event_id:'legacy-xp',user_id:'viewer-1',amount:15});assert.deepEqual(after.lease,{owner:'legacy-owner',lease_until:50_000});assert.equal(after.version,46);assert.equal(after.integrity,'ok');assert.equal(after.requestIndex,1);
+  assert.deepEqual(after.xp,{event_id:'legacy-xp',user_id:'viewer-1',amount:15});assert.deepEqual(after.lease,{owner:'legacy-owner',lease_until:50_000});assert.equal(after.version,47);assert.equal(after.integrity,'ok');assert.equal(after.requestIndex,1);
   const migratedDirector=new EventDirector(store),queuedCandidate:EventCandidate={type:'community-chaos',priority:1,enabled:false,ready:false,start:()=>undefined,manualStart:()=>{store.awardXp('migration-should-not-award','viewer-2','Viewer 2',20,'test:paused-migration',300);return 'unexpected';}},automaticCandidate=candidate(()=>{store.awardXp('migration-auto-should-not-award','viewer-3','Viewer 3',20,'test:paused-migration',300);return 'unexpected';},'boss');
   assert.equal(migratedDirector.settings().paused,true);assert.equal(migratedDirector.settings().queuePaused,false);
   assert.equal(migratedDirector.run({live:true,busy:false,now:300,candidates:[queuedCandidate,automaticCandidate]}),undefined);
@@ -179,6 +179,6 @@ test('Migration v46 upgrades a v45 database in place, retains event/XP/lease dat
 
   const backupDirectory=path.join(directory,'backups'),backup=fs.readdirSync(backupDirectory).find(name=>name.includes('before-feature-migration-v46-'));assert.ok(backup,'Migration legt ein Vorab-Backup an');
   const restoredPath=path.join(directory,'restore','state.sqlite');fs.mkdirSync(path.dirname(restoredPath),{recursive:true});fs.copyFileSync(path.join(backupDirectory,backup!),restoredPath);
-  const restored=new FeatureStore(restoredPath);const verified=restored.miniGameQuery(db=>({version:(db.prepare('SELECT MAX(version) version FROM schema_migrations').get() as {version:number}).version,run:(db.prepare("SELECT status,xp_total FROM event_director_runs WHERE id='legacy-run'").get() as {status:string;xp_total:number}),integrity:(db.prepare('PRAGMA integrity_check').get() as {integrity_check:string}).integrity_check}));assert.equal(verified.version,46);assert.deepEqual(verified.run,{status:'completed',xp_total:15});assert.equal(verified.integrity,'ok');restored.close();
+  const restored=new FeatureStore(restoredPath);const verified=restored.miniGameQuery(db=>({version:(db.prepare('SELECT MAX(version) version FROM schema_migrations').get() as {version:number}).version,run:(db.prepare("SELECT status,xp_total FROM event_director_runs WHERE id='legacy-run'").get() as {status:string;xp_total:number}),integrity:(db.prepare('PRAGMA integrity_check').get() as {integrity_check:string}).integrity_check}));assert.equal(verified.version,47);assert.deepEqual(verified.run,{status:'completed',xp_total:15});assert.equal(verified.integrity,'ok');restored.close();
   fs.rmSync(directory,{recursive:true,force:true});
 });
