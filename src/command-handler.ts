@@ -71,6 +71,7 @@ export class CommandHandler {
       }
       case 'trickortreat': {
         const result = this.trickOrTreat(name, message.senderUserId, message.eventId, now, message.messageId);
+        if(result.suppress)return [];
         return [{ message: clampChatMessage(result.message, this.config.appChatMessageLength), category: result.category,
           ...(result.deliveryId ? { durableDeliveryId: result.deliveryId } : {}), ...(message.messageId ? { replyParentMessageId: message.messageId } : {}) }];
       }
@@ -80,8 +81,12 @@ export class CommandHandler {
       case 'starthalloween':
         if (!this.isAuthorizedModerator(message)) return reply('⛔ Nur Jannik oder autorisierte Mods dürfen das Event starten.');
         if (this.community?.activeEventId() && this.community.activeEventId() !== 'halloween') return reply('🎃 Erst das aktuell laufende Saison-Event beenden.');
-        if (!this.game.start(now)) return reply('🎃 Halloween läuft bereits.');
-        this.community?.syncLegacyHalloween(now);
+        if(this.community){
+          if(this.community.halloween2026Closed(now))return reply('🎃 Halloween 2026 ist abgeschlossen und kann nicht erneut gestartet werden.');
+          if(this.game.active)return reply('🎃 Halloween läuft bereits.');
+          if(!this.community.setSeasonalEventActive('halloween',true,now))return reply('🎃 Halloween 2026 kann nicht mehr gestartet werden; das Event endet fest am 01.11.2026 um 00:00 Uhr (Europe/Berlin).');
+          this.community.syncLegacyHalloween(now);
+        }else if(!this.game.start(now))return reply('🎃 Halloween läuft bereits.');
         return reply('🎃 Halloween ist gestartet! !trickortreat für Kürbisse.');
       case 'endhalloween':
         if (!this.isAuthorizedModerator(message)) return reply('⛔ Nur Jannik oder autorisierte Mods dürfen das Event beenden.');
@@ -96,16 +101,29 @@ export class CommandHandler {
     }
   }
 
-  private trickOrTreat(name: string, userId: string, eventId: string, now: number, replyParentMessageId?: string): {message:string;category:ChatCategory;deliveryId?:string} {
+  private trickOrTreat(name: string, userId: string, eventId: string, now: number, replyParentMessageId?: string): {message:string;category:ChatCategory;deliveryId?:string;suppress?:boolean} {
     const format=(outcome:import('./types.js').GameOutcome)=>`${eventMessage(this.templateFor(outcome.event), { name, points: Math.abs(outcome.delta), pumpkins: outcome.pumpkins })} Gesamt: ${outcome.pumpkins}.`;
-    const result = this.game.play(userId, name, now, this.community ? {eventId,...(replyParentMessageId?{replyParentMessageId}:{}),category:'halloween',format} : undefined);
+    if(this.community){
+      if(!this.game.active)return {message:'🎃 Halloween ist noch nicht gestartet.',category:'hint'};
+      this.community.syncLegacyHalloween(now);
+      const rolled=this.game.drawOutcome();
+      const result=this.community.playHalloweenOutcome(userId,name,eventId,rolled.delta,now,
+        points=>format({...rolled,pumpkins:points}),replyParentMessageId);
+      if(!result.ok){
+        if(result.reason==='duplicate')return {message:'',category:'halloween',suppress:true};
+        if(result.reason==='inactive')return {message:'🎃 Halloween ist noch nicht gestartet.',category:'hint'};
+        return {message:`${name}: Du kannst in ${durationText(result.remainingMs ?? 0)} wieder losziehen.`,category:'cooldown'};
+      }
+      this.community.syncLegacyHalloween(now);
+      this.community.recordHauntedHouseContribution(eventId,userId,now);
+      return {message:result.message,category:'halloween',...(result.deliveryId?{deliveryId:result.deliveryId}:{})};
+    }
+    const result = this.game.play(userId, name, now);
     if (!result.ok) {
       if (result.reason === 'inactive') return {message:'🎃 Halloween ist noch nicht gestartet.',category:'hint'};
       return {message:`${name}: Du kannst in ${durationText(result.remainingMs ?? 0)} wieder losziehen.`,category:'cooldown'};
     }
     const { outcome } = result;
-    this.community?.syncLegacyHalloween(now);
-    this.community?.recordHauntedHouseContribution(eventId, userId, now);
     return {message:format(outcome),category:'halloween',...(result.deliveryId?{deliveryId:result.deliveryId}:{})};
   }
 
@@ -130,6 +148,7 @@ export class CommandHandler {
   }
 
   private async resetMessage(userId: string, args: string[], now: number): Promise<string> {
+    if(this.community?.halloween2026Closed(now))return '🎃 Halloween 2026 ist abgeschlossen. Der finale Kürbisstand bleibt unverändert.';
     const expiresAt = this.pendingReset.get(userId) ?? 0;
     if (args[0]?.toLowerCase() !== RESET_CONFIRMATION || expiresAt < now) {
       this.pendingReset.set(userId, now + RESET_CONFIRMATION_TTL_MS);

@@ -11,6 +11,7 @@ import { FeatureStore } from './feature-store.js';
 import { AutomaticChatMessages } from './automatic-chat-messages.js';
 import { testConfig } from './test-config.js';
 import { parseEventSubChatMessage } from './chat.js';
+import { HALLOWEEN_2026_END_AT } from './feature-store.js';
 import type { AppConfig, ChatMessage } from './types.js';
 
 function message(config: AppConfig, text: string, senderUserId = config.broadcasterUserId, overrides: Partial<ChatMessage> = {}): ChatMessage {
@@ -141,6 +142,23 @@ test('Reset verlangt Bestätigung, erstellt Backup und löscht keine Datenbankda
   assert.match(done[0]?.message || '', /zurückgesetzt/);
   assert.equal(database.getPlayer('viewer-1').pumpkins, 0);
   database.close();
+});
+
+test('Halloween-Start und Reset bleiben nach dem finalen Stichtag gesperrt', async () => {
+  const config=testConfig({activeOnStart:true}),database=new Database(':memory:',true),store=new FeatureStore(':memory:');
+  const community=new CommunityFeatures(store,config),game=new GameService(database,config,()=>0),handler=new CommandHandler(database,game,config,undefined,community);
+  try{
+    const before=HALLOWEEN_2026_END_AT-1;
+    database.applyPlay('viewer-before','Viewer',5,before,0);
+    assert.equal(game.pumpkins('viewer-before'),5);
+    const start=await handler.handle(message(config,'!starthalloween'),HALLOWEEN_2026_END_AT);
+    assert.match(start[0]?.message||'',/Halloween 2026 ist abgeschlossen/u);
+    const resetRequest=await handler.handle(message(config,'!resethalloween'),HALLOWEEN_2026_END_AT+1);
+    const reset=await handler.handle(message(config,'!resethalloween CONFIRM'),HALLOWEEN_2026_END_AT+2);
+    assert.match(resetRequest[0]?.message||'',/abgeschlossen/u);
+    assert.match(reset[0]?.message||'',/abgeschlossen/u);
+    assert.equal(game.pumpkins('viewer-before'),5,'finaler Kürbisstand bleibt unverändert');
+  }finally{store.close();database.close();}
 });
 
 test('Bot-Nachrichten und fremde Channels werden ignoriert', async () => {

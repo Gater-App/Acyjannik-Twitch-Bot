@@ -42,12 +42,14 @@ export class CommunityVault {
     const next=normalizeVaultSettings({...current,...raw});this.store.setConfig('community_vault_settings',next);return next;
   }
   observeActivity(message:ChatMessage,now=Date.now()):void {
-    if((!this.settings().enabled&&!this.store.config<Partial<{wheelEnabled:boolean}>>('arcade_settings',{}).wheelEnabled)
+    const trackSeasonal=this.store.activeEvent()?.active===true;
+    const trackExistingFeatures=this.settings().enabled||this.store.config<Partial<{wheelEnabled:boolean}>>('arcade_settings',{}).wheelEnabled===true;
+    if((!trackExistingFeatures&&!trackSeasonal)
       ||message.senderUserId===this.botUserId||message.senderUserId===message.broadcasterUserId||isRecognizedBot(message.senderLogin))return;
     const text=message.message.trim().replace(/\s+/gu,' ');
     if(!text||text.length>500)return;
     this.store.recordRecentChatActivity(message.senderUserId,cleanName(message.senderDisplayName),message.senderLogin.toLowerCase(),now);
-    if(text.startsWith('!')||Array.from(text).length<3||text.length>300)return;
+    if(!trackExistingFeatures||text.startsWith('!')||Array.from(text).length<3||text.length>300)return;
     const fingerprint=text.toLocaleLowerCase();if((this.seenText.get(fingerprint)||0)>now-30_000)return;
     this.seenText.set(fingerprint,now);this.activeViewers.set(message.senderUserId,{at:now,name:cleanName(message.senderDisplayName)});
     for(const [key,v] of this.activeViewers)if(v.at<now-5*60_000)this.activeViewers.delete(key);
@@ -186,4 +188,4 @@ function countText(count:number,singular:string,plural:string):string{return `${
 function generateCode():string {const digits=Array.from({length:10},(_,i)=>String(i));for(let i=digits.length-1;i>0;i--){const j=randomInt(i+1);[digits[i],digits[j]]=[digits[j]!,digits[i]!];}return digits.slice(0,3).join('');}
 function cleanName(name:string):string{return name.replace(/[^\p{L}\p{N}_-]/gu,'').slice(0,32)||'Zuschauer';}
 const KNOWN_BOT_LOGINS=new Set(['nightbot','streamelements','streamlabs','moobot','fossabot','wizebot','commanderroot','sery_bot','serybot']);
-function isRecognizedBot(login:string):boolean{return KNOWN_BOT_LOGINS.has(login.trim().toLowerCase());}
+function isRecognizedBot(login:string):boolean{const normalized=login.trim().toLowerCase();return normalized.endsWith('bot')||KNOWN_BOT_LOGINS.has(normalized);}

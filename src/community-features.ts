@@ -1,7 +1,7 @@
 import { createHash, randomInt, randomUUID } from 'node:crypto';
 import type { AppConfig, ChatMessage, CommandReply } from './types.js';
 import { clampChatMessage } from './chat.js';
-import { FeatureStore, type CustomCommand } from './feature-store.js';
+import { CHRISTMAS_2026_START_AT, HALLOWEEN_2026_END_AT, FeatureStore, type CustomCommand, type SeasonalLossTransfer } from './feature-store.js';
 import { QuestPollFeatures } from './quest-poll.js';
 import { ConversationSpark } from './conversation-spark.js';
 import { MiniGames } from './mini-games.js';
@@ -20,6 +20,7 @@ import type { HelpAvailability } from './help.js';
 import { chooseEightBallAnswer, DEFAULT_EIGHT_BALL_SETTINGS, EIGHT_BALL_ANSWERS } from './eight-ball-answers.js';
 import { formatPollAnnouncement } from './poll-announcement.js';
 import { configuredDiscordInvite } from './discord-invite.js';
+import { formatSeasonalLoss } from './seasonal-loss.js';
 
 type UserLookup = (login: string) => Promise<{ id: string; login: string; displayName: string } | undefined>;
 type RandomInclusive = (min: number, max: number) => number;
@@ -145,6 +146,24 @@ export class CommunityFeatures {
   }
 
   syncLegacyHalloween(now = Date.now()): void { this.store.syncLegacyHalloween(now); }
+
+  seasonalEventResults(){return this.store.seasonalEventResults();}
+  setSeasonalEventActive(eventId:string,active:boolean,now:number){return this.store.setEventActive(eventId,active,now);}
+  halloween2026Closed(now:number){return now>=HALLOWEEN_2026_END_AT||Boolean(this.store.seasonalEventResult('halloween',2026));}
+  claimSeasonalResultMessages(now:number,liveConfirmed:boolean){return this.store.claimSeasonalResultMessages(now,liveConfirmed);}
+  finishSeasonalResultDelivery(eventId:string,eventYear:number,accepted:boolean,now=Date.now(),error=''){return this.store.finishSeasonalResultDelivery(eventId,eventYear,accepted,now,error);}
+
+  playHalloweenOutcome(userId:string,displayName:string,eventId:string,delta:number,now:number,positiveMessage:(points:number)=>string,replyParentMessageId?:string) {
+    let lossVariant=0,variantChosen=false,rendered='';
+    const result=this.store.playEvent('halloween',userId,displayName,delta,now,{
+      eventId,category:'halloween',...(replyParentMessageId?{replyParentMessageId}:{}),excludedUserIds:[this.config.botUserId,this.config.broadcasterUserId],
+      format:(points,transfer)=>{
+        if(transfer){if(!variantChosen){lossVariant=this.random(0,1);variantChosen=true;}rendered=formatSeasonalLoss('halloween',transfer,lossVariant);return rendered;}
+        rendered=positiveMessage(points);return rendered;
+      },
+    });
+    return result.ok?{...result,message:rendered}:result;
+  }
 
   recordHauntedHouseContribution(eventId:string,userId:string,now=Date.now()):void { this.hauntedHouse.recordAcceptedPlay(eventId,userId,now); }
 
@@ -327,24 +346,39 @@ export class CommunityFeatures {
     const cooldown = this.store.useCooldown(`event:${event.id}`, message.senderUserId, now, event.cooldownMs);
     if (cooldown > 0) return `⏳ ${name}: Warte noch ${Math.ceil(cooldown / 60_000)} Min.`;
     const outcomeKey = weightedChoice(event.weights, this.random) || (event.id === 'easter' ? 'GOLDEN_PUMPKIN' : 'TREAT');
-    const delta = outcomePoints(outcomeKey, this.random);
+    const delta = outcomePoints(event.id, outcomeKey, this.random);
     const defaultText = outcomeKey === 'EMPTY_HOUSE' ? `${event.emoji} {user} findet nichts.`
       : `${event.emoji} {user} sammelt {points} {currency}.`;
     const template = event.texts[outcomeKey] || event.texts.default || defaultText;
-    const format=(points:number)=>template.replace(/\{(user|points|currency|total|event)\}/gu, (_all, key: string) => ({
+    let lossVariant=0,variantChosen=false;
+    const format=(points:number,transfer?:SeasonalLossTransfer)=>{
+      if(transfer){if(!variantChosen){lossVariant=this.random(0,1);variantChosen=true;}return formatSeasonalLoss(event.id,transfer,lossVariant);}
+      return template.replace(/\{(user|points|currency|total|event)\}/gu, (_all, key: string) => ({
       user: name, points: String(delta), currency: event.currency, total: String(points), event: event.name,
-    })[key] || '');
+      })[key] || '');
+    };
     const outcome = this.store.playEvent(event.id, message.senderUserId, name, delta, now,
-      {eventId:message.eventId,...(message.messageId?{replyParentMessageId:message.messageId}:{}),format});
+      {eventId:message.eventId,...(message.messageId?{replyParentMessageId:message.messageId}:{}),excludedUserIds:[this.config.botUserId,this.config.broadcasterUserId],format});
     if (!outcome.ok&&outcome.reason==='duplicate')return undefined;
     if (!outcome.ok) return outcome.reason === 'inactive' ? '✨ Das Event ist gerade nicht aktiv.' : `⏳ Bitte noch ${Math.ceil((outcome.remainingMs || 0) / 60_000)} Min. warten.`;
-    return {message:format(outcome.points),deliveryId:outcome.deliveryId||message.eventId};
+    return {message:format(outcome.points,outcome.transfer),deliveryId:outcome.deliveryId||message.eventId};
   }
 
   private refreshScheduledEvents(now: number): void {
+    // Legacy Halloween state is reconciled before the cutoff is finalized.
+    // The store freezes that mirror once a result exists and cannot reopen a passed boundary.
+    this.store.syncLegacyHalloween(now);
+    const halloween=this.store.event('halloween');
+    if(halloween&&now>=HALLOWEEN_2026_END_AT&&((halloween.startAt??0)<=HALLOWEEN_2026_END_AT)){
+      this.store.finalizeHalloween2026(now,[this.config.botUserId,this.config.broadcasterUserId]);
+    }
     const active = this.store.activeEvent();
-    if (active?.endAt && active.endAt <= now) this.store.setEventActive(active.id, false, now);
-    const scheduled = this.store.events().find((event) => !event.active && event.startAt !== null && event.startAt <= now && (!event.endAt || event.endAt > now));
+    if (active && ((active.startAt!==null&&active.startAt>now)||(active.endAt!==null&&active.endAt<=now)
+      ||(active.id==='christmas'&&now<CHRISTMAS_2026_START_AT)||(active.id==='halloween'&&now>=HALLOWEEN_2026_END_AT&&(active.startAt??0)<=HALLOWEEN_2026_END_AT))) this.store.setEventActive(active.id, false, now);
+    const scheduled = this.store.events().find((event) => {
+      const start=event.id==='christmas'?Math.max(event.startAt??0,CHRISTMAS_2026_START_AT):event.startAt;
+      return !event.active&&start!==null&&start<=now&&(!event.endAt||event.endAt>now);
+    });
     const current = this.store.activeEvent();
     if (scheduled && !current) this.store.setEventActive(scheduled.id, true, now);
   }
@@ -614,7 +648,8 @@ function weightedChoice(weights: Record<string, number>, random: (min: number, m
   return entries.at(-1)?.[0];
 }
 
-function outcomePoints(outcome: string, random: (min: number, max: number) => number): number {
+function outcomePoints(eventId: string, outcome: string, random: (min: number, max: number) => number): number {
+  if (outcome === 'LOSS') return eventId === 'christmas' || eventId === 'easter' ? -random(3, 8) : 0;
   const ranges: Record<string, [number, number]> = {
     TREAT: [3, 15], GIFT: [3, 15], EGG: [3, 15], TRICK: [0, 0], GHOST: [0, 0],
     JACKPOT: [20, 40], WITCH: [8, 20], GOLDEN_PUMPKIN: [25, 50], GOLDEN_EGG: [25, 50], EMPTY_HOUSE: [0, 0],

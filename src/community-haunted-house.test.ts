@@ -36,7 +36,7 @@ test('Haunted House counts accepted event IDs once, unlocks rooms and persists a
 test('Haunted House akzeptiert keine Beiträge außerhalb der konfigurierten Saison und startet im Folgejahr neu',()=>{
   const store=new FeatureStore(':memory:'),house=new CommunityHauntedHouse(store),now=Date.UTC(2026,9,31,18),start=now+60_000,end=now+120_000;
   try{
-    activate(store,now,start,end);
+    activate(store,start,start,end);
     assert.equal(house.recordAcceptedPlay('early','viewer-1',now),undefined);
     assert.equal(house.recordAcceptedPlay('late','viewer-1',end),undefined);
     assert.equal(house.snapshot(undefined,now).progress,0);

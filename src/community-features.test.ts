@@ -185,22 +185,22 @@ test('Community-Chat gibt Tresorhinweise zurück und bestätigt die tatsächlich
 
 test('Events wechseln exklusiv, werden bei Ende archiviert und können wiederholt beendet werden', () => {
   const f = fixture(); const store = new FeatureStore(f.file);
-  assert.equal(store.setEventActive('christmas', true, 10_000), true);
-  assert.equal(store.setEventActive('easter', true, 10_001), false);
-  assert.equal(store.setEventActive('christmas', false, 10_002), true);
-  const archived = store.event('christmas');
+  assert.equal(store.setEventActive('easter', true, 10_000), true);
+  assert.equal(store.setEventActive('halloween', true, 10_001), false);
+  assert.equal(store.setEventActive('easter', false, 10_002), true);
+  const archived = store.event('easter');
   assert.equal(archived?.active, false);
   assert.equal(archived?.archivedAt, 10_002);
-  assert.equal(store.setEventActive('christmas', false, 10_999), true);
-  assert.equal(store.event('christmas')?.archivedAt, 10_002);
-  const scheduled = store.event('christmas')!;
+  assert.equal(store.setEventActive('easter', false, 10_999), true);
+  assert.equal(store.event('easter')?.archivedAt, 10_002);
+  const scheduled = store.event('easter')!;
   store.saveEvent({ ...scheduled, active: false, startAt: 20_000, endAt: 30_000 });
   const community = new CommunityFeatures(store, { ...loadConfig({ testMode: true }), databasePath: f.file });
   community.tick(20_000);
-  assert.equal(store.activeEvent()?.id, 'christmas');
+  assert.equal(store.activeEvent()?.id, 'easter');
   community.tick(30_000);
   assert.equal(store.activeEvent(), undefined);
-  assert.equal(store.event('christmas')?.archivedAt, 30_000);
+  assert.equal(store.event('easter')?.archivedAt, 30_000);
   store.close(); f.close();
 });
 
