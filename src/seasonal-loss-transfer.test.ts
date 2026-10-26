@@ -3,7 +3,7 @@ import test from 'node:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { FeatureStore } from './feature-store.js';
+import { CHRISTMAS_2026_START_AT, FeatureStore } from './feature-store.js';
 import { formatSeasonalLoss } from './seasonal-loss.js';
 import { Database } from './database.js';
 import { GameService } from './game.js';
@@ -16,7 +16,7 @@ const delivery=(eventId:string,excludedUserIds:string[]=[])=>({eventId,excludedU
 function setup(eventId='halloween') {
   const store=new FeatureStore(':memory:');
   store.miniGameTransaction(db=>db.prepare('UPDATE seasonal_events SET active=0').run());
-  store.setEventActive(eventId,true,1_000);
+  store.setEventActive(eventId,true,eventId==='christmas'?CHRISTMAS_2026_START_AT:1_000);
   return store;
 }
 function putScore(store:FeatureStore,eventId:string,userId:string,name:string,points:number,now=1_000) {
@@ -107,10 +107,10 @@ test('Fehler bei der Empfängerbuchung rollt Abzug, Audit und Chat-Outbox vollst
 
 test('gemeinsame Übertragung verwendet pro Saison nur deren eigene Eventwährung',()=>{
   const store=setup('christmas');try{
-    store.setEventActive('christmas',true,1_000);putScore(store,'christmas','loser','Max',8);activity(store,'receiver','Lisa','lisa');
-    const christmas=store.playEvent('christmas','loser','Max',-3,10_000,delivery('loss-christmas'));
-    store.setEventActive('christmas',false,10_001);store.setEventActive('easter',true,10_002);putScore(store,'easter','loser','Max',6);
-    const easter=store.playEvent('easter','loser','Max',-2,10_003,delivery('loss-easter'));
+    const now=CHRISTMAS_2026_START_AT+10_000;putScore(store,'christmas','loser','Max',8);activity(store,'receiver','Lisa','lisa',now);
+    const christmas=store.playEvent('christmas','loser','Max',-3,now,delivery('loss-christmas'));
+    store.setEventActive('christmas',false,now+1);store.setEventActive('easter',true,now+2);putScore(store,'easter','loser','Max',6);
+    const easter=store.playEvent('easter','loser','Max',-2,now+3,delivery('loss-easter'));
     assert.equal(christmas.ok,true);assert.equal(easter.ok,true);if(!christmas.ok||!easter.ok)return;
     assert.equal(christmas.transfer?.currency,'Geschenke');assert.equal(easter.transfer?.currency,'Ostereier');
     assert.equal(store.score('christmas','receiver'),3);assert.equal(store.score('easter','receiver'),2);
@@ -156,8 +156,9 @@ test('!gift and !egghunt can transfer bounded losses through the shared atomic s
       putScore(store,eventId,'loser','Max',4);
       activity(store,'receiver','Lisa','lisa');
       const community=new CommunityFeatures(store,config,async()=>undefined,(_min,max)=>max);
-      const message:ChatMessage={eventId:`${eventId}-loss-chat`,broadcasterUserId:config.broadcasterUserId,senderUserId:'loser',senderLogin:'max',senderDisplayName:'Max',message:`!${command}`,sentAt:10_000};
-      const replies=await community.handle(message,command,[],10_000);
+      const now=eventId==='christmas'?CHRISTMAS_2026_START_AT+10_000:10_000;if(eventId==='christmas')activity(store,'receiver','Lisa','lisa',now);
+      const message:ChatMessage={eventId:`${eventId}-loss-chat`,broadcasterUserId:config.broadcasterUserId,senderUserId:'loser',senderLogin:'max',senderDisplayName:'Max',message:`!${command}`,sentAt:now};
+      const replies=await community.handle(message,command,[],now);
       assert.equal(replies.length,1);
       assert.match(replies[0]?.message||'',new RegExp(`4 ${expectedCurrency}`,'u'));
       assert.match(replies[0]?.message||'',/@Max/u);assert.match(replies[0]?.message||'',/@Lisa/u);
@@ -165,8 +166,8 @@ test('!gift and !egghunt can transfer bounded losses through the shared atomic s
       assert.equal(store.score(eventId,'receiver'),4);
       const audit=store.miniGameQuery(db=>db.prepare('SELECT event_type,amount,status FROM seasonal_loss_transfers WHERE event_id=?').get(`${eventId}-loss-chat`));
       assert.deepEqual(audit,{event_type:eventId,amount:4,status:'transferred'});
-      assert.equal(community.claimChatDeliveryMessages(10_001)[0]?.message,replies[0]?.message);
-      assert.deepEqual(await community.handle(message,command,[],10_002),[],'Wiederholte Chat-Event-ID zahlt und antwortet nicht erneut.');
+      assert.equal(community.claimChatDeliveryMessages(now+1)[0]?.message,replies[0]?.message);
+      assert.deepEqual(await community.handle(message,command,[],now+2),[],'Wiederholte Chat-Event-ID zahlt und antwortet nicht erneut.');
       assert.equal(store.score(eventId,'receiver'),4);
     }finally{store.close();}
   }
@@ -190,14 +191,15 @@ test('migration v48 adds a loss to custom weights while preserving neutral share
     store.miniGameTransaction(db=>{
       db.prepare("UPDATE seasonal_events SET weights_json=? WHERE id='christmas'").run('{"GIFT":32,"JACKPOT":8,"EMPTY_HOUSE":60}');
       db.prepare("UPDATE seasonal_events SET weights_json=? WHERE id='easter'").run('{"EGG":30,"GOLDEN_EGG":2,"LOSS":8,"EMPTY_HOUSE":60}');
-      db.prepare('DELETE FROM schema_migrations WHERE version=48').run();
+      db.prepare('DELETE FROM schema_migrations WHERE version>=48').run();
+      db.exec('DROP TABLE IF EXISTS seasonal_event_results');
     });
   }finally{store.close();}
   store=new FeatureStore(file);
   try{
     assert.deepEqual(store.event('christmas')!.weights,{GIFT:24,JACKPOT:6,EMPTY_HOUSE:60,LOSS:10});
     assert.deepEqual(store.event('easter')!.weights,{EGG:30,GOLDEN_EGG:2,LOSS:8,EMPTY_HOUSE:60});
-    assert.equal(store.miniGameQuery(db=>(db.prepare('SELECT MAX(version) version FROM schema_migrations').get() as {version:number}).version),48);
+    assert.equal(store.miniGameQuery(db=>(db.prepare('SELECT MAX(version) version FROM schema_migrations').get() as {version:number}).version),49);
     assert.equal(store.miniGameQuery(db=>(db.prepare('PRAGMA integrity_check').get() as {integrity_check:string}).integrity_check),'ok');
     assert.ok(fs.readdirSync(path.join(directory,'backups')).some(name=>name.includes('before-feature-migration-v48-')));
   }finally{store.close();fs.rmSync(directory,{recursive:true,force:true});}
@@ -222,7 +224,7 @@ test('Migration v47 erstellt ein eindeutiges Transfer-Audit und ist nach Neustar
     const first=store.miniGameQuery(db=>({version:(db.prepare('SELECT MAX(version) version FROM schema_migrations').get() as {version:number}).version,
       tables:db.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE type='table' AND name='seasonal_loss_transfers'").get() as {n:number},
       backup:fs.readdirSync(path.join(directory,'backups')).some(name=>name.includes('before-feature-migration-v47-'))}));
-    assert.equal(first.version,48);assert.equal(first.tables.n,1);assert.equal(first.backup,true);
+    assert.equal(first.version,49);assert.equal(first.tables.n,1);assert.equal(first.backup,true);
     store.miniGameTransaction(db=>db.prepare(`INSERT INTO seasonal_loss_transfers(event_id,event_type,loser_user_id,loser_name,currency,amount,status,created_at)
       VALUES('migration-audit','halloween','viewer','Viewer','Kürbisse',0,'no_balance',1)`).run());
   }finally{store.close();}

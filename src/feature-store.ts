@@ -6,6 +6,9 @@ import type { Player } from './types.js';
 import { findActiveCommunityEventConflict } from './community-event-conflicts.js';
 import { DEFAULT_8BALL_ANSWERS, LEGACY_DEFAULT_8BALL_ANSWERS } from './eight-ball-answers.js';
 
+export const HALLOWEEN_2026_END_AT = Date.parse('2026-11-01T00:00:00+01:00');
+export const CHRISTMAS_2026_START_AT = Date.parse('2026-12-01T00:00:00+01:00');
+
 export interface SeasonalEvent {
   id: string;
   name: string;
@@ -32,6 +35,21 @@ export interface SeasonalLossTransfer {
   recipientName?: string;
   currency: string;
   amount: number;
+}
+
+export interface SeasonalEventResult {
+  eventId: string;
+  eventYear: number;
+  endAt: number;
+  completedAt: number;
+  winnerUserId: string | null;
+  winnerName: string | null;
+  winnerPoints: number;
+  leaderboard: Array<{ rank: number; displayName: string; points: number; updatedAt: number }>;
+  announcementStatus: 'pending' | 'sending' | 'sent' | 'failed';
+  attempts: number;
+  announcedAt: number | null;
+  lastError: string | null;
 }
 
 export interface CustomCommand {
@@ -140,6 +158,12 @@ interface EventRow {
   id: string; name: string; emoji: string; active: number; start_at: number | null; end_at: number | null;
   timezone: string; currency: string; cooldown_ms: number; command_name: string; archived_at: number | null;
   weights_json: string; texts_json: string;
+}
+
+interface SeasonalResultRow {
+  event_id:string; event_year:number; end_at:number; completed_at:number; winner_user_id:string|null; winner_name:string|null;
+  winner_points:number; leaderboard_json:string; announcement_status:'pending'|'sending'|'sent'|'failed'; attempts:number;
+  available_at:number; lease_until:number; announced_at:number|null; last_error:string|null;
 }
 
 interface CommandRow {
@@ -1209,6 +1233,28 @@ export class FeatureStore {
         const update=this.db.prepare('UPDATE seasonal_events SET weights_json=? WHERE id=?');
         for(const row of rows) update.run(JSON.stringify(withSeasonalLossOutcome(parseJsonObject<number>(row.weights_json))),row.id);
         this.db.exec('INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (48, unixepoch()*1000)');
+      })();
+    }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 49) {
+      if (currentVersion > 0) this.backupBeforeMigration(49);
+      this.db.transaction(() => {
+        this.db.exec(`CREATE TABLE IF NOT EXISTS seasonal_event_results (
+          event_id TEXT NOT NULL REFERENCES seasonal_events(id), event_year INTEGER NOT NULL CHECK(event_year BETWEEN 2000 AND 2200),
+          end_at INTEGER NOT NULL, completed_at INTEGER NOT NULL, winner_user_id TEXT, winner_name TEXT,
+          winner_points INTEGER NOT NULL DEFAULT 0 CHECK(winner_points>=0), leaderboard_json TEXT NOT NULL,
+          announcement_status TEXT NOT NULL DEFAULT 'pending' CHECK(announcement_status IN ('pending','sending','sent','failed')),
+          attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts>=0), available_at INTEGER NOT NULL DEFAULT 0,
+          lease_until INTEGER NOT NULL DEFAULT 0, announced_at INTEGER, last_error TEXT,
+          PRIMARY KEY(event_id,event_year), CHECK((winner_user_id IS NULL AND winner_name IS NULL) OR (winner_user_id IS NOT NULL AND winner_name IS NOT NULL))
+        );
+        CREATE INDEX IF NOT EXISTS seasonal_event_results_delivery ON seasonal_event_results(announcement_status,available_at,lease_until);
+        INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (49, unixepoch()*1000);`);
+        // 2026 transitions are calendar boundaries in Europe/Berlin (CET, UTC+1).
+        this.db.prepare("UPDATE seasonal_events SET end_at=?,timezone='Europe/Berlin' WHERE id='halloween'")
+          .run(HALLOWEEN_2026_END_AT);
+        this.db.prepare("UPDATE seasonal_events SET start_at=?,timezone='Europe/Berlin' WHERE id='christmas'")
+          .run(CHRISTMAS_2026_START_AT);
       })();
     }
   }
@@ -2310,6 +2356,8 @@ export class FeatureStore {
       throw new Error('Ungültige Event-Texte.');
     }
     try { new Intl.DateTimeFormat('de-DE', { timeZone: event.timezone }); } catch { throw new Error('Ungültige Event-Zeitzone.'); }
+    if (event.id === 'halloween' && this.seasonalEventResult('halloween', 2026)
+      && (event.startAt===null||event.startAt<=HALLOWEEN_2026_END_AT)) throw new Error('Halloween 2026 ist bereits abgeschlossen und kann nicht geändert werden.');
     this.db.prepare(`INSERT INTO seasonal_events(id,name,emoji,active,start_at,end_at,timezone,currency,cooldown_ms,command_name,weights_json,texts_json,archived_at)
       VALUES(@id,@name,@emoji,@active,@startAt,@endAt,@timezone,@currency,@cooldownMs,@command,@weights,@texts,@archivedAt)
       ON CONFLICT(id) DO UPDATE SET name=excluded.name,emoji=excluded.emoji,start_at=excluded.start_at,end_at=excluded.end_at,
@@ -2325,22 +2373,28 @@ export class FeatureStore {
 
   syncLegacyHalloween(now = Date.now()): void {
     this.db.transaction(() => {
+      const halloween = this.event('halloween');
+      const finalized = Boolean(this.db.prepare("SELECT 1 FROM seasonal_event_results WHERE event_id='halloween' AND event_year=2026").get());
       const state = this.db.prepare('SELECT active FROM game_state WHERE id=1').get() as { active: number } | undefined;
       if (!state) return;
-      if (state.active) {
+      const nextSeason=halloween?.startAt!==null&&halloween?.startAt!==undefined&&halloween.startAt>HALLOWEEN_2026_END_AT;
+      if (!finalized && now<HALLOWEEN_2026_END_AT && state.active || finalized && nextSeason && state.active) {
         const current = this.activeEvent();
         if (!current || current.id === 'halloween') {
           this.db.prepare("UPDATE seasonal_events SET active=CASE WHEN id='halloween' THEN 1 ELSE 0 END WHERE active=1 OR id='halloween'").run();
         }
       } else {
         this.db.prepare("UPDATE seasonal_events SET active=0,archived_at=COALESCE(archived_at,?) WHERE id='halloween'").run(now);
+        this.db.prepare('UPDATE game_state SET active=0,changed_at=? WHERE id=1').run(now);
       }
-      this.db.prepare(`INSERT INTO seasonal_scores(event_id,user_id,display_name,points,updated_at)
-        SELECT 'halloween',user_id,display_name,pumpkins,updated_at FROM players WHERE 1
-        ON CONFLICT(event_id,user_id) DO UPDATE SET display_name=excluded.display_name,points=excluded.points,updated_at=excluded.updated_at`).run();
-      this.db.prepare(`INSERT INTO seasonal_cooldowns(event_id,user_id,last_played_at)
-        SELECT 'halloween',user_id,last_played_at FROM cooldowns WHERE 1
-        ON CONFLICT(event_id,user_id) DO UPDATE SET last_played_at=excluded.last_played_at`).run();
+      if (!finalized || nextSeason) {
+        this.db.prepare(`INSERT INTO seasonal_scores(event_id,user_id,display_name,points,updated_at)
+          SELECT 'halloween',user_id,display_name,pumpkins,updated_at FROM players WHERE 1
+          ON CONFLICT(event_id,user_id) DO UPDATE SET display_name=excluded.display_name,points=excluded.points,updated_at=excluded.updated_at`).run();
+        this.db.prepare(`INSERT INTO seasonal_cooldowns(event_id,user_id,last_played_at)
+          SELECT 'halloween',user_id,last_played_at FROM cooldowns WHERE 1
+          ON CONFLICT(event_id,user_id) DO UPDATE SET last_played_at=excluded.last_played_at`).run();
+      }
     })();
   }
 
@@ -2348,8 +2402,13 @@ export class FeatureStore {
     return this.db.transaction(() => {
       const event = this.event(id);
       if (!event) return false;
+      if(active&&((id==='halloween'&&now>=HALLOWEEN_2026_END_AT&&!((event.startAt??0)>HALLOWEEN_2026_END_AT))
+        ||(id==='christmas'&&now<CHRISTMAS_2026_START_AT)))return false;
       if (event.active === active) return true;
       if (active) {
+        if ((event.startAt !== null && now < event.startAt) || (event.endAt !== null && now >= event.endAt)
+          || (id==='christmas'&&now<CHRISTMAS_2026_START_AT)
+          || (id === 'halloween' && this.seasonalEventResult('halloween', 2026) && !((event.startAt??0)>HALLOWEEN_2026_END_AT))) return false;
         const current = this.activeEvent();
         if (current && current.id !== id) return false;
       }
@@ -2367,7 +2426,11 @@ export class FeatureStore {
       if (delivery && this.db.prepare('SELECT 1 FROM chat_delivery_outbox WHERE event_id=?').get(delivery.eventId)) return { ok: false as const, reason: 'duplicate' as const };
       const event = this.event(id);
       if (!event?.active) return { ok: false as const, reason: 'inactive' as const };
-      if ((event.startAt && now < event.startAt) || (event.endAt && now >= event.endAt)) return { ok: false as const, reason: 'inactive' as const };
+      const nextHalloweenSeason=id==='halloween'&&(event.startAt??0)>HALLOWEEN_2026_END_AT&&now>=event.startAt!;
+      if ((event.startAt !== null && now < event.startAt) || (event.endAt !== null && now >= event.endAt)
+        || (id==='halloween'&&now>=HALLOWEEN_2026_END_AT&&!nextHalloweenSeason)
+        || (id === 'halloween' && this.seasonalEventResult('halloween', 2026) && !nextHalloweenSeason)
+        || (id==='christmas'&&now<CHRISTMAS_2026_START_AT)) return { ok: false as const, reason: 'inactive' as const };
       const cooldown = this.db.prepare('SELECT last_played_at FROM seasonal_cooldowns WHERE event_id=? AND user_id=?').get(id, userId) as { last_played_at: number } | undefined;
       if (cooldown && now - cooldown.last_played_at < event.cooldownMs) return { ok: false as const, reason: 'cooldown' as const, remainingMs: event.cooldownMs - (now - cooldown.last_played_at) };
       const row = this.db.prepare('SELECT points FROM seasonal_scores WHERE event_id=? AND user_id=?').get(id, userId) as { points: number } | undefined;
@@ -2480,9 +2543,81 @@ export class FeatureStore {
   }
 
   eventTop(id: string, limit = 10): Player[] {
-    const rows = this.db.prepare('SELECT user_id,display_name,points,updated_at FROM seasonal_scores WHERE event_id=? ORDER BY points DESC,updated_at ASC LIMIT ?').all(id, limit) as
+    const rows = this.db.prepare('SELECT user_id,display_name,points,updated_at FROM seasonal_scores WHERE event_id=? ORDER BY points DESC,updated_at ASC,user_id COLLATE BINARY ASC LIMIT ?').all(id, limit) as
       Array<{ user_id: string; display_name: string; points: number; updated_at: number }>;
     return rows.map((row) => ({ userId: row.user_id, displayName: row.display_name, pumpkins: row.points, updatedAt: row.updated_at }));
+  }
+
+  finalizeHalloween2026(now:number, excludedUserIds:string[], excludedLogins:string[]=[]):SeasonalEventResult|undefined {
+    const event=this.event('halloween');
+    if(!event||now<HALLOWEEN_2026_END_AT)return undefined;
+    return this.db.transaction(()=>{
+      const existing=this.db.prepare("SELECT * FROM seasonal_event_results WHERE event_id='halloween' AND event_year=2026").get() as SeasonalResultRow|undefined;
+      if(existing)return this.toSeasonalResult(existing);
+      const ids=new Set(excludedUserIds.filter(Boolean));
+      const logins=new Set([...excludedLogins,'nightbot','streamelements','streamlabs','moobot','fossabot','wizebot','commanderroot','sery_bot','serybot'].map(value=>value.toLowerCase()));
+      const rows=this.db.prepare(`SELECT s.user_id,s.display_name,s.points,s.updated_at,COALESCE(a.login,'') login
+        FROM seasonal_scores s LEFT JOIN recent_chat_activity a ON a.user_id=s.user_id
+        WHERE s.event_id='halloween' ORDER BY s.points DESC,s.user_id COLLATE BINARY ASC`).all() as Array<{user_id:string;display_name:string;points:number;updated_at:number;login:string}>;
+      const eligible=rows.filter(row=>!ids.has(row.user_id)&&!logins.has(row.login.toLowerCase())&&!row.login.toLowerCase().endsWith('bot'));
+      const leaderboard=eligible.map((row,index)=>({rank:index+1,displayName:row.display_name,points:row.points,updatedAt:row.updated_at}));
+      const winner=eligible.find(row=>row.points>0);
+      const endAt=HALLOWEEN_2026_END_AT,completedAt=Math.max(endAt,now),winnerUserId=winner?.user_id??null,winnerName=winner?.display_name??null,winnerPoints=winner?.points??0;
+      this.db.prepare(`INSERT INTO seasonal_event_results(event_id,event_year,end_at,completed_at,winner_user_id,winner_name,winner_points,leaderboard_json,announcement_status,available_at)
+        VALUES('halloween',2026,?,?,?,?,?,?,'pending',?)`).run(endAt,completedAt,winnerUserId,winnerName,winnerPoints,JSON.stringify(leaderboard),completedAt);
+      this.db.prepare("UPDATE seasonal_events SET active=0,archived_at=COALESCE(archived_at,?) WHERE id='halloween'").run(completedAt);
+      this.db.prepare('UPDATE game_state SET active=0,changed_at=? WHERE id=1').run(completedAt);
+      this.recordCommunityEvent('seasonal.event.finalized',{eventId:'halloween',eventYear:2026,winnerName,winnerPoints,participantCount:leaderboard.length},completedAt);
+      return this.toSeasonalResult(this.db.prepare("SELECT * FROM seasonal_event_results WHERE event_id='halloween' AND event_year=2026").get() as SeasonalResultRow);
+    })();
+  }
+
+  seasonalEventResult(eventId:string,eventYear:number):SeasonalEventResult|undefined {
+    const row=this.db.prepare('SELECT * FROM seasonal_event_results WHERE event_id=? AND event_year=?').get(eventId,eventYear) as SeasonalResultRow|undefined;
+    return row?this.toSeasonalResult(row):undefined;
+  }
+
+  seasonalEventResults(limit=20):SeasonalEventResult[] {
+    const rows=this.db.prepare('SELECT * FROM seasonal_event_results ORDER BY completed_at DESC LIMIT ?').all(Math.max(1,Math.min(100,limit))) as SeasonalResultRow[];
+    return rows.map(row=>this.toSeasonalResult(row));
+  }
+
+  claimSeasonalResultMessages(now:number,liveConfirmed:boolean,limit=10):Array<{id:string;eventYear:number;attempt:number;message:string}> {
+    if(!liveConfirmed)return [];
+    return this.db.transaction(()=>{
+      const rows=this.db.prepare("SELECT * FROM seasonal_event_results WHERE announcement_status='pending' AND available_at<=? OR announcement_status='sending' AND lease_until<=? ORDER BY completed_at LIMIT ?")
+        .all(now,now,Math.max(1,Math.min(25,limit))) as SeasonalResultRow[];
+      const output:Array<{id:string;eventYear:number;attempt:number;message:string}> = [];
+      const claim=this.db.prepare("UPDATE seasonal_event_results SET announcement_status='sending',attempts=attempts+1,lease_until=? WHERE event_id=? AND event_year=? AND ((announcement_status='pending' AND available_at<=?) OR (announcement_status='sending' AND lease_until<=?))");
+      for(const row of rows){
+        if(!claim.run(now+60_000,row.event_id,row.event_year,now,now).changes)continue;
+        const winner=row.winner_name?`Unser Kürbiskönig ist @${row.winner_name} mit ${row.winner_points.toLocaleString('de-DE')} Kürbissen! 👑🎃 Herzlichen Glückwunsch!`:'Es gab diesmal keinen Gewinner mit Kürbissen. Danke an alle fürs Mitmachen!';
+        output.push({id:row.event_id,eventYear:row.event_year,attempt:row.attempts+1,message:`🎃🏆 HALLOWEEN ${row.event_year} IST VORBEI! ${winner}`});
+      }
+      return output;
+    })();
+  }
+
+  finishSeasonalResultDelivery(eventId:string,eventYear:number,accepted:boolean,now:number,error=''):boolean {
+    return Boolean(this.db.transaction(()=>{
+      const row=this.db.prepare('SELECT attempts,announcement_status FROM seasonal_event_results WHERE event_id=? AND event_year=?').get(eventId,eventYear) as {attempts:number;announcement_status:string}|undefined;
+      if(!row||row.announcement_status!=='sending')return false;
+      if(accepted)return this.db.prepare("UPDATE seasonal_event_results SET announcement_status='sent',announced_at=?,lease_until=0,last_error=NULL WHERE event_id=? AND event_year=? AND announcement_status='sending'").run(now,eventId,eventYear).changes;
+      const exhausted=row.attempts>=8;
+      const backoff=Math.min(60*60_000,30_000*2**Math.max(0,row.attempts-1));
+      return this.db.prepare("UPDATE seasonal_event_results SET announcement_status=?,available_at=?,lease_until=0,last_error=? WHERE event_id=? AND event_year=? AND announcement_status='sending'")
+        .run(exhausted?'failed':'pending',now+backoff,error.slice(0,300),eventId,eventYear).changes;
+    })());
+  }
+
+  retrySeasonalResultDelivery(eventId:string,eventYear:number,now:number):boolean {
+    return Boolean(this.db.prepare("UPDATE seasonal_event_results SET announcement_status='pending',available_at=?,lease_until=0,last_error=NULL WHERE event_id=? AND event_year=? AND announcement_status='failed'").run(now,eventId,eventYear).changes);
+  }
+
+  private toSeasonalResult(row:SeasonalResultRow):SeasonalEventResult {
+    let leaderboard:SeasonalEventResult['leaderboard']=[];
+    try{const value=JSON.parse(row.leaderboard_json);if(Array.isArray(value))leaderboard=value.filter((item):item is SeasonalEventResult['leaderboard'][number]=>item&&Number.isInteger(item.rank)&&typeof item.displayName==='string'&&Number.isInteger(item.points)&&Number.isSafeInteger(item.updatedAt));}catch{}
+    return {eventId:row.event_id,eventYear:row.event_year,endAt:row.end_at,completedAt:row.completed_at,winnerUserId:row.winner_user_id,winnerName:row.winner_name,winnerPoints:row.winner_points,leaderboard,announcementStatus:row.announcement_status,attempts:row.attempts,announcedAt:row.announced_at,lastError:row.last_error};
   }
 
   score(id: string, userId: string): number {
@@ -2501,6 +2636,13 @@ export class FeatureStore {
       if(prior)return {duplicate:true,eventId:prior.event_id,eventName:prior.event_name,currency:prior.currency,userId:prior.user_id,displayName:prior.display_name,amount:prior.amount,pointsBefore:prior.points_after-prior.amount,pointsAfter:prior.points_after};
       const event=this.db.prepare('SELECT id,name,currency FROM seasonal_events WHERE id=?').get(input.eventId) as {id:string;name:string;currency:string}|undefined;
       if(!event)throw new Error('Diese Saison-Währung ist nicht verfügbar.');
+      const schedule=this.event(event.id);
+      const nextHalloweenSeason=event.id==='halloween'&&(schedule?.startAt??0)>HALLOWEEN_2026_END_AT&&input.now>=schedule!.startAt!;
+      if((schedule?.startAt!==null&&schedule?.startAt!==undefined&&input.now<schedule.startAt)
+        ||(schedule?.endAt!==null&&schedule?.endAt!==undefined&&input.now>=schedule.endAt)
+        ||(event.id==='halloween'&&input.now>=HALLOWEEN_2026_END_AT&&!nextHalloweenSeason)
+        ||(event.id==='halloween'&&this.seasonalEventResult('halloween',2026)&&!nextHalloweenSeason)
+        ||(event.id==='christmas'&&input.now<CHRISTMAS_2026_START_AT))throw new Error('Dieses Saison-Event ist noch nicht gestartet oder bereits abgeschlossen.');
       const user=this.db.prepare(`SELECT display_name FROM (
         SELECT user_id,display_name FROM xp_users UNION ALL SELECT user_id,display_name FROM seasonal_scores UNION ALL SELECT user_id,display_name FROM players
       ) WHERE user_id=? LIMIT 1`).get(input.userId) as {display_name:string}|undefined;

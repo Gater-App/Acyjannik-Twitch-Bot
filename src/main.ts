@@ -249,6 +249,12 @@ async function runLiveMode(): Promise<void> {
           }).then(accepted=>features.finishChatDelivery(result.id,accepted,Date.now(),accepted?'':'Chatwarteschlange hat die Ergebnisnachricht nicht übernommen.'))
             .catch(()=>features.finishChatDelivery(result.id,false,Date.now(),'Twitch hat die Ergebnisnachricht nicht bestätigt.'));
         }
+        const liveConfirmed=lastKnownStreamLive===true&&Date.now()-streamStatusCheckedAt<45_000;
+        for(const result of community.claimSeasonalResultMessages(tickNow,liveConfirmed)){
+          void queue.enqueue(result.message,undefined,'season',{id:`seasonal-final:${result.id}:${result.eventYear}:${result.attempt}`,priority:95,expiresAt:Date.now()+15*60_000})
+            .then(accepted=>community.finishSeasonalResultDelivery(result.id,result.eventYear,accepted,Date.now(),accepted?'':'Chatwarteschlange hat die Gewinnernachricht nicht übernommen.'))
+            .catch(()=>community.finishSeasonalResultDelivery(result.id,result.eventYear,false,Date.now(),'Twitch hat die Gewinnernachricht nicht bestätigt.'));
+        }
         if (announcements.length) { lastSpecialAnnouncementAt = Date.now(); return; }
         const now = Date.now();
         const eventConflictBusy=Boolean(community.activeGameConflict());

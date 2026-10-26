@@ -1,7 +1,7 @@
 import { createHash, randomInt, randomUUID } from 'node:crypto';
 import type { AppConfig, ChatMessage, CommandReply } from './types.js';
 import { clampChatMessage } from './chat.js';
-import { FeatureStore, type CustomCommand, type SeasonalLossTransfer } from './feature-store.js';
+import { CHRISTMAS_2026_START_AT, HALLOWEEN_2026_END_AT, FeatureStore, type CustomCommand, type SeasonalLossTransfer } from './feature-store.js';
 import { QuestPollFeatures } from './quest-poll.js';
 import { ConversationSpark } from './conversation-spark.js';
 import { MiniGames } from './mini-games.js';
@@ -146,6 +146,12 @@ export class CommunityFeatures {
   }
 
   syncLegacyHalloween(now = Date.now()): void { this.store.syncLegacyHalloween(now); }
+
+  seasonalEventResults(){return this.store.seasonalEventResults();}
+  setSeasonalEventActive(eventId:string,active:boolean,now:number){return this.store.setEventActive(eventId,active,now);}
+  halloween2026Closed(now:number){return now>=HALLOWEEN_2026_END_AT||Boolean(this.store.seasonalEventResult('halloween',2026));}
+  claimSeasonalResultMessages(now:number,liveConfirmed:boolean){return this.store.claimSeasonalResultMessages(now,liveConfirmed);}
+  finishSeasonalResultDelivery(eventId:string,eventYear:number,accepted:boolean,now=Date.now(),error=''){return this.store.finishSeasonalResultDelivery(eventId,eventYear,accepted,now,error);}
 
   playHalloweenOutcome(userId:string,displayName:string,eventId:string,delta:number,now:number,positiveMessage:(points:number)=>string,replyParentMessageId?:string) {
     let lossVariant=0,variantChosen=false,rendered='';
@@ -359,9 +365,20 @@ export class CommunityFeatures {
   }
 
   private refreshScheduledEvents(now: number): void {
+    // Legacy Halloween state is reconciled before the cutoff is finalized.
+    // The store freezes that mirror once a result exists and cannot reopen a passed boundary.
+    this.store.syncLegacyHalloween(now);
+    const halloween=this.store.event('halloween');
+    if(halloween&&now>=HALLOWEEN_2026_END_AT&&((halloween.startAt??0)<=HALLOWEEN_2026_END_AT)){
+      this.store.finalizeHalloween2026(now,[this.config.botUserId,this.config.broadcasterUserId]);
+    }
     const active = this.store.activeEvent();
-    if (active?.endAt && active.endAt <= now) this.store.setEventActive(active.id, false, now);
-    const scheduled = this.store.events().find((event) => !event.active && event.startAt !== null && event.startAt <= now && (!event.endAt || event.endAt > now));
+    if (active && ((active.startAt!==null&&active.startAt>now)||(active.endAt!==null&&active.endAt<=now)
+      ||(active.id==='christmas'&&now<CHRISTMAS_2026_START_AT)||(active.id==='halloween'&&now>=HALLOWEEN_2026_END_AT&&(active.startAt??0)<=HALLOWEEN_2026_END_AT))) this.store.setEventActive(active.id, false, now);
+    const scheduled = this.store.events().find((event) => {
+      const start=event.id==='christmas'?Math.max(event.startAt??0,CHRISTMAS_2026_START_AT):event.startAt;
+      return !event.active&&start!==null&&start<=now&&(!event.endAt||event.endAt>now);
+    });
     const current = this.store.activeEvent();
     if (scheduled && !current) this.store.setEventActive(scheduled.id, true, now);
   }
