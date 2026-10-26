@@ -340,7 +340,7 @@ export class CommunityFeatures {
     const cooldown = this.store.useCooldown(`event:${event.id}`, message.senderUserId, now, event.cooldownMs);
     if (cooldown > 0) return `⏳ ${name}: Warte noch ${Math.ceil(cooldown / 60_000)} Min.`;
     const outcomeKey = weightedChoice(event.weights, this.random) || (event.id === 'easter' ? 'GOLDEN_PUMPKIN' : 'TREAT');
-    const delta = outcomePoints(outcomeKey, this.random);
+    const delta = outcomePoints(event.id, outcomeKey, this.random);
     const defaultText = outcomeKey === 'EMPTY_HOUSE' ? `${event.emoji} {user} findet nichts.`
       : `${event.emoji} {user} sammelt {points} {currency}.`;
     const template = event.texts[outcomeKey] || event.texts.default || defaultText;
@@ -631,7 +631,8 @@ function weightedChoice(weights: Record<string, number>, random: (min: number, m
   return entries.at(-1)?.[0];
 }
 
-function outcomePoints(outcome: string, random: (min: number, max: number) => number): number {
+function outcomePoints(eventId: string, outcome: string, random: (min: number, max: number) => number): number {
+  if (outcome === 'LOSS') return eventId === 'christmas' || eventId === 'easter' ? -random(3, 8) : 0;
   const ranges: Record<string, [number, number]> = {
     TREAT: [3, 15], GIFT: [3, 15], EGG: [3, 15], TRICK: [0, 0], GHOST: [0, 0],
     JACKPOT: [20, 40], WITCH: [8, 20], GOLDEN_PUMPKIN: [25, 50], GOLDEN_EGG: [25, 50], EMPTY_HOUSE: [0, 0],

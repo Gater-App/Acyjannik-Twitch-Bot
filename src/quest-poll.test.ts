@@ -184,7 +184,7 @@ test('SQLite-Migration sichert die vorherige Datenbank und erhält Halloween-Pun
     assert.equal(store.score('halloween', 'viewer-1'), 7);
     store.close();
     const backups = fs.readdirSync(path.join(directory, 'backups'));
-    assert.equal(backups.length, before + 44, 'v4–v47 werden jeweils vor der Schemaänderung gesichert');
+    assert.equal(backups.length, before + 45, 'v4–v48 werden jeweils vor der Schemaänderung gesichert');
     const migrationV4 = backups.find((name) => name.includes('migration-v4-'))!;
     const newest = path.join(directory, 'backups', migrationV4);
     assert.equal(fs.statSync(newest).mode & 0o777, 0o600);

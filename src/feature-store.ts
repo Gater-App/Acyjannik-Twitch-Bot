@@ -1201,6 +1201,16 @@ export class FeatureStore {
         INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (47, unixepoch()*1000);`);
       })();
     }
+    currentVersion = (this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? currentVersion;
+    if (currentVersion < 48) {
+      if (currentVersion > 0) this.backupBeforeMigration(48);
+      this.db.transaction(() => {
+        const rows=this.db.prepare("SELECT id,weights_json FROM seasonal_events WHERE id IN ('christmas','easter')").all() as Array<{id:string;weights_json:string}>;
+        const update=this.db.prepare('UPDATE seasonal_events SET weights_json=? WHERE id=?');
+        for(const row of rows) update.run(JSON.stringify(withSeasonalLossOutcome(parseJsonObject<number>(row.weights_json))),row.id);
+        this.db.exec('INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES (48, unixepoch()*1000)');
+      })();
+    }
   }
 
   private backupBeforeMigration(version: number): void {
@@ -2849,6 +2859,22 @@ function parseJsonObject<T extends string | number>(value: string): Record<strin
     const parsed: unknown = JSON.parse(value);
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, T> : {};
   } catch { return {}; }
+}
+
+/** Preserve existing seasonal outcomes and their relative weights while dedicating roughly one quarter of item outcomes to a transfer loss. */
+function withSeasonalLossOutcome(weights: Record<string, number>): Record<string, number> {
+  if (typeof weights.LOSS==='number'&&Number.isSafeInteger(weights.LOSS)&&weights.LOSS>0) return weights;
+  const eligible=Object.entries(weights).filter(([key,value])=>key!=='EMPTY_HOUSE'&&Number.isSafeInteger(value)&&value>0);
+  const total=eligible.reduce((sum,[,value])=>sum+value,0);
+  if(total<=0)return weights;
+  const loss=Math.max(1,Math.round(total/4)),retained=total-loss;
+  const scaled=eligible.map(([key,value])=>({key,value:Math.floor(value*retained/total),remainder:(value*retained)%total}));
+  let remainder=retained-scaled.reduce((sum,item)=>sum+item.value,0);
+  for(const item of [...scaled].sort((a,b)=>b.remainder-a.remainder||a.key.localeCompare(b.key))){if(remainder<=0)break;item.value++;remainder--;}
+  const result={...weights};
+  for(const item of scaled)result[item.key]=item.value;
+  result.LOSS=loss;
+  return result;
 }
 
 function parsePollOptions(value: string): PollOptionInput[] {

@@ -147,6 +147,62 @@ test('!trickortreat verwendet denselben atomaren Übertragungsweg und stellt die
   }finally{features.close();database.close();fs.rmSync(directory,{recursive:true,force:true});}
 });
 
+test('!gift and !egghunt can transfer bounded losses through the shared atomic seasonal path',async()=>{
+  for(const [eventId,command,expectedCurrency] of [['christmas','gift','Geschenke'],['easter','egghunt','Ostereier']] as const){
+    const store=setup(eventId),config=testConfig();
+    try{
+      const event=store.event(eventId)!;
+      store.saveEvent({...event,weights:{LOSS:1},cooldownMs:0});
+      putScore(store,eventId,'loser','Max',4);
+      activity(store,'receiver','Lisa','lisa');
+      const community=new CommunityFeatures(store,config,async()=>undefined,(_min,max)=>max);
+      const message:ChatMessage={eventId:`${eventId}-loss-chat`,broadcasterUserId:config.broadcasterUserId,senderUserId:'loser',senderLogin:'max',senderDisplayName:'Max',message:`!${command}`,sentAt:10_000};
+      const replies=await community.handle(message,command,[],10_000);
+      assert.equal(replies.length,1);
+      assert.match(replies[0]?.message||'',new RegExp(`4 ${expectedCurrency}`,'u'));
+      assert.match(replies[0]?.message||'',/@Max/u);assert.match(replies[0]?.message||'',/@Lisa/u);
+      assert.equal(store.score(eventId,'loser'),0);
+      assert.equal(store.score(eventId,'receiver'),4);
+      const audit=store.miniGameQuery(db=>db.prepare('SELECT event_type,amount,status FROM seasonal_loss_transfers WHERE event_id=?').get(`${eventId}-loss-chat`));
+      assert.deepEqual(audit,{event_type:eventId,amount:4,status:'transferred'});
+      assert.equal(community.claimChatDeliveryMessages(10_001)[0]?.message,replies[0]?.message);
+      assert.deepEqual(await community.handle(message,command,[],10_002),[],'Wiederholte Chat-Event-ID zahlt und antwortet nicht erneut.');
+      assert.equal(store.score(eventId,'receiver'),4);
+    }finally{store.close();}
+  }
+});
+
+test('seasonal loss weights keep neutral outcomes and existing item ranges while limiting losses to about one quarter of active outcomes',()=>{
+  const store=new FeatureStore(':memory:');try{
+    const christmas=store.event('christmas')!.weights,easter=store.event('easter')!.weights,halloween=store.event('halloween')!.weights;
+    assert.deepEqual(christmas,{GIFT:41,JACKPOT:4,LOSS:15,EMPTY_HOUSE:40});
+    assert.deepEqual(easter,{EGG:45,GOLDEN_EGG:2,LOSS:16,EMPTY_HOUSE:37});
+    assert.deepEqual(halloween,{TREAT:55,TRICK:15,JACKPOT:5,GHOST:8,WITCH:8,EMPTY_HOUSE:8,GOLDEN_PUMPKIN:1});
+    assert.equal(christmas.LOSS!/(christmas.LOSS!+christmas.GIFT!+christmas.JACKPOT!),0.25);
+    assert.ok(Math.abs(easter.LOSS!/(easter.LOSS!+easter.EGG!+easter.GOLDEN_EGG!)-0.25)<0.01);
+  }finally{store.close();}
+});
+
+test('migration v48 adds a loss to custom weights while preserving neutral share and an explicitly configured loss',()=>{
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'acy-seasonal-weights-v48-')),file=path.join(directory,'data','state.sqlite');
+  let store=new FeatureStore(file);
+  try{
+    store.miniGameTransaction(db=>{
+      db.prepare("UPDATE seasonal_events SET weights_json=? WHERE id='christmas'").run('{"GIFT":32,"JACKPOT":8,"EMPTY_HOUSE":60}');
+      db.prepare("UPDATE seasonal_events SET weights_json=? WHERE id='easter'").run('{"EGG":30,"GOLDEN_EGG":2,"LOSS":8,"EMPTY_HOUSE":60}');
+      db.prepare('DELETE FROM schema_migrations WHERE version=48').run();
+    });
+  }finally{store.close();}
+  store=new FeatureStore(file);
+  try{
+    assert.deepEqual(store.event('christmas')!.weights,{GIFT:24,JACKPOT:6,EMPTY_HOUSE:60,LOSS:10});
+    assert.deepEqual(store.event('easter')!.weights,{EGG:30,GOLDEN_EGG:2,LOSS:8,EMPTY_HOUSE:60});
+    assert.equal(store.miniGameQuery(db=>(db.prepare('SELECT MAX(version) version FROM schema_migrations').get() as {version:number}).version),48);
+    assert.equal(store.miniGameQuery(db=>(db.prepare('PRAGMA integrity_check').get() as {integrity_check:string}).integrity_check),'ok');
+    assert.ok(fs.readdirSync(path.join(directory,'backups')).some(name=>name.includes('before-feature-migration-v48-')));
+  }finally{store.close();fs.rmSync(directory,{recursive:true,force:true});}
+});
+
 test('saisonale Anwesenheit wird auch erfasst, wenn Tresor und Wheel ausgeschaltet sind',()=>{
   const store=new FeatureStore(':memory:'),config=testConfig(),community=new CommunityFeatures(store,config);
   try{
@@ -166,7 +222,7 @@ test('Migration v47 erstellt ein eindeutiges Transfer-Audit und ist nach Neustar
     const first=store.miniGameQuery(db=>({version:(db.prepare('SELECT MAX(version) version FROM schema_migrations').get() as {version:number}).version,
       tables:db.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE type='table' AND name='seasonal_loss_transfers'").get() as {n:number},
       backup:fs.readdirSync(path.join(directory,'backups')).some(name=>name.includes('before-feature-migration-v47-'))}));
-    assert.equal(first.version,47);assert.equal(first.tables.n,1);assert.equal(first.backup,true);
+    assert.equal(first.version,48);assert.equal(first.tables.n,1);assert.equal(first.backup,true);
     store.miniGameTransaction(db=>db.prepare(`INSERT INTO seasonal_loss_transfers(event_id,event_type,loser_user_id,loser_name,currency,amount,status,created_at)
       VALUES('migration-audit','halloween','viewer','Viewer','Kürbisse',0,'no_balance',1)`).run());
   }finally{store.close();}
